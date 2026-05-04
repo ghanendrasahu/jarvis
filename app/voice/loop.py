@@ -1,0 +1,281 @@
+from __future__ import annotations
+
+import re
+import threading
+import time
+from datetime import datetime, timezone
+from typing import Any
+
+from app.config import Settings
+from app.core.orchestrator import JarvisOrchestrator
+from app.voice.listener import VoiceListener
+from app.voice.speaker import Speaker
+
+
+class VoiceController:
+    def __init__(self, settings: Settings, orchestrator: JarvisOrchestrator) -> None:
+        self.settings = settings
+        self.orchestrator = orchestrator
+        self.listener = VoiceListener(settings)
+        self.speaker = Speaker(enabled=settings.tts_enabled)
+        self._stop_event = threading.Event()
+        self._thread: threading.Thread | None = None
+        self._state_lock = threading.Lock()
+        self._started_at: str | None = None
+        self._last_activity_at: str | None = None
+        self._last_transcript: str = ""
+        self._last_command: str = ""
+        self._last_error: str | None = None
+        self._listen_attempts: int = 0
+        self._recognized_count: int = 0
+        self._timeout_count: int = 0
+        self._unknown_audio_count: int = 0
+        self._request_error_count: int = 0
+        self._followup_until: float = 0.0
+        self._sticky_followup_active: bool = False
+        self._pending_whatsapp_confirmation: dict[str, str] | None = None
+
+    def is_running(self) -> bool:
+        return self._thread is not None and self._thread.is_alive()
+
+    def start(self) -> bool:
+        if self.is_running():
+            return False
+        self._stop_event.clear()
+        with self._state_lock:
+            self._started_at = datetime.now(timezone.utc).isoformat()
+            self._last_activity_at = self._started_at
+            self._last_transcript = ""
+            self._last_command = ""
+            self._last_error = None
+            self._listen_attempts = 0
+            self._recognized_count = 0
+            self._timeout_count = 0
+            self._unknown_audio_count = 0
+            self._request_error_count = 0
+            self._followup_until = 0.0
+            self._sticky_followup_active = False
+            self._pending_whatsapp_confirmation = None
+        self._thread = threading.Thread(target=self._run_loop, daemon=True, name="jarvis-voice-loop")
+        self._thread.start()
+        return True
+
+    def stop(self) -> bool:
+        if not self.is_running():
+            return False
+        self._stop_event.set()
+        assert self._thread is not None
+        wait_seconds = max(
+            3,
+            int(self.settings.speech_timeout_seconds) + int(self.settings.phrase_time_limit_seconds) + 2,
+        )
+        self._thread.join(timeout=wait_seconds)
+        if self._thread.is_alive():
+            with self._state_lock:
+                self._last_error = "stop_timeout: listener still shutting down"
+            return False
+        self._thread = None
+        return True
+
+    def status(self) -> dict[str, Any]:
+        with self._state_lock:
+            return {
+                "running": self.is_running(),
+                "wake_word": self.settings.wake_word,
+                "stt_backend": self.listener.backend,
+                "mic_device_index": self.listener.device_index,
+                "mic_device_name": self.listener.get_device_name(),
+                "tts_enabled": self.speaker.enabled,
+                "speaker": self.speaker.status(),
+                "started_at": self._started_at,
+                "last_activity_at": self._last_activity_at,
+                "last_transcript": self._last_transcript,
+                "last_command": self._last_command,
+                "last_error": self._last_error,
+                "listen_attempts": self._listen_attempts,
+                "recognized_count": self._recognized_count,
+                "timeout_count": self._timeout_count,
+                "unknown_audio_count": self._unknown_audio_count,
+                "request_error_count": self._request_error_count,
+                "followup_window_active": time.time() <= self._followup_until,
+                "sticky_followup_active": self._sticky_followup_active,
+                "pending_whatsapp_confirmation": bool(self._pending_whatsapp_confirmation),
+            }
+
+    def _speak_async(self, text: str) -> None:
+        if not text:
+            return
+
+        thread = threading.Thread(
+            target=self.speaker.speak,
+            args=(text,),
+            daemon=True,
+            name="jarvis-voice-tts",
+        )
+        thread.start()
+
+    def _extract_command(self, transcript: str) -> tuple[str, bool]:
+        wake = self.settings.wake_word.lower().strip()
+        lowered = transcript.lower()
+        if wake not in lowered:
+            if self._sticky_followup_active or time.time() <= self._followup_until:
+                return transcript.strip(" ,.:"), False
+            return "", False
+        index = lowered.find(wake)
+        command = transcript[index + len(wake) :].strip(" ,.:")
+        return command, True
+
+    def _run_loop(self) -> None:
+        self._speak_async("Voice mode online.")
+        while not self._stop_event.is_set():
+            try:
+                result = self.listener.listen_once()
+            except Exception as exc:
+                with self._state_lock:
+                    self._last_activity_at = datetime.now(timezone.utc).isoformat()
+                    self._last_error = str(exc)
+                time.sleep(0.5)
+                continue
+
+            with self._state_lock:
+                self._listen_attempts += 1
+                self._last_activity_at = datetime.now(timezone.utc).isoformat()
+
+            if result.issue:
+                with self._state_lock:
+                    if result.issue == "timeout":
+                        self._timeout_count += 1
+                    elif result.issue == "unknown_audio":
+                        self._unknown_audio_count += 1
+                    elif result.issue.startswith("request_error"):
+                        self._request_error_count += 1
+                        self._last_error = result.issue
+                    else:
+                        self._last_error = result.issue
+                continue
+
+            transcript = result.transcript or ""
+            if not transcript:
+                continue
+            if len(transcript.strip()) < max(1, int(self.settings.voice_min_transcript_chars)):
+                continue
+
+            with self._state_lock:
+                self._last_transcript = transcript
+                self._recognized_count += 1
+                self._last_error = None
+
+            lowered = transcript.lower().strip()
+            if lowered.startswith("approve "):
+                approval_id = lowered.split("approve ", 1)[1].strip()
+                approval_response = self.orchestrator.approve(approval_id)
+                print(f"\n[voice] approval: {approval_id}")
+                print(f"[voice] response: {approval_response.message}")
+                self._speak_async(approval_response.message[: self.settings.max_voice_response_chars])
+                continue
+
+            normalized = transcript.lower().strip()
+            wake = self.settings.wake_word.lower().strip()
+            if normalized in {f"{wake} sleep", "sleep", "go to sleep", "stop listening"}:
+                self._sticky_followup_active = False
+                self._followup_until = 0.0
+                self._pending_whatsapp_confirmation = None
+                self._speak_async("Follow-up mode off. Say jarvis to wake me again.")
+                continue
+
+            if normalized in {"cancel", "cancel that", "nevermind", "never mind", "stop"}:
+                self._pending_whatsapp_confirmation = None
+                self._followup_until = 0.0
+                self._speak_async("Canceled.")
+                continue
+
+            if normalized in {"confirm send", "send now", "yes send it"} and self._pending_whatsapp_confirmation:
+                pending = self._pending_whatsapp_confirmation
+                command = f"send whatsapp to {pending['phone']}: {pending['message']}"
+                execution = self.orchestrator.execute_command(command=command, source="voice", auto_approve=False)
+                self._pending_whatsapp_confirmation = None
+                print(f"\n[voice] command: {command}")
+                print(f"[voice] response: {execution.response_text}")
+                self._speak_async(execution.response_text[: self.settings.max_voice_response_chars])
+                continue
+
+            command, used_wake_word = self._extract_command(transcript)
+            if not command:
+                continue
+            if used_wake_word:
+                if self.settings.voice_followup_sticky_mode:
+                    self._sticky_followup_active = True
+                    self._followup_until = 0.0
+                else:
+                    self._followup_until = time.time() + max(0, int(self.settings.voice_followup_window_seconds))
+
+            with self._state_lock:
+                self._last_command = command
+
+            # Safer voice UX: draft WhatsApp message first, then require explicit send confirmation.
+            if self.settings.voice_confirm_before_send:
+                send_match = re.match(
+                    r"^(?:send\s+)?whatsapp(?:\s+message)?\s+to\s+(.+?)\s*[:\-]\s*(.+)$",
+                    command.strip(),
+                    flags=re.IGNORECASE,
+                )
+                if send_match:
+                    phone = send_match.group(1).strip()
+                    message = send_match.group(2).strip()
+                    draft_command = f"open whatsapp chat {phone}: {message}"
+                    execution = self.orchestrator.execute_command(command=draft_command, source="voice", auto_approve=False)
+                    self._pending_whatsapp_confirmation = {"phone": phone, "message": message}
+                    response = (
+                        f"{execution.response_text} Draft is ready. Say 'confirm send' to send now or 'cancel'."
+                    )
+                    print(f"\n[voice] command: {draft_command}")
+                    print(f"[voice] response: {response}")
+                    self._speak_async(response[: self.settings.max_voice_response_chars])
+                    continue
+
+            execution = self.orchestrator.execute_command(command=command, source="voice", auto_approve=False)
+            print(f"\n[voice] command: {command}")
+            print(f"[voice] response: {execution.response_text}")
+            self._speak_async(execution.response_text[: self.settings.max_voice_response_chars])
+
+    def probe_once(self) -> dict[str, str | None]:
+        result = self.listener.listen_once()
+        return {
+            "stt_backend": self.listener.backend,
+            "issue": result.issue,
+            "transcript": result.transcript,
+        }
+
+    def list_input_devices(self) -> dict[str, Any]:
+        try:
+            names = self.listener.list_microphones()
+            devices = [{"index": idx, "name": name} for idx, name in enumerate(names)]
+            return {"count": len(names), "devices": devices}
+        except Exception as exc:
+            return {"count": 0, "devices": [], "error": str(exc)}
+
+    def set_input_device(self, index: int | None) -> dict[str, Any]:
+        if index is None:
+            self.listener.set_device_index(None)
+            return {"selected_index": None, "selected_name": "default"}
+
+        names = self.listener.list_microphones()
+        if index < 0 or index >= len(names):
+            raise ValueError(f"Invalid microphone index {index}. Use /voice devices to list valid indexes.")
+        self.listener.set_device_index(index)
+        return {"selected_index": index, "selected_name": names[index]}
+
+    def list_output_devices(self) -> dict[str, Any]:
+        status = self.speaker.status()
+        return {
+            "count": status.get("audio_output_count", 0),
+            "devices": status.get("audio_outputs", []),
+            "selected_index": status.get("preferred_output_index"),
+            "mode": status.get("mode"),
+        }
+
+    def set_output_device(self, index: int | None) -> dict[str, Any]:
+        return self.speaker.set_output_index(index)
+
+    def set_speaker_mode(self, mode: str) -> dict[str, Any]:
+        return self.speaker.set_mode(mode)

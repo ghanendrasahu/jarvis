@@ -1,0 +1,134 @@
+from __future__ import annotations
+
+from dataclasses import dataclass
+from typing import Iterable
+import time
+
+from app.config import Settings
+
+
+@dataclass
+class ListenResult:
+    transcript: str | None
+    issue: str | None = None
+
+
+class VoiceListener:
+    def __init__(self, settings: Settings) -> None:
+        self.settings = settings
+        self._recognizer = None
+        self._backend = "openai_whisper_api" if bool(settings.openai_api_key) else "google_web_speech"
+        self._device_index: int | None = None
+        self._last_ambient_adjust_at: float | None = None
+
+    def _get_recognizer(self):
+        if self._recognizer is None:
+            import speech_recognition as sr
+
+            self._recognizer = sr.Recognizer()
+            self._recognizer.energy_threshold = 300
+            self._recognizer.dynamic_energy_threshold = True
+            self._recognizer.pause_threshold = 0.8
+        return self._recognizer
+
+    @property
+    def backend(self) -> str:
+        return self._backend
+
+    @property
+    def device_index(self) -> int | None:
+        return self._device_index
+
+    def set_device_index(self, index: int | None) -> None:
+        self._device_index = index
+
+    def list_microphones(self) -> list[str]:
+        import speech_recognition as sr
+
+        return [name for name in sr.Microphone.list_microphone_names()]
+
+    def get_device_name(self) -> str | None:
+        if self._device_index is None:
+            return None
+        names = self.list_microphones()
+        if self._device_index < 0 or self._device_index >= len(names):
+            return None
+        return names[self._device_index]
+
+    @staticmethod
+    def _score_mic_name(name: str) -> int:
+        lowered = name.lower()
+        score = 0
+        if "microphone" in lowered:
+            score += 50
+        if "realtek" in lowered:
+            score += 25
+        if "headset" in lowered:
+            score += 15
+        if "usb" in lowered:
+            score += 15
+        if "airpods" in lowered or "earbuds" in lowered:
+            score += 10
+        if "hands-free" in lowered:
+            score -= 25
+        if "output" in lowered:
+            score -= 30
+        if "stereo mix" in lowered:
+            score -= 40
+        if "sound mapper" in lowered or "primary sound" in lowered:
+            score -= 30
+        return score
+
+    def _auto_pick_microphone(self, names: Iterable[str]) -> int | None:
+        indexed = list(enumerate(names))
+        if not indexed:
+            return None
+        best_index, best_score = max(indexed, key=lambda item: self._score_mic_name(item[1]))
+        if best_score < 10:
+            return None
+        return best_index
+
+    def listen_once(self) -> ListenResult:
+        import speech_recognition as sr
+
+        recognizer = self._get_recognizer()
+        if self._device_index is None:
+            try:
+                names = self.list_microphones()
+                self._device_index = self._auto_pick_microphone(names)
+            except Exception:
+                self._device_index = None
+        with sr.Microphone(device_index=self._device_index) as source:
+            now = time.time()
+            interval = max(3, int(self.settings.speech_ambient_adjust_interval_seconds))
+            should_adjust = self._last_ambient_adjust_at is None or (now - self._last_ambient_adjust_at) >= interval
+            if should_adjust:
+                recognizer.adjust_for_ambient_noise(
+                    source,
+                    duration=max(0.05, float(self.settings.speech_ambient_adjust_duration_seconds)),
+                )
+                self._last_ambient_adjust_at = now
+            try:
+                audio = recognizer.listen(
+                    source,
+                    timeout=self.settings.speech_timeout_seconds,
+                    phrase_time_limit=self.settings.phrase_time_limit_seconds,
+                )
+            except sr.WaitTimeoutError:
+                return ListenResult(transcript=None, issue="timeout")
+
+        try:
+            if self.settings.openai_api_key and hasattr(recognizer, "recognize_whisper_api"):
+                transcript = recognizer.recognize_whisper_api(audio, api_key=self.settings.openai_api_key)
+                return ListenResult(
+                    transcript=transcript.strip(),
+                    issue=None,
+                )
+            transcript = recognizer.recognize_google(audio)
+            return ListenResult(transcript=transcript.strip(), issue=None)
+        except sr.UnknownValueError:
+            return ListenResult(transcript=None, issue="unknown_audio")
+        except sr.RequestError as exc:
+            return ListenResult(transcript=None, issue=f"request_error: {exc}")
+        except Exception as exc:
+            return ListenResult(transcript=None, issue=f"listener_error: {exc}")

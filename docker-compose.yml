@@ -1,0 +1,11 @@
+services:
+  jarvis:
+    build: .
+    container_name: jarvis-api
+    ports:
+      - "8000:8000"
+    env_file:
+      - .env
+    volumes:
+      - ./:/app
+
