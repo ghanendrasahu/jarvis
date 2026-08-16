@@ -14,6 +14,8 @@ from app.core.memory import MemoryStore
 
 logger = get_logger("scheduler")
 
+_REDACTED_PLACEHOLDER = "<REDACTED>"
+
 _WEEKDAYS = {
     "mon": 0, "monday": 0,
     "tue": 1, "tuesday": 1,
@@ -47,28 +49,71 @@ def parse_recurrence(text: str) -> dict[str, Any] | None:
     return None
 
 
-def _due(spec: dict[str, Any], last_run: str | None, now: datetime) -> bool:
-    if last_run is None:
-        return True
+def local_now() -> datetime:
+    """Current wall-clock time as a naive local datetime (scheduler timezone semantics)."""
+    return datetime.now().astimezone().replace(tzinfo=None)
+
+
+def local_tz_name() -> str:
     try:
-        last = datetime.fromisoformat(last_run)
+        return str(datetime.now().astimezone().tzname()) or "local"
     except Exception:
-        return True
+        return "local"
+
+
+def to_local(value: str | None) -> datetime | None:
+    """Parse a stored ISO timestamp into a naive local datetime (handles UTC-aware values)."""
+    if not value:
+        return None
+    try:
+        parsed = datetime.fromisoformat(str(value))
+    except Exception:
+        return None
+    if parsed.tzinfo is not None:
+        parsed = parsed.astimezone().replace(tzinfo=None)
+    return parsed
+
+
+def next_run(spec: dict[str, Any], after: datetime) -> datetime:
+    """Compute the next deterministic execution time strictly after ``after`` (naive local time)."""
     kind = spec.get("type")
     if kind == "interval":
-        return (now - last) >= timedelta(minutes=int(spec.get("minutes", 60)))
+        minutes = max(1, int(spec.get("minutes", 60)))
+        return after + timedelta(minutes=minutes)
+    hour = int(spec.get("hour", 0))
+    minute = int(spec.get("minute", 0))
     if kind == "daily":
-        target = now.replace(hour=int(spec.get("hour", 0)), minute=int(spec.get("minute", 0)), second=0, microsecond=0)
-        return now >= target and last < target
+        target = after.replace(hour=hour, minute=minute, second=0, microsecond=0)
+        if target <= after:
+            target += timedelta(days=1)
+        return target
     if kind == "weekly":
-        target_day = (now.weekday() - int(spec.get("weekday", 0))) % 7
-        target = (now - timedelta(days=target_day)).replace(
-            hour=int(spec.get("hour", 0)), minute=int(spec.get("minute", 0)), second=0, microsecond=0
-        )
-        if target > now:
-            target -= timedelta(days=7)
-        return now >= target and last < target
-    return False
+        weekday = int(spec.get("weekday", 0))
+        days_ahead = (weekday - after.weekday()) % 7
+        target = after + timedelta(days=days_ahead)
+        target = target.replace(hour=hour, minute=minute, second=0, microsecond=0)
+        if target <= after:
+            target += timedelta(days=7)
+        return target
+    # Unknown/legacy spec: fall back to a conservative hourly cadence.
+    return after + timedelta(hours=1)
+
+
+def initial_next_run(spec: dict[str, Any], created_at: datetime) -> datetime:
+    """First execution is the next occurrence after creation (never fires immediately)."""
+    return next_run(spec, created_at)
+
+
+def _due(spec: dict[str, Any], last_run: str | None, now: datetime) -> bool:
+    """True when a job should fire at local time ``now`` given its last run.
+
+    A job with no recorded last run is never due through this helper: creating a job must not
+    cause an immediate execution. The Scheduler tracks an explicit ``next_run`` instead.
+    """
+    last = to_local(last_run)
+    if last is None:
+        return False
+    return now >= next_run(spec, last)
 
 
 class Scheduler:
@@ -105,6 +150,7 @@ class Scheduler:
             raise ValueError(
                 "Unrecognized recurrence. Use 'daily at HH:MM', 'hourly', 'every N minutes', or 'weekly on <day> at HH:MM'."
             )
+        created_local = local_now()
         job = {
             "id": str(uuid.uuid4())[:8],
             "command": command,
@@ -115,11 +161,16 @@ class Scheduler:
             "last_status": None,
             "last_result": None,
             "created_at": datetime.now(UTC).isoformat(),
+            "tz": local_tz_name(),
+            "next_run": initial_next_run(spec, created_local).isoformat(),
         }
         jobs = self._jobs()
         jobs.append(job)
         self._save(jobs)
-        logger.info("scheduled job %s: %s (%s)", job["id"], command, recurrence)
+        logger.info(
+            "scheduled job %s: %s (%s), next run %s (%s)",
+            job["id"], command, recurrence, job["next_run"], job["tz"],
+        )
         return job
 
     def remove(self, job_id: str) -> bool:
@@ -142,16 +193,33 @@ class Scheduler:
     def list_jobs(self) -> list[dict[str, Any]]:
         return self._jobs()
 
+    def _job_next_run(self, job: dict[str, Any], now: datetime) -> datetime | None:
+        """Return the job's next execution time (naive local), deriving it for legacy jobs."""
+        next_iso = job.get("next_run")
+        if next_iso:
+            return to_local(next_iso)
+        last = to_local(job.get("last_run")) or to_local(job.get("created_at"))
+        if last is None:
+            return None
+        return next_run(job.get("spec") or {}, last)
+
     def tick(self) -> None:
         jobs = self._jobs()
-        now = datetime.now(UTC)
+        now = local_now()
+        due: list[dict[str, Any]] = []
         for job in jobs:
             if not job.get("enabled"):
                 continue
-            if _due(job.get("spec") or {}, job.get("last_run"), now):
-                job["last_run"] = now.isoformat()
-                self._launch(job)
+            next_at = self._job_next_run(job, now)
+            if next_at is None or now < next_at:
+                continue
+            job["last_run"] = now.isoformat()
+            job["next_run"] = next_run(job.get("spec") or {}, now).isoformat()
+            job["tz"] = local_tz_name()
+            due.append(job)
         self._save(jobs)
+        for job in due:
+            self._launch(job)
 
     def _launch(self, job: dict[str, Any]) -> None:
         def worker() -> None:
