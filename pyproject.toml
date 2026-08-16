@@ -4,8 +4,6 @@ version = "1.2.0"
 description = "Voice-first desktop and browser automation assistant with an autonomous agent and job-application automation."
 requires-python = ">=3.11"
 dependencies = [
-    "fastapi==0.115.6",
-    "uvicorn[standard]==0.32.1",
     "pydantic==2.10.3",
     "pydantic-settings==2.7.0",
     "openai==1.57.2",
@@ -20,8 +18,9 @@ dependencies = [
     "PyYAML==6.0.2",
     "yt-dlp>=2024.12.13",
     "webrtcvad-wheels==2.0.14",  # prebuilt wheels; upstream webrtcvad fails to build on Windows py311
+    "PyAudio==0.2.14; sys_platform == 'win32'",  # microphone capture (speech_recognition.Microphone)
+    "pywin32>=306; sys_platform == 'win32'",  # SAPI TTS + audio output devices (win32com)
     "pystray>=0.19.5",
-    "tkwebview==0.3.0; sys_platform == 'win32'",
 ]
 
 [project.optional-dependencies]

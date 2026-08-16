@@ -1,23 +1,31 @@
 from __future__ import annotations
 
 import ctypes
+import os
 import subprocess
 import time
 from ctypes import wintypes
 from typing import cast
 
-_PDH = ctypes.WinDLL("pdh.dll")
-_PDH.PdhOpenQueryW.argtypes = [wintypes.LPCWSTR, wintypes.DWORD, ctypes.POINTER(ctypes.c_void_p)]
-_PDH.PdhAddEnglishCounterW.argtypes = [ctypes.c_void_p, wintypes.LPCWSTR, wintypes.DWORD, ctypes.POINTER(ctypes.c_void_p)]
-_PDH.PdhCollectQueryData.argtypes = [ctypes.c_void_p]
-_PDH.PdhGetFormattedCounterArrayW.argtypes = [
-    ctypes.c_void_p,
-    wintypes.DWORD,
-    ctypes.POINTER(wintypes.DWORD),
-    ctypes.POINTER(wintypes.DWORD),
-    ctypes.c_void_p,
-]
-_PDH.PdhCloseQuery.argtypes = [ctypes.c_void_p]
+_IS_WINDOWS = os.name == "nt"
+
+_PDH = None
+if _IS_WINDOWS:
+    try:
+        _PDH = ctypes.WinDLL("pdh.dll")
+        _PDH.PdhOpenQueryW.argtypes = [wintypes.LPCWSTR, wintypes.DWORD, ctypes.POINTER(ctypes.c_void_p)]
+        _PDH.PdhAddEnglishCounterW.argtypes = [ctypes.c_void_p, wintypes.LPCWSTR, wintypes.DWORD, ctypes.POINTER(ctypes.c_void_p)]
+        _PDH.PdhCollectQueryData.argtypes = [ctypes.c_void_p]
+        _PDH.PdhGetFormattedCounterArrayW.argtypes = [
+            ctypes.c_void_p,
+            wintypes.DWORD,
+            ctypes.POINTER(wintypes.DWORD),
+            ctypes.POINTER(wintypes.DWORD),
+            ctypes.c_void_p,
+        ]
+        _PDH.PdhCloseQuery.argtypes = [ctypes.c_void_p]
+    except Exception:
+        _PDH = None
 
 _PDH_FMT_DOUBLE = 0x00000200
 _PDH_MORE_DATA = ctypes.c_long(0x800007D2).value
@@ -40,6 +48,8 @@ class _FmtItem(ctypes.Structure):
 
 
 def _pdh_sum(counter_path: str) -> float | None:
+    if _PDH is None:
+        return None
     query = ctypes.c_void_p()
     counter = ctypes.c_void_p()
     if _PDH.PdhOpenQueryW(None, 0, ctypes.byref(query)) != 0:
@@ -78,6 +88,9 @@ def _adapter_name() -> str:
     global _name_cache
     if _name_cache is not None:
         return _name_cache
+    if not _IS_WINDOWS:
+        _name_cache = "Unknown GPU"
+        return _name_cache
     try:
         out = subprocess.run(
             [
@@ -100,7 +113,11 @@ _cache: dict[str, object] = {}
 
 
 def get_gpu_status() -> dict[str, object]:
-    """Live GPU utilization and video-memory usage via Windows PDH counters (in-process)."""
+    """Live GPU utilization and video-memory usage via Windows PDH counters (in-process).
+
+    Never fabricates values: when PDH counters are unavailable (no GPU, non-Windows, or
+    driver without counters) the result is an explicit unavailable state.
+    """
     global _cache
     now = time.monotonic()
     cached = _cache.get("value")
@@ -110,13 +127,16 @@ def get_gpu_status() -> dict[str, object]:
 
     utilization = _pdh_sum(r"\GPU Engine(*)\Utilization Percentage")
     mem_bytes = _pdh_sum(r"\GPU Adapter Memory(*)\Dedicated Usage")
-    if not mem_bytes:
-        mem_bytes = _pdh_sum(r"\GPU Adapter Memory(*)\Total Committed")
+    total_bytes = _pdh_sum(r"\GPU Adapter Memory(*)\Total Committed")
+
+    detected = utilization is not None or mem_bytes is not None
     status: dict[str, object] = {
         "name": _adapter_name(),
+        "available": detected,
         "utilization": round(utilization, 1) if utilization is not None else None,
         "memory_used_mb": round(mem_bytes / (1024 * 1024), 0) if mem_bytes else None,
-        "memory_total_mb": None,
+        "memory_total_mb": round(total_bytes / (1024 * 1024), 0) if total_bytes else None,
+        "unavailable_reason": None if detected else "PDH GPU counters unavailable on this machine",
     }
     _cache = {"value": status, "at": now}
     return status

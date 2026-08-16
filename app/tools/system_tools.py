@@ -4,6 +4,7 @@ import os
 import platform
 import shutil
 import subprocess
+import time
 import webbrowser
 from datetime import datetime
 from pathlib import Path
@@ -238,13 +239,21 @@ def register_system_tools(registry: ToolRegistry, settings: Settings) -> None:
     def list_processes(args: dict[str, Any]) -> dict[str, Any]:
         limit = int(args.get("limit", 25))
         rows: list[dict[str, Any]] = []
-        for proc in psutil.process_iter(["pid", "name", "cpu_percent", "memory_info"]):
+        proc_list = list(psutil.process_iter(["pid", "name", "cpu_percent", "memory_info"]))
+        for proc in proc_list:
+            try:
+                proc.cpu_percent(None)
+            except (psutil.NoSuchProcess, psutil.AccessDenied):
+                continue
+        if proc_list:
+            time.sleep(0.1)
+        for proc in proc_list:
             try:
                 rows.append(
                     {
                         "pid": proc.info.get("pid"),
                         "name": proc.info.get("name"),
-                        "cpu_percent": proc.info.get("cpu_percent"),
+                        "cpu_percent": proc.cpu_percent(None),
                         "memory_mb": round((proc.info["memory_info"].rss / 1024 / 1024), 2)
                         if proc.info.get("memory_info")
                         else None,
