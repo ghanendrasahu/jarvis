@@ -1,5 +1,6 @@
 ﻿from __future__ import annotations
 
+import html
 import re
 import time
 import urllib.parse
@@ -11,6 +12,76 @@ import requests
 from app.config import Settings
 from app.core.utils import get_pyautogui, parse_duration_to_seconds, safe_int
 from app.tools.registry import ToolRegistry
+
+_SEARCH_HEADERS = {
+    "User-Agent": (
+        "Mozilla/5.0 (Windows NT 10.0; Win64; x64) "
+        "AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0 Safari/537.36"
+    )
+}
+
+
+def _strip_tags(raw: str) -> str:
+    return html.unescape(re.sub(r"<[^>]+>", "", raw or "")).strip()
+
+
+def _resolve_ddg_url(href: str) -> str:
+    if href.startswith("//"):
+        href = "https:" + href
+    parsed = urllib.parse.urlparse(href)
+    if parsed.netloc in {"duckduckgo.com", "www.duckduckgo.com"} and parsed.path in {"/l/", "/l"}:
+        query = urllib.parse.parse_qs(parsed.query)
+        if query.get("uddg"):
+            return query["uddg"][0]
+    return href
+
+
+def parse_ddg_results(page_html: str, max_results: int = 8) -> list[dict[str, Any]]:
+    """Parse DuckDuckGo HTML search results into {rank, title, url, snippet, source}."""
+    results: list[dict[str, Any]] = []
+    seen: set[str] = set()
+    for block in page_html.split('<div class="result')[1:]:
+        if len(results) >= max_results:
+            break
+        link_match = re.search(r'class="result__a"\s+href="([^"]+)"[^>]*>(.*?)</a>', block, re.DOTALL)
+        if not link_match:
+            continue
+        title = _strip_tags(link_match.group(2))
+        if not title:
+            continue
+        url = _resolve_ddg_url(html.unescape(link_match.group(1)))
+        if not url or url in seen:
+            continue
+        seen.add(url)
+        snippet = ""
+        snippet_match = re.search(r'class="result__snippet"[^>]*>(.*?)</a>', block, re.DOTALL)
+        if snippet_match:
+            snippet = _strip_tags(snippet_match.group(1))
+        results.append(
+            {
+                "rank": len(results) + 1,
+                "title": title[:300],
+                "url": url[:1000],
+                "snippet": snippet[:500],
+                "source": "duckduckgo",
+            }
+        )
+    return results
+
+
+def search_web_structured(query: str, max_results: int = 8) -> list[dict[str, Any]]:
+    """Search the web and return structured results via DuckDuckGo's HTML endpoint."""
+    try:
+        response = requests.post(
+            "https://html.duckduckgo.com/html/",
+            data={"q": query},
+            headers=_SEARCH_HEADERS,
+            timeout=12,
+        )
+        response.raise_for_status()
+    except Exception:
+        return []
+    return parse_ddg_results(response.text, max_results=max_results)
 
 
 def _append_start_time(url: str, start_seconds: int) -> str:
@@ -375,10 +446,27 @@ def register_browser_tools(registry: ToolRegistry, settings: Settings) -> None:
         query = str(args.get("query", "")).strip()
         if not query:
             raise ValueError("Missing search query.")
+        max_results = max(1, min(20, safe_int(args.get("max_results", 8), 8)))
+        results = search_web_structured(query, max_results=max_results)
+        if results:
+            return {
+                "query": query,
+                "count": len(results),
+                "results": results,
+                "engine": "duckduckgo",
+                "fallback_opened_browser": False,
+            }
         encoded = urllib.parse.quote_plus(query)
         url = f"https://www.google.com/search?q={encoded}"
         webbrowser.open(url, new=2)
-        return {"query": query, "opened": url}
+        return {
+            "query": query,
+            "count": 0,
+            "results": [],
+            "engine": "google_browser_fallback",
+            "fallback_opened_browser": True,
+            "opened": url,
+        }
 
     def read_webpage(args: dict[str, Any]) -> dict[str, Any]:
         url = str(args.get("url", "")).strip()
@@ -591,9 +679,9 @@ def register_browser_tools(registry: ToolRegistry, settings: Settings) -> None:
     )
     registry.register(
         name="search_web",
-        description="Search the web in browser.",
+        description="Search the web and return structured results (title, url, snippet, rank). Opens a browser tab as a fallback if the search backend is unavailable.",
         risk="low",
-        parameters={"query": "string"},
+        parameters={"query": "string", "max_results": "integer"},
         handler=search_web,
     )
     registry.register(
