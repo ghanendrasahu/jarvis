@@ -48,5 +48,20 @@ jobs:
       - name: Run tests
         env:
           WORKSPACE_ROOT: ${{ github.workspace }}
-          API_TOKEN: test-token
         run: python -m pytest --cov
+
+  test-windows:
+    name: Tests (Windows)
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+      - name: Install deps
+        run: pip install -r requirements.txt
+      - name: Run tests
+        env:
+          WORKSPACE_ROOT: ${{ github.workspace }}
+        shell: pwsh
+        run: python -m pytest -q

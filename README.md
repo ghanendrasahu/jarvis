@@ -1,6 +1,6 @@
 # JARVIS (Voice + Desktop + Browser Automation)
 
-JARVIS is a local automation assistant built with `Python + FastAPI + CLI/Voice + tool-based execution`.
+JARVIS is a local automation assistant built with `Python + tkinter HUD + CLI/Voice + tool-based execution`.
 It supports system commands, file actions, desktop automation, browser control (YouTube/WhatsApp), an
 autonomous plan→execute→observe→re-plan agent, and config-driven job-application automation.
 
@@ -14,7 +14,7 @@ This version adds all requested upgrades across five phases:
 4. **Reliability layer**: tool retries, execution metadata, rotating logs, WAL-backed SQLite, VAD voice gating.
 5. **Runtime context memory** (`active_surface`) for follow-up commands like `next`.
 6. **Evaluation metrics dashboard** (latency, success/failure rates, top failing tools).
-7. **Security hardening**: `API_TOKEN` auth, rate limiting, CORS, and a hardened shell policy.
+7. **Security hardening**: approvals for risky actions and a hardened shell policy.
 8. **Autonomous agent loop** (`agent_done`, iteration/action caps, double-failure stop, approval handoff).
 9. **Job-application automation**: search top job boards, auto-fill forms, upload a PDF resume, auto-submit,
    with a per-site selector config and a dedupe/audit trail.
@@ -37,14 +37,9 @@ All versions live in `pyproject.toml`; `requirements.txt` is a thin `-e .[dev]` 
 - or `LLM_PROVIDER=groq` + `GROQ_API_KEY=...`
 - or `LLM_PROVIDER=ollama` (with Ollama running)
 
-4. Run JARVIS (desktop HUD with the embedded web deck — no browser needed):
+4. Run JARVIS (desktop HUD):
 ```powershell
 .\scripts\run_jarvis.ps1
-```
-
-Optional — standalone API server for LAN/phone access:
-```powershell
-.\scripts\run_jarvis.ps1 -Api
 ```
 
 Optional — interactive text CLI (voice device diagnostics, approvals, metrics):
@@ -79,31 +74,31 @@ Disabled = the HUD does not auto-start until you re-enable it (manual `run_jarvi
 - **Live agent feed** — the HUD feed streams each agent step (planning, tool selection, tool results) in real time while the agent works, so you can watch what it is doing.
 - **`read_webpage`** — the agent can open any URL and read the page text, so it can browse a site and reason about what it finds instead of only acting on it.
 - **Learned memory** — JARVIS remembers what it learns about you across runs (frequently opened apps, last WhatsApp contact) and injects it into the planner prompt as *known facts* plus a *tool history* recap so it stops repeating itself.
-- **Approve-and-continue** — when a risky step needs your sign-off, JARVIS now *waits* for you instead of giving up: click **APPROVE** or **REJECT** on the HUD (or use the CLI/API) and the agent resumes the exact step where it stopped.
+- **Approve-and-continue** — when a risky step needs your sign-off, JARVIS now *waits* for you instead of giving up: click **APPROVE** or **REJECT** on the HUD (or use the CLI) and the agent resumes the exact step where it stopped.
 - **Job resume + pipeline** — after the job agent pauses on a login/CAPTCHA wall, click **RESUME** on the HUD to continue from the exact page it stopped on. Track your pipeline with `job status`/`job update status <url> <status>` — statuses roll up into APPLIED / INTERVIEW / OFFER / REJECTED counters on the HUD.
 - **Scheduler** — say or type `schedule <command> daily at 09:00` (also `hourly`, `every N minutes`, `weekly on <day> at HH:MM`). `list_schedules` shows the queue, `cancel_schedule <id>` removes one. Each run appears in the HUD feed.
 
-## Embedded Web Deck
+## In-HUD dashboard
 
-The full animated dashboard now lives **inside** the HUD window — click the **DECK** chip to open it (WebView2/Chromium, no browser needed). It runs the same FastAPI engine in-process, sharing one runtime.
+The full dashboard lives inside the tkinter HUD window.
 
-- **Live feed** — run commands from the glowing command bar; agent steps, approvals, job updates, and scheduler runs stream in over a WebSocket.
+- **Live feed** — run commands from the command bar; agent steps, approvals, job updates, and scheduler runs stream in from the in-process event hub.
 - **Voice panel** — start/stop the voice engine with an animated waveform.
-- **Approvals** — approve/reject risky agent steps from cards.
-- **Jobs** — apply form, live task status with progress, APPLIED/INTERVIEW/OFFER/REJECTED pipeline counters, RESUME/CANCEL.
+- **Approvals** — approve/reject risky agent steps from cards with a pending-count badge.
+- **Jobs** — apply form, live task status with a progress bar, APPLIED/INTERVIEW/OFFER/REJECTED pipeline counters, RESUME/CANCEL, and a recent-applications list.
 - **Scheduler** — create/list/cancel recurring commands with the same syntax as the CLI/voice tools.
-- **Always-on status bar** — CPU / GPU / RAM / disk ring meters + sparkline history (GPU read in-process via Windows PDH counters, works on Intel UHD).
-- **Themes & perf** — cycle three themes (Aurora / Cyber / Light); **Lite graphics mode is the default** (battery-friendly, static aurora + few particles) with a Full mode toggle. Animations run at ~30 fps and fully pause when the tab is hidden.
-- **Video backgrounds** — click the **◳** button: keep the animated aurora canvas, paste any looping video URL (galaxy, anime, nature…), or drop a `.mp4` into `data/backgrounds/` and pick it from the list (served locally at `/backgrounds/…`). A dim + blur overlay keeps the UI readable; the video pauses when the tab is hidden.
-- **Security** — first launch asks for your `API_TOKEN` (saved in `localStorage`); auto-connects if auth is disabled.
+- **Always-on status bar** — CPU / GPU / RAM / disk / network meters with sparkline history (GPU read in-process via Windows PDH counters, works on Intel UHD).
+- **Themes & perf** — cycle three themes (Aurora / Cyber / Light); **Lite graphics mode is the default** (battery-friendly, static aurora + few particles) with a Full mode toggle.
+- **Backgrounds** — click the **BACKGROUNDS** chip: keep the animated aurora scene, pick a gradient, or drop a `.png`/`.gif` into `data/backgrounds/` and choose it from the list.
+- **Persistence** — theme, graphics mode, background, window geometry, and command history are saved to `data/jarvis_ui.json` and restored next launch.
 
-The HUD, mini-window, tray, and hotkey are unchanged and work alongside the deck.
+The HUD, mini-window, tray, and hotkey work together as one window.
 
 ## Architecture
 
 ```mermaid
 flowchart LR
-  A["Voice / CLI / API"] --> B["Orchestrator"]
+  A["Voice / CLI / HUD"] --> B["Orchestrator"]
   B --> C["Direct Router (typo + context aware)"]
   B --> D["LLM Planner"]
   B --> E["Autonomous Agent loop"]
@@ -127,6 +122,7 @@ flowchart LR
 - `youtube jump to 50%`
 - `send whatsapp to <phone>: <message>`
 - `open whatsapp chat <phone>: <message>`
+- `search web <query>` — returns structured results (title, url, snippet) via DuckDuckGo; falls back to opening a Google search tab if the backend is unavailable.
 
 ### Context-Aware Follow-Ups
 If your active surface is YouTube, these work directly:
@@ -171,7 +167,7 @@ scan/audit/monitor/analyze/check if run through the multi-iteration agent loop i
 1. Edit `config/job_profile.yaml` with your real identity, skills, work history, and form-field answers.
 2. Edit `config/site_profiles.yaml` to enable/disable boards and fix selectors if a site's DOM changes.
 3. Set `JOB_TARGET_SITES=linkedin,indeed,...` and `RESUME_PDF=data/resume/CV.pdf` in `.env`.
-4. Run: `apply for python developer` (or `POST /v1/job/apply`).
+4. Run: `apply for python developer`.
 
 Behavior notes:
 - The agent skips jobs already applied to (URL dedupe in SQLite).
@@ -194,39 +190,6 @@ Voice diagnostics in CLI:
 - `/voice probe`
 - `/voice devices`
 - `/voice outputs`
-
-## API Endpoints
-
-- `GET /v1/health`
-- `GET /v1/tools`
-- `POST /v1/execute`
-- `GET /v1/pending-approvals`
-- `POST /v1/approve/{approval_id}`
-- `GET /v1/history`
-- `GET /v1/history/tools`
-- `GET /v1/metrics`
-- `POST /v1/voice/start`
-- `POST /v1/voice/stop`
-- `POST /v1/job/apply`
-- `GET /v1/job/task`
-- `POST /v1/job/cancel`
-- `GET /v1/job/applied`
-- `POST /v1/reject/{approval_id}`
-- `GET /v1/schedules` · `POST /v1/schedules` · `DELETE /v1/schedules/{id}`
-- `GET /v1/resources`
-- `POST /v1/job/resume`
-- `GET /v1/backgrounds` · `GET /backgrounds/{name}` — list + serve local background videos from `data/backgrounds/`
-- `WS /ws/events` — live event stream (`?token=` for auth) with topics: `command_start`, `command_done`, `agent_step`, `scheduler_run`, `approval`
-
-All endpoints except `/v1/health` require `Authorization: Bearer <API_TOKEN>` and are rate limited.
-
-Example:
-```bash
-curl -X POST http://localhost:8000/v1/execute \
-  -H "Authorization: Bearer $JARVIS_TOKEN" \
-  -H "Content-Type: application/json" \
-  -d "{\"command\":\"play lofi focus on youtube\",\"source\":\"api\",\"auto_approve\":false}"
-```
 
 ## CLI Helpers
 
@@ -268,8 +231,6 @@ Three opt-in features keep JARVIS fast and cheap:
 
 ## Important Config Knobs (`.env`)
 
-- `API_TOKEN` — bearer token required for API calls
-- `CORS_ALLOWED_ORIGINS` — comma-separated allowed origins
 - `APPROVAL_POLICY`, `AUTO_APPROVE_LOW_RISK`
 - `ALLOWED_SHELL_COMMANDS`, `ALLOWED_ROOTS`
 - `DB_RETENTION_DAYS`
@@ -288,6 +249,9 @@ Three opt-in features keep JARVIS fast and cheap:
 - Protected OS processes are blocked from termination.
 - File tools obey safe-root restrictions.
 - The job agent never bypasses CAPTCHAs and pauses on login walls.
+- **Secret redaction** — API keys and tokens are never stored or displayed in plaintext: secrets registered from
+  the environment are redacted (`<REDACTED>`) across conversation history, tool results, cached planner plans,
+  and the HUD feed. Pairs like `api_key=…`, `password: …`, and `Authorization: Bearer …` are scrubbed too.
 
 ## Troubleshooting
 
@@ -300,7 +264,7 @@ Three opt-in features keep JARVIS fast and cheap:
    - In voice mode, confirm flow needs `confirm send`.
 
 3. **Job agent gets stuck or pauses**
-   - Check `job status` / `GET /v1/job/task` for `paused_reason` (login/CAPTCHA).
+   - Check `job status` for `paused_reason` (login/CAPTCHA).
    - Pre-login in the persistent browser profile, then re-run.
    - If a site’s selectors changed, update `config/site_profiles.yaml`.
 
@@ -327,7 +291,6 @@ app/
   agents/
     job_agent.py          # autonomous job search + apply workflow
   bootstrap.py            # runtime assembly (registry, agent, job agent, voice)
-  main.py                 # FastAPI app + job/voice/metrics routes
   cli.py
   gui.py                  # tkinter command HUD (dashboard)
   minihud.py              # draggable always-on-top mini window

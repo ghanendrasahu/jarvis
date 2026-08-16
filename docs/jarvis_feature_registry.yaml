@@ -1,0 +1,214 @@
+# JARVIS v1.2.0 Feature Registry
+#
+# Status legend:
+#   implemented  - fully working, tested
+#   partial      - core path works, advanced behavior missing
+#   missing      - not built / not reachable from the runtime
+#   broken       - present but non-functional
+#
+# Last audit: Phase 0 baseline. Counts: 75 implemented, 42 partial,
+# 75 missing, 5 broken (39.1% raw / 50.0% partial-adjusted).
+
+registry_version: 1.2.0
+areas:
+  - id: core
+    name: Core Runtime
+    features:
+      - name: orchestrator
+        status: implemented
+        notes: Direct-command fast path, autonomous agent fallback, approve-and-continue.
+      - name: planner
+        status: implemented
+        notes: Cached plans; Ollama first, cloud fallback.
+      - name: router
+        status: implemented
+        notes: Deterministic direct-command routing incl. context-aware YouTube follow-ups.
+      - name: executor
+        status: implemented
+        notes: Risk-gated execution, medium_and_high approval policy default.
+      - name: tool_registry
+        status: implemented
+        notes: Single registry, live catalog feeds HELP panel.
+      - name: approvals
+        status: implemented
+        notes: HUD APPROVE/REJECT cards + CLI.
+      - name: secret_redaction
+        status: implemented
+        notes: Phase 0C. env secrets + assignment/bearer patterns scrubbed across memory, cache, HUD feed.
+      - name: event_hub
+        status: implemented
+        notes: In-process event streaming to HUD feed.
+      - name: scheduler
+        status: implemented
+        notes: Phase 0A rewrite. Local-time next_run, no immediate first fire, race-free tick.
+      - name: memory
+        status: implemented
+        notes: SQLite conversation + tool history, learned facts, state, cache.
+      - name: safe_paths
+        status: implemented
+        notes: Safe-root restrictions for file tools.
+      - name: shell_policy
+        status: implemented
+        notes: Prefix allowlist, rejects compound/obfuscated commands.
+
+  - id: voice
+    name: Voice Mode
+    features:
+      - name: microphone_capture
+        status: partial
+        notes: Requires PyAudio (declared for Windows, Phase 0B).
+      - name: speech_to_text
+        status: implemented
+        notes: Groq Whisper primary, Google web speech fallback.
+      - name: text_to_speech
+        status: implemented
+        notes: Windows SAPI via pywin32.
+      - name: wake_word
+        status: missing
+      - name: speaker_diarization
+        status: missing
+
+  - id: desktop
+    name: Desktop Automation
+    features:
+      - name: launch_apps
+        status: implemented
+      - name: open_url
+        status: implemented
+        notes: Default browser.
+      - name: find_files
+        status: implemented
+      - name: list_processes
+        status: implemented
+        notes: Phase 0E. CPU now sampled (prime + 0.1s delta) instead of always 0.0.
+      - name: system_status
+        status: implemented
+        notes: CPU/RAM/disk/network/GPU.
+      - name: gpu_status
+        status: implemented
+        notes: Phase 0D. In-process PDH, honest total VRAM, explicit unavailable state, non-Windows safe import.
+      - name: screenshots
+        status: implemented
+        notes: Captures to data/.
+      - name: startup_shortcuts
+        status: implemented
+      - name: window_management
+        status: missing
+
+  - id: browser
+    name: Browser Control
+    features:
+      - name: youtube_control
+        status: implemented
+        notes: Playwright-first with keyboard fallback.
+      - name: whatsapp
+        status: implemented
+        notes: Open chat; auto-send when logged in.
+      - name: read_webpage
+        status: implemented
+      - name: search_web
+        status: implemented
+        notes: Phase 0F. Structured results via DuckDuckGo HTML, Google tab fallback.
+      - name: browser_dsl
+        status: implemented
+        notes: browser_action reusable DSL (goto/click/type/screenshot/evaluate).
+      - name: ad_blocking
+        status: missing
+
+  - id: agent
+    name: Autonomous Agent
+    features:
+      - name: multi_tool_planning
+        status: implemented
+      - name: approve_and_continue
+        status: implemented
+      - name: tool_history_recap
+        status: implemented
+      - name: known_facts_injection
+        status: implemented
+      - name: agent_done_signal
+        status: implemented
+      - name: coding_agent
+        status: partial
+        notes: 24% of audit coverage; no code-edit/verification loop.
+      - name: vision
+        status: missing
+        notes: No screenshot/image understanding.
+
+  - id: jobs
+    name: Job Automation
+    features:
+      - name: job_search
+        status: implemented
+        notes: Search profiles, query building, site search.
+      - name: job_apply
+        status: partial
+        notes: Pauses on login/CAPTCHA walls, resume support.
+      - name: job_pipeline
+        status: implemented
+        notes: Statuses, APPLIED/INTERVIEW/OFFER/REJECTED counters.
+      - name: job_resume
+        status: implemented
+      - name: application_tracking
+        status: partial
+
+  - id: rag
+    name: Memory & RAG
+    features:
+      - name: learned_facts
+        status: implemented
+      - name: semantic_retrieval
+        status: missing
+        notes: 0% RAG coverage. No embeddings / vector store.
+      - name: document_indexing
+        status: missing
+      - name: recap
+        status: implemented
+        notes: while-you-were-away summary.
+
+  - id: productivity
+    name: Productivity
+    features:
+      - name: notes
+        status: missing
+      - name: email
+        status: missing
+      - name: calendar
+        status: missing
+      - name: reminders
+        status: partial
+        notes: Scheduler covers recurring commands.
+      - name: clipboard
+        status: missing
+
+  - id: proactive
+    name: Proactive Behavior
+    features:
+      - name: smart_alerts
+        status: implemented
+      - name: scheduled_runs
+        status: implemented
+      - name: idleness_detection
+        status: missing
+      - name: intent_prediction
+        status: missing
+
+  - id: quality
+    name: Quality & Ops
+    features:
+      - name: evaluation_metrics
+        status: implemented
+        notes: Latency, success/failure rates, top failing tools.
+      - name: unit_tests
+        status: implemented
+        notes: 73 tests across 14 files, ruff clean, mypy.
+      - name: ci_linux
+        status: implemented
+      - name: ci_windows
+        status: implemented
+        notes: Phase 0G. windows-latest test job.
+      - name: smoke_test
+        status: implemented
+      - name: rate_limiting
+        status: missing
+        notes: Web layer removed in desktop-only pivot; N/A for HUD inputs.
