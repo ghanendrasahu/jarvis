@@ -13,6 +13,7 @@ from app.core.events import EventHub
 from app.core.executor import ActionExecutor
 from app.core.logging import get_logger
 from app.core.memory import MemoryStore
+from app.core.redact import redact_object, redact_text
 from app.core.router import DirectCommandRouter, _normalize_command
 from app.llm.planner import BasePlanner
 from app.models.schemas import (
@@ -51,6 +52,18 @@ _AGENT_INTENT_PREFIXES = (
 def _is_agent_worthy(command: str) -> bool:
     lowered = command.lower().strip()
     return lowered.startswith(_AGENT_INTENT_PREFIXES)
+
+
+def _redact_result(item: ToolExecutionResult) -> ToolExecutionResult:
+    """Return a copy of a tool result with sensitive values scrubbed for display/persistence."""
+    if not item.error and not item.output:
+        return item
+    return item.model_copy(
+        update={
+            "output": redact_object(item.output),
+            "error": redact_text(item.error),
+        }
+    )
 
 
 class JarvisOrchestrator:
@@ -407,7 +420,7 @@ class JarvisOrchestrator:
                 error=outcome.error,
             )
 
-        response_text = self._compose_response(plan, results)
+        response_text = redact_text(self._compose_response(plan, results))
         status = self._status_from_results(results)
         self._update_runtime_context(command=cleaned, response_status=status, results=results)
 
@@ -426,13 +439,14 @@ class JarvisOrchestrator:
             actions_pending=pending_count,
         )
 
+        safe_results = [_redact_result(item) for item in results]
         payload = ExecuteCommandResponse(
             command=cleaned,
             source=source,
             status=status,  # type: ignore[arg-type]
             response_text=response_text,
             plan_summary=plan.summary,
-            results=results,
+            results=safe_results,
             created_at=datetime.now(UTC).isoformat(),
         )
         self.memory.log_command(source=source, command=cleaned, response_text=response_text)
@@ -440,7 +454,8 @@ class JarvisOrchestrator:
         return self._emit_done(payload)
 
     def _failed_response(self, command: str, source: str, message: str) -> ExecuteCommandResponse:
-        self.memory.log_command(source=source, command=command, response_text=message)
+        safe_message = redact_text(message)
+        self.memory.log_command(source=source, command=command, response_text=safe_message)
         self.memory.log_execution_metric(
             source=source,
             command=command,
@@ -456,7 +471,7 @@ class JarvisOrchestrator:
                 command=command,
                 source=source,
                 status="failed",
-                response_text=message,
+                response_text=safe_message,
                 plan_summary="",
                 results=[],
                 created_at=datetime.now(UTC).isoformat(),
@@ -465,8 +480,10 @@ class JarvisOrchestrator:
 
     def _response_from_agent(self, command: str, source: str, result: AgentRunResult) -> ExecuteCommandResponse:
         status = result.status
-        self.memory.log_command(source=source, command=command, response_text=result.final_response)
-        for item in result.results:
+        safe_response = redact_text(result.final_response)
+        self.memory.log_command(source=source, command=command, response_text=safe_response)
+        safe_results = [_redact_result(item) for item in result.results]
+        for item in safe_results:
             self.memory.log_tool_result(
                 command=command,
                 tool=item.tool,
@@ -476,9 +493,9 @@ class JarvisOrchestrator:
                 error=item.error,
             )
         self._update_runtime_context(command=command, response_status=status, results=result.results)
-        completed_count = sum(1 for item in result.results if item.status == "completed")
-        failed_count = sum(1 for item in result.results if item.status == "failed")
-        pending_count = sum(1 for item in result.results if item.status == "pending")
+        completed_count = sum(1 for item in safe_results if item.status == "completed")
+        failed_count = sum(1 for item in safe_results if item.status == "failed")
+        pending_count = sum(1 for item in safe_results if item.status == "pending")
         self.memory.log_execution_metric(
             source=source,
             command=command,
@@ -501,9 +518,9 @@ class JarvisOrchestrator:
             command=command,
             source=source,
             status=status,  # type: ignore[arg-type]
-            response_text=result.final_response,
+            response_text=safe_response,
             plan_summary=f"Agent loop ({result.iterations} iteration{'s' if result.iterations != 1 else ''})",
-            results=result.results,
+            results=safe_results,
             created_at=datetime.now(UTC).isoformat(),
         )
 
@@ -536,13 +553,13 @@ class JarvisOrchestrator:
             command=pending.command,
             source="approval",
             status="completed" if outcome.status == "completed" else "failed",
-            response_text=(
+            response_text=redact_text(
                 f"Approved and executed {outcome.tool}."
                 if outcome.status == "completed"
                 else f"Approval execution failed: {outcome.error}"
             ),
             plan_summary=f"Approved action: {outcome.tool}",
-            results=[outcome],
+            results=[_redact_result(outcome)],
             created_at=datetime.now(UTC).isoformat(),
         )
         self.memory.log_command(source="approval", command=pending.command, response_text=execution.response_text)
@@ -583,7 +600,8 @@ class JarvisOrchestrator:
         resumed: AgentRunResult,
         started: float,
     ) -> ExecuteApprovalResponse:
-        for item in resumed.results:
+        safe_results = [_redact_result(item) for item in resumed.results]
+        for item in safe_results:
             self.memory.log_tool_result(
                 command=pending.command,
                 tool=item.tool,
@@ -597,9 +615,9 @@ class JarvisOrchestrator:
             resumed.status if resumed.status in {"completed", "partial", "failed", "needs_approval"} else "partial",
         )
         self._update_runtime_context(command=pending.command, response_status=status, results=resumed.results)
-        completed = sum(1 for item in resumed.results if item.status == "completed")
-        failed = sum(1 for item in resumed.results if item.status == "failed")
-        pending_count = sum(1 for item in resumed.results if item.status == "pending")
+        completed = sum(1 for item in safe_results if item.status == "completed")
+        failed = sum(1 for item in safe_results if item.status == "failed")
+        pending_count = sum(1 for item in safe_results if item.status == "pending")
         self.memory.log_execution_metric(
             source="approval",
             command=pending.command,
@@ -614,9 +632,9 @@ class JarvisOrchestrator:
             command=pending.command,
             source="approval",
             status=status,
-            response_text=resumed.final_response,
+            response_text=redact_text(resumed.final_response),
             plan_summary=f"Approved and resumed agent loop ({resumed.iterations} iterations, {resumed.actions_total} actions)",
-            results=resumed.results,
+            results=safe_results,
             created_at=datetime.now(UTC).isoformat(),
         )
         self.memory.log_command(source="approval", command=pending.command, response_text=execution.response_text)

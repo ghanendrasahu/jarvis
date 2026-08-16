@@ -72,10 +72,6 @@ class Settings(BaseSettings):
     speech_ambient_adjust_duration_seconds: float = 0.25
     speech_ambient_adjust_interval_seconds: int = 25
 
-    api_token: str | None = None
-    cors_allowed_origins: Annotated[list[str], NoDecode] = Field(default_factory=list)
-    web_ui_port: int = 8000
-
     approval_policy: str = "medium_and_high"
     auto_approve_low_risk: bool = True
     max_history_items: int = 40
@@ -122,7 +118,7 @@ class Settings(BaseSettings):
     )
     allowed_roots: Annotated[list[str], NoDecode] = Field(default_factory=list)
 
-    @field_validator("allowed_shell_commands", "allowed_roots", "cors_allowed_origins", "job_target_sites", mode="before")
+    @field_validator("allowed_shell_commands", "allowed_roots", "job_target_sites", mode="before")
     @classmethod
     def _coerce_csv_lists(cls, value: Any) -> list[str]:
         return _parse_csv(value)
@@ -155,4 +151,13 @@ def get_settings() -> Settings:
     from app.core.logging import setup_logging
 
     setup_logging(settings.logs_dir)
+
+    from app.core import redact
+
+    redact.register_secrets(
+        settings.openai_api_key,
+        settings.groq_api_key,
+        settings.litellm_api_key,
+        settings.smtp_password,
+    )
     return settings

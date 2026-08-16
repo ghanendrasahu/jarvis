@@ -8,6 +8,7 @@ from threading import Lock
 from typing import Any
 
 from app.core.logging import get_logger
+from app.core.redact import redact_object, redact_text
 
 logger = get_logger("memory")
 
@@ -138,7 +139,7 @@ class MemoryStore:
                 INSERT INTO command_history (created_at, source, command, response_text)
                 VALUES (?, ?, ?, ?)
                 """,
-                (created_at, source, command, response_text),
+                (created_at, source, redact_text(command), redact_text(response_text)),
             )
             self._conn.commit()
 
@@ -152,14 +153,14 @@ class MemoryStore:
         error: str | None = None,
     ) -> None:
         created_at = datetime.now(UTC).isoformat()
-        output_json = json.dumps(output or {})
+        output_json = json.dumps(redact_object(output or {}))
         with self._lock:
             self._conn.execute(
                 """
                 INSERT INTO tool_history (created_at, command, tool, status, risk, output_json, error)
                 VALUES (?, ?, ?, ?, ?, ?, ?)
                 """,
-                (created_at, command, tool, status, risk, output_json, error),
+                (created_at, redact_text(command), tool, status, risk, output_json, redact_text(error)),
             )
             self._conn.commit()
 
@@ -198,7 +199,7 @@ class MemoryStore:
         if not key.strip():
             raise ValueError("State key cannot be empty.")
         created_at = datetime.now(UTC).isoformat()
-        payload = json.dumps(value)
+        payload = json.dumps(redact_object(value))
         with self._lock:
             self._conn.execute(
                 """
@@ -258,7 +259,7 @@ class MemoryStore:
     def cache_set(self, key: str, value: Any, max_entries: int = 500) -> None:
         if not key.strip():
             raise ValueError("Cache key cannot be empty.")
-        payload = json.dumps(value)
+        payload = json.dumps(redact_object(value))
         created_at = datetime.now(UTC).isoformat()
         with self._lock:
             self._conn.execute(
