@@ -338,6 +338,19 @@ class DirectCommandRouter:
                 )
             ]
 
+        if normalized in {"suggestions", "what can i do", "what can you do", "what should i do next", "what s next", "suggest something"}:
+            return [
+                Action(
+                    tool="suggest_next",
+                    args={},
+                    risk="low",
+                    reason="Suggest next commands",
+                )
+            ]
+
+        if normalized in {"idle time", "how long have i been idle", "how long idle", "am i idle"}:
+            return [Action(tool="idle_time", args={}, risk="low", reason="Report idle time")]
+
         if "screenshot" in normalized:
             return [
                 Action(

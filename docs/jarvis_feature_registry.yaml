@@ -11,6 +11,7 @@
 # Phase 1 (RAG): 79 implemented. Phase 2 (Coding Agent): 81 implemented, 41 partial, 70 missing.
 # Phase 3 (Vision): 82 implemented, 41 partial, 69 missing.
 # Phase 4 (Productivity): 87 implemented, 40 partial, 65 missing.
+# Phase 5 (Proactive): 89 implemented, 40 partial, 63 missing.
 
 registry_version: 1.2.0
 areas:
@@ -203,9 +204,11 @@ areas:
       - name: scheduled_runs
         status: implemented
       - name: idleness_detection
-        status: missing
+        status: implemented
+        notes: Phase 5. IdleDetector via GetLastInputInfo with memory fallback; idle_time/idle_status tools.
       - name: intent_prediction
-        status: missing
+        status: implemented
+        notes: Phase 5. SuggestionEngine predicts follow-up commands; suggestions on every response.
 
   - id: quality
     name: Quality & Ops

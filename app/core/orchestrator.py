@@ -16,6 +16,7 @@ from app.core.logging import get_logger
 from app.core.memory import MemoryStore
 from app.core.redact import redact_object, redact_text
 from app.core.router import DirectCommandRouter, _normalize_command
+from app.core.suggest import SuggestionEngine
 from app.llm.planner import BasePlanner
 from app.models.schemas import (
     CommandStatus,
@@ -124,6 +125,7 @@ class JarvisOrchestrator:
         self.agent = agent
         self.code_agent = code_agent
         self.events = events
+        self._suggestions = SuggestionEngine()
 
     def _emit(self, topic: str, payload: dict[str, Any]) -> None:
         if self.events is not None:
@@ -142,6 +144,11 @@ class JarvisOrchestrator:
         return wrapped
 
     def _emit_done(self, payload: ExecuteCommandResponse) -> ExecuteCommandResponse:
+        self._record_activity(payload.command)
+        if not payload.suggestions:
+            payload = payload.model_copy(
+                update={"suggestions": self._suggestions.suggest(payload.command)}
+            )
         self._emit(
             "command_done",
             {
@@ -153,6 +160,15 @@ class JarvisOrchestrator:
             },
         )
         return payload
+
+    def _record_activity(self, command: str) -> None:
+        try:
+            activity = dict(self.memory.get_state("activity", default={}) or {})
+            activity["last_command"] = command
+            activity["last_at"] = datetime.now(UTC).isoformat()
+            self.memory.set_state("activity", activity)
+        except Exception:
+            logger.warning("activity recording failed", exc_info=True)
 
     @staticmethod
     def _status_from_results(results: Iterable[ToolExecutionResult]) -> CommandStatus:

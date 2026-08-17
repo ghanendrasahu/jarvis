@@ -13,6 +13,7 @@ from app.tools.file_tools import register_file_tools
 from app.tools.interaction_tools import register_interaction_tools
 from app.tools.job_tools import register_job_tools
 from app.tools.metrics_tools import register_metrics_tools
+from app.tools.proactive_tools import register_proactive_tools
 from app.tools.productivity_tools import register_productivity_tools
 from app.tools.rag_tools import register_rag_tools
 from app.tools.registry import ToolRegistry
@@ -43,4 +44,5 @@ def register_all_tools(
     if memory is not None:
         register_metrics_tools(registry, settings, memory)
         register_job_tools(registry, settings, memory)
+        register_proactive_tools(registry, settings, memory)
     register_productivity_tools(registry, settings, scheduler=scheduler, calendar=calendar)

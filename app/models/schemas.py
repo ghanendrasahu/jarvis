@@ -45,6 +45,7 @@ class ExecuteCommandResponse(BaseModel):
     response_text: str
     plan_summary: str = ""
     results: list[ToolExecutionResult] = Field(default_factory=list)
+    suggestions: list[str] = Field(default_factory=list)
     created_at: str = Field(default_factory=lambda: datetime.now(UTC).isoformat())
 
 
