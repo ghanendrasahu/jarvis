@@ -313,6 +313,31 @@ class DirectCommandRouter:
             if keys:
                 return [Action(tool="press_hotkey", args={"keys": keys}, risk="medium", reason="Press shortcut")]
 
+        if normalized.startswith("announce "):
+            message = text[9:].strip()
+            return [Action(tool="announce", args={"message": message}, risk="low", reason="Announce message")]
+
+        remind_match = re.match(
+            r"^remind me to (.+?)\s+(?:in (\d+) (minutes?|hours?)|at (\d{1,2}):(\d{2})|tomorrow at (\d{1,2}):(\d{2}))$",
+            normalized,
+        )
+        if remind_match:
+            message = remind_match.group(1).strip()
+            if remind_match.group(2):
+                when = f"in {remind_match.group(2)} {remind_match.group(3)}"
+            elif remind_match.group(4):
+                when = f"at {remind_match.group(4)}:{remind_match.group(5)}"
+            else:
+                when = f"tomorrow at {remind_match.group(6)}:{remind_match.group(7)}"
+            return [
+                Action(
+                    tool="set_reminder",
+                    args={"message": message, "when": when},
+                    risk="low",
+                    reason="Set reminder",
+                )
+            ]
+
         if "screenshot" in normalized:
             return [
                 Action(

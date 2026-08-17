@@ -46,7 +46,62 @@ def parse_recurrence(text: str) -> dict[str, Any] | None:
     match = re.fullmatch(r"every (\d+) minutes", raw)
     if match:
         return {"type": "interval", "minutes": max(1, int(match.group(1)))}
+    match = re.fullmatch(r"once at (\d{1,2}):(\d{2})", raw)
+    if match:
+        at = _next_wall_clock(local_now(), int(match.group(1)), int(match.group(2)))
+        return {"type": "once", "at": at.isoformat()}
     return None
+
+
+_REMINDER_PATTERNS: list[tuple[re.Pattern[str], Callable[[datetime, re.Match[str]], datetime]]] = [
+    (
+        re.compile(r"in (\d+) minute(s)?", re.IGNORECASE),
+        lambda now, match: now + timedelta(minutes=max(1, int(match.group(1)))),
+    ),
+    (
+        re.compile(r"in (\d+) hour(s)?", re.IGNORECASE),
+        lambda now, match: now + timedelta(hours=max(1, int(match.group(1)))),
+    ),
+    (
+        re.compile(r"at (\d{1,2}):(\d{2})", re.IGNORECASE),
+        lambda now, match: _next_wall_clock(now, int(match.group(1)), int(match.group(2))),
+    ),
+    (
+        re.compile(r"tomorrow at (\d{1,2}):(\d{2})", re.IGNORECASE),
+        lambda now, match: _next_day_at(now, int(match.group(1)), int(match.group(2))),
+    ),
+]
+
+
+def _next_wall_clock(after: datetime, hour: int, minute: int) -> datetime:
+    target = after.replace(hour=hour, minute=minute, second=0, microsecond=0)
+    if target <= after:
+        target += timedelta(days=1)
+    return target
+
+
+def _next_day_at(now: datetime, hour: int, minute: int) -> datetime:
+    """Next-day occurrence of ``HH:MM`` (rolls another day if already past now)."""
+    target = datetime.combine((now + timedelta(days=1)).date(), datetime.min.time())
+    target = target.replace(hour=hour, minute=minute, second=0, microsecond=0)
+    if target <= now:
+        target += timedelta(days=1)
+    return target
+
+
+def parse_reminder_when(text: str) -> datetime:
+    """Parse a natural reminder time like 'in 30 minutes', 'at 14:30', or 'tomorrow at 09:00'."""
+    raw = (text or "").strip()
+    if not raw:
+        raise ValueError("Missing reminder time. Use 'in N minutes', 'in N hours', 'at HH:MM', or 'tomorrow at HH:MM'.")
+    now = local_now()
+    for pattern, build in _REMINDER_PATTERNS:
+        match = pattern.fullmatch(raw)
+        if match:
+            return build(now, match)
+    raise ValueError(
+        f"Unrecognized reminder time '{raw}'. Use 'in N minutes', 'in N hours', 'at HH:MM', or 'tomorrow at HH:MM'."
+    )
 
 
 def local_now() -> datetime:
@@ -80,6 +135,13 @@ def next_run(spec: dict[str, Any], after: datetime) -> datetime:
     if kind == "interval":
         minutes = max(1, int(spec.get("minutes", 60)))
         return after + timedelta(minutes=minutes)
+    if kind == "once":
+        at = to_local(spec.get("at"))
+        if at is None:
+            return after + timedelta(hours=1)
+        if at <= after:
+            at = _next_wall_clock(after, at.hour, at.minute)
+        return at
     hour = int(spec.get("hour", 0))
     minute = int(spec.get("minute", 0))
     if kind == "daily":
@@ -148,7 +210,7 @@ class Scheduler:
         spec = parse_recurrence(recurrence)
         if spec is None:
             raise ValueError(
-                "Unrecognized recurrence. Use 'daily at HH:MM', 'hourly', 'every N minutes', or 'weekly on <day> at HH:MM'."
+                "Unrecognized recurrence. Use 'daily at HH:MM', 'hourly', 'every N minutes', 'weekly on <day> at HH:MM', or 'once at HH:MM'."
             )
         created_local = local_now()
         job = {
@@ -171,6 +233,25 @@ class Scheduler:
             "scheduled job %s: %s (%s), next run %s (%s)",
             job["id"], command, recurrence, job["next_run"], job["tz"],
         )
+        return job
+
+    def add_once(self, command: str, when: datetime) -> dict[str, Any]:
+        """Schedule a one-shot command to fire at a specific naive local time, then auto-disable."""
+        command = (command or "").strip()
+        if not command:
+            raise ValueError("Missing command to schedule.")
+        when_local = when.replace(tzinfo=None)
+        if when_local <= local_now():
+            raise ValueError("Reminder time is in the past.")
+        job = self.add(command, "once at 00:00")
+        job["spec"] = {"type": "once", "at": when_local.isoformat()}
+        job["next_run"] = when_local.isoformat()
+        jobs = self._jobs()
+        for idx, existing in enumerate(jobs):
+            if existing.get("id") == job["id"]:
+                jobs[idx] = job
+                break
+        self._save(jobs)
         return job
 
     def remove(self, job_id: str) -> bool:
@@ -216,6 +297,8 @@ class Scheduler:
             job["last_run"] = now.isoformat()
             job["next_run"] = next_run(job.get("spec") or {}, now).isoformat()
             job["tz"] = local_tz_name()
+            if (job.get("spec") or {}).get("type") == "once":
+                job["enabled"] = False
             due.append(job)
         self._save(jobs)
         for job in due:

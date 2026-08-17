@@ -89,6 +89,9 @@ class Settings(BaseSettings):
     rag_chunk_chars: int = 512
     rag_chunk_overlap_chars: int = 64
 
+    # Local calendar
+    calendar_path: str = "data/calendar.db"
+
     browser_profile_dir: str = "data/browser_profile"
     browser_automation_timeout_ms: int = 15000
 

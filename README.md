@@ -77,6 +77,7 @@ Disabled = the HUD does not auto-start until you re-enable it (manual `run_jarvi
 - **Knowledge base (RAG)** — `remember <note>` saves personal notes into a local SQLite index; `recall <query>` retrieves the most relevant notes/files, and `index <folder>` indexes text files (notes auto-index from `data/notes` on startup). Retrieved context is injected into the planner prompt so JARVIS answers from your notes. Uses Ollama embeddings (`ollama pull nomic-embed-text`) when available, with an offline lexical fallback that always works.
 - **Coding agent** — say `fix the bug in <file>`, `refactor <module>`, or `write a function that …`. It searches the codebase (`search_code`), makes surgical edits (`edit_file`), then **always verifies by running the test suite and ruff** — iterating on failures until green (or the round budget runs out).
 - **Vision** — say `look at the screen` / `what's on my screen` for a live description of the display, or `read the screen` (OCR) to pull visible text. `analyze <image>` and `ocr <image>` work on image files too. Backed by OpenAI/Groq vision models or local Ollama (`llava`); configure via `VISION_PROVIDER`/`VISION_MODEL`.
+- **Productivity** — `remind me to <task> in 30 minutes` sets a one-shot reminder that is announced (and spoken, if TTS is on) at the right time. `add <event>`/`upcoming events` manage a local calendar, `send email to <addr>: <subject> / <body>` sends mail via SMTP, and `copy <text>` / `what's in my clipboard` work with the system clipboard.
 - **Approve-and-continue** — when a risky step needs your sign-off, JARVIS now *waits* for you instead of giving up: click **APPROVE** or **REJECT** on the HUD (or use the CLI) and the agent resumes the exact step where it stopped.
 - **Job resume + pipeline** — after the job agent pauses on a login/CAPTCHA wall, click **RESUME** on the HUD to continue from the exact page it stopped on. Track your pipeline with `job status`/`job update status <url> <status>` — statuses roll up into APPLIED / INTERVIEW / OFFER / REJECTED counters on the HUD.
 - **Scheduler** — say or type `schedule <command> daily at 09:00` (also `hourly`, `every N minutes`, `weekly on <day> at HH:MM`). `list_schedules` shows the queue, `cancel_schedule <id>` removes one. Each run appears in the HUD feed.
@@ -240,6 +241,7 @@ Three opt-in features keep JARVIS fast and cheap:
 - `AGENT_MAX_ITERATIONS`, `AGENT_ACTION_CAP`, `AGENT_APPROVAL_POLICY`
 - `CODE_MAX_FIX_ROUNDS`, `CODE_VERIFY_AFTER_EDIT`
 - `VISION_PROVIDER`, `VISION_MODEL`
+- `CALENDAR_PATH`
 - `JOB_TARGET_SITES`, `JOB_MAX_APPLY_PER_RUN`, `JOB_APPLY_REMOTE_ONLY`, `JOB_USE_BURNER_ACCOUNT`
 - `JOB_PROFILE`, `JOB_SITE_PROFILES`, `RESUME_PDF`
 - `VOICE_FOLLOWUP_WINDOW_SECONDS`, `VOICE_CONFIRM_BEFORE_SEND`

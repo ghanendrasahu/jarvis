@@ -10,6 +10,7 @@
 # 75 missing, 5 broken (39.1% raw / 50.0% partial-adjusted).
 # Phase 1 (RAG): 79 implemented. Phase 2 (Coding Agent): 81 implemented, 41 partial, 70 missing.
 # Phase 3 (Vision): 82 implemented, 41 partial, 69 missing.
+# Phase 4 (Productivity): 87 implemented, 40 partial, 65 missing.
 
 registry_version: 1.2.0
 areas:
@@ -179,16 +180,20 @@ areas:
     name: Productivity
     features:
       - name: notes
-        status: missing
+        status: implemented
+        notes: Phase 1 RAG (remember_note/recall).
       - name: email
-        status: missing
+        status: implemented
+        notes: Phase 4. send_email via SMTP.
       - name: calendar
-        status: missing
+        status: implemented
+        notes: Phase 4. SQLite CalendarStore + add/list/upcoming/delete_event tools.
       - name: reminders
-        status: partial
-        notes: Scheduler covers recurring commands.
+        status: implemented
+        notes: Phase 4. One-shot scheduler jobs announced + spoken.
       - name: clipboard
-        status: missing
+        status: implemented
+        notes: Phase 4. copy_to_clipboard / read_clipboard tools.
 
   - id: proactive
     name: Proactive Behavior

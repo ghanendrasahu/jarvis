@@ -7,6 +7,7 @@ from app.agents.job_agent import JobAgent, get_job_agent
 from app.config import Settings, get_settings
 from app.core.agent import AutonomousAgent
 from app.core.approvals import ApprovalManager
+from app.core.calendar import CalendarStore
 from app.core.events import EventHub
 from app.core.executor import ActionExecutor
 from app.core.logging import get_logger
@@ -21,6 +22,7 @@ from app.tools import register_all_tools
 from app.tools.registry import ToolRegistry
 from app.tools.scheduler_tools import register_scheduler_tools
 from app.voice.loop import VoiceController
+from app.voice.speaker import Speaker
 
 logger = get_logger("bootstrap")
 
@@ -48,7 +50,6 @@ def build_runtime(events: EventHub | None = None) -> Runtime:
     memory.prune(settings.db_retention_days)
     rag = RagIndex(settings) if settings.rag_enabled else None
     registry = ToolRegistry()
-    register_all_tools(registry, settings, memory=memory, rag=rag)
 
     approvals = ApprovalManager()
     planner = wrap_planner_with_rag(create_planner(settings), rag)
@@ -80,6 +81,18 @@ def build_runtime(events: EventHub | None = None) -> Runtime:
     job_agent = get_job_agent(settings=settings, memory=memory)
     scheduler = Scheduler(settings=settings, memory=memory, orchestrator=orchestrator)
     register_scheduler_tools(registry, scheduler)
+    calendar = CalendarStore(settings.calendar_path)
+    register_all_tools(registry, settings, memory=memory, rag=rag, scheduler=scheduler, calendar=calendar)
+    reminder_speaker = Speaker(enabled=settings.tts_enabled)
+
+    def _announce_scheduled_run(job: dict, status: str, text: str) -> None:
+        try:
+            if status == "success" and job.get("command", "").startswith("announce "):
+                reminder_speaker.speak(text)
+        except Exception:
+            logger.warning("reminder speech failed", exc_info=True)
+
+    scheduler.on_run = _announce_scheduled_run
 
     if rag is not None:
         try:
