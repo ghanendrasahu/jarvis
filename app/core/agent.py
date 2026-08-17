@@ -65,6 +65,7 @@ class AutonomousAgent:
         max_iterations: int | None = None,
         action_cap: int | None = None,
         on_step: Callable[[dict[str, Any]], None] | None = None,
+        role: str = "",
     ) -> AgentRunResult:
         max_iterations = max(1, int(max_iterations or self.settings.agent_max_iterations))
         action_cap = max(1, int(action_cap or self.settings.agent_action_cap))
@@ -75,6 +76,7 @@ class AutonomousAgent:
             max_iterations=max_iterations,
             action_cap=action_cap,
             on_step=on_step,
+            role=role,
             state=_LoopState(all_results=[], observation_rows=[], failed_counts={}, iterations=0, action_total=0),
         )
 
@@ -123,6 +125,7 @@ class AutonomousAgent:
             max_iterations=max(1, int(token.get("max_iterations") or self.settings.agent_max_iterations)),
             action_cap=max(1, int(token.get("action_cap") or self.settings.agent_action_cap)),
             on_step=on_step,
+            role=str(token.get("role") or ""),
             state=state,
         )
 
@@ -138,6 +141,7 @@ class AutonomousAgent:
         action_cap: int,
         on_step: Callable[[dict[str, Any]], None] | None,
         state: _LoopState,
+        role: str = "",
     ) -> AgentRunResult:
         catalog = self.registry.catalog()
         history = self.memory.recent_conversation(limit=self.settings.max_history_items)
@@ -156,6 +160,8 @@ class AutonomousAgent:
                 break
 
             agent_context = build_agent_observation(state.observation_rows)
+            if role:
+                agent_context = f"{role}\n\n{agent_context}" if agent_context else role
             try:
                 plan = self.planner.plan(
                     command,
@@ -233,6 +239,7 @@ class AutonomousAgent:
                             "auto_approve": auto_approve,
                             "max_iterations": max_iterations,
                             "action_cap": action_cap,
+                            "role": role,
                             "all_results": [item.model_dump() for item in state.all_results],
                             "observation_rows": state.observation_rows,
                             "failed_counts": state.failed_counts,

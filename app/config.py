@@ -96,6 +96,10 @@ class Settings(BaseSettings):
     agent_action_cap: int = 25
     agent_approval_policy: str = "none"
 
+    # Coding agent: edit -> verify (tests + lint) -> fix loop.
+    code_max_fix_rounds: int = 3
+    code_verify_after_edit: bool = True
+
     job_profile_path: str = "config/job_profile.yaml"
     job_site_profiles_path: str = "config/site_profiles.yaml"
     resume_pdf_path: str = "data/resume/CV.pdf"

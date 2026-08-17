@@ -6,6 +6,7 @@ from collections.abc import Callable, Iterable
 from datetime import UTC, datetime
 from typing import Any, cast
 
+from app.agents.code_agent import CodeAgent
 from app.config import Settings
 from app.core.agent import AgentRunResult, AutonomousAgent
 from app.core.approvals import ApprovalManager
@@ -54,6 +55,39 @@ def _is_agent_worthy(command: str) -> bool:
     return lowered.startswith(_AGENT_INTENT_PREFIXES)
 
 
+_CODE_INTENT_PREFIXES = (
+    "fix",
+    "bug",
+    "debug",
+    "refactor",
+    "implement",
+    "write a",
+    "write an",
+    "write the",
+    "add a",
+    "add an",
+    "add the",
+    "add tests",
+    "add test",
+    "create a function",
+    "create a class",
+    "create a script",
+    "optimize the code",
+    "clean up the code",
+    "make the code",
+    "make the script",
+    "build a python",
+    "code",
+)
+
+
+def _is_code_worthy(command: str) -> bool:
+    lowered = command.lower().strip()
+    if lowered.startswith(_CODE_INTENT_PREFIXES):
+        return True
+    return any(token in lowered for token in ("fix the bug", "fix a bug", "failing test", "red test", "lint error"))
+
+
 def _redact_result(item: ToolExecutionResult) -> ToolExecutionResult:
     """Return a copy of a tool result with sensitive values scrubbed for display/persistence."""
     if not item.error and not item.output:
@@ -77,6 +111,7 @@ class JarvisOrchestrator:
         approvals: ApprovalManager,
         memory: MemoryStore,
         agent: AutonomousAgent | None = None,
+        code_agent: CodeAgent | None = None,
         events: EventHub | None = None,
     ) -> None:
         self.settings = settings
@@ -87,6 +122,7 @@ class JarvisOrchestrator:
         self.approvals = approvals
         self.memory = memory
         self.agent = agent
+        self.code_agent = code_agent
         self.events = events
 
     def _emit(self, topic: str, payload: dict[str, Any]) -> None:
@@ -380,6 +416,13 @@ class JarvisOrchestrator:
         direct_actions = self.router.route(cleaned, context=context)
         if direct_actions:
             plan = Plan(summary="Direct command route", actions=direct_actions, final_response="")
+        elif self.code_agent is not None and _is_code_worthy(cleaned):
+            try:
+                code_result = self.code_agent.run(cleaned, source=source, auto_approve=auto_approve, on_step=on_step)
+            except Exception as exc:
+                logger.exception("coding agent run failed")
+                return self._failed_response(cleaned, source, f"The coding agent failed: {exc}")
+            return self._emit_done(self._response_from_agent(cleaned, source, code_result))
         elif self.agent is not None and _is_agent_worthy(cleaned):
             try:
                 agent_result = self.agent.run(cleaned, source=source, auto_approve=auto_approve, on_step=on_step)
@@ -540,7 +583,13 @@ class JarvisOrchestrator:
             error=outcome.error,
         )
         resumed: AgentRunResult | None = None
-        if self.agent is not None:
+        if self.code_agent is not None:
+            try:
+                resumed = self.code_agent.resume(approval_id, outcome)
+            except Exception as exc:
+                logger.warning("code agent resume failed for %s: %s", approval_id, exc)
+                resumed = None
+        if resumed is None and self.agent is not None:
             try:
                 resumed = self.agent.resume(approval_id, outcome)
             except Exception as exc:
@@ -585,6 +634,8 @@ class JarvisOrchestrator:
                 command = item.command
                 break
         existed = self.approvals.reject(approval_id)
+        if self.code_agent is not None:
+            self.code_agent.forget(approval_id)
         if self.agent is not None:
             self.agent.forget(approval_id)
         if not existed:

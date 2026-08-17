@@ -2,6 +2,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 
+from app.agents.code_agent import CodeAgent
 from app.agents.job_agent import JobAgent, get_job_agent
 from app.config import Settings, get_settings
 from app.core.agent import AutonomousAgent
@@ -33,6 +34,7 @@ class Runtime:
     planner: BasePlanner
     executor: ActionExecutor
     agent: AutonomousAgent
+    code_agent: CodeAgent | None
     orchestrator: JarvisOrchestrator
     voice: VoiceController
     job_agent: JobAgent
@@ -61,6 +63,7 @@ def build_runtime(events: EventHub | None = None) -> Runtime:
         approvals=approvals,
         memory=memory,
     )
+    code_agent = CodeAgent(agent=agent, executor=executor, settings=settings, memory=memory)
     orchestrator = JarvisOrchestrator(
         settings=settings,
         registry=registry,
@@ -70,6 +73,7 @@ def build_runtime(events: EventHub | None = None) -> Runtime:
         approvals=approvals,
         memory=memory,
         agent=agent,
+        code_agent=code_agent,
         events=events,
     )
     voice = VoiceController(settings=settings, orchestrator=orchestrator)
@@ -93,6 +97,7 @@ def build_runtime(events: EventHub | None = None) -> Runtime:
         planner=planner,
         executor=executor,
         agent=agent,
+        code_agent=code_agent,
         orchestrator=orchestrator,
         voice=voice,
         job_agent=job_agent,

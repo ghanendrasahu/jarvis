@@ -8,7 +8,7 @@
 #
 # Last audit: Phase 0 baseline. Counts: 75 implemented, 42 partial,
 # 75 missing, 5 broken (39.1% raw / 50.0% partial-adjusted).
-# Phase 1 (RAG) updated: 79 implemented, 42 partial, 71 missing.
+# Phase 1 (RAG): 79 implemented. Phase 2 (Coding Agent): 81 implemented, 41 partial, 70 missing.
 
 registry_version: 1.2.0
 areas:
@@ -130,8 +130,11 @@ areas:
       - name: agent_done_signal
         status: implemented
       - name: coding_agent
-        status: partial
-        notes: 24% of audit coverage; no code-edit/verification loop.
+        status: implemented
+        notes: Phase 2. search_code/edit_file/run_tests/lint_code tools; CodeAgent edit->verify->fix loop; routed on code intent prefixes.
+      - name: verify_loop
+        status: implemented
+        notes: Phase 2. Deterministic test+lint verification gate with fix rounds and approval resume.
       - name: vision
         status: missing
         notes: No screenshot/image understanding.
