@@ -100,6 +100,10 @@ class Settings(BaseSettings):
     code_max_fix_rounds: int = 3
     code_verify_after_edit: bool = True
 
+    # Vision (screen/image understanding): auto | openai | groq | ollama | litellm | disabled
+    vision_provider: str = "auto"
+    vision_model: str = ""
+
     job_profile_path: str = "config/job_profile.yaml"
     job_site_profiles_path: str = "config/site_profiles.yaml"
     resume_pdf_path: str = "data/resume/CV.pdf"

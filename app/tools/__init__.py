@@ -15,6 +15,7 @@ from app.tools.rag_tools import register_rag_tools
 from app.tools.registry import ToolRegistry
 from app.tools.shell_tools import register_shell_tools
 from app.tools.system_tools import register_system_tools
+from app.tools.vision_tools import register_vision_tools
 
 
 def register_all_tools(
@@ -31,6 +32,7 @@ def register_all_tools(
     register_shell_tools(registry, settings)
     register_agent_tools(registry, settings)
     register_code_tools(registry, settings)
+    register_vision_tools(registry, settings)
     if rag is not None:
         register_rag_tools(registry, settings, rag)
     if memory is not None:

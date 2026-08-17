@@ -323,6 +323,31 @@ class DirectCommandRouter:
                 )
             ]
 
+        if normalized in {"look at the screen", "look at screen", "analyze screen", "analyze the screen"} or normalized in {
+            "whats on my screen",
+            "what s on my screen",
+            "what's on my screen",
+            "what is on my screen",
+        }:
+            return [
+                Action(
+                    tool="analyze_screen",
+                    args={},
+                    risk="low",
+                    reason="Describe current screen",
+                )
+            ]
+
+        if normalized in {"ocr screen", "read the screen", "read screen text", "read text on screen"}:
+            return [
+                Action(
+                    tool="ocr_screen",
+                    args={},
+                    risk="low",
+                    reason="Extract text from screen",
+                )
+            ]
+
         if normalized.startswith("list processes"):
             return [Action(tool="list_processes", args={"limit": 25}, risk="low", reason="Inspect running apps")]
 

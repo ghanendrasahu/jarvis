@@ -9,6 +9,7 @@
 # Last audit: Phase 0 baseline. Counts: 75 implemented, 42 partial,
 # 75 missing, 5 broken (39.1% raw / 50.0% partial-adjusted).
 # Phase 1 (RAG): 79 implemented. Phase 2 (Coding Agent): 81 implemented, 41 partial, 70 missing.
+# Phase 3 (Vision): 82 implemented, 41 partial, 69 missing.
 
 registry_version: 1.2.0
 areas:
@@ -136,8 +137,8 @@ areas:
         status: implemented
         notes: Phase 2. Deterministic test+lint verification gate with fix rounds and approval resume.
       - name: vision
-        status: missing
-        notes: No screenshot/image understanding.
+        status: implemented
+        notes: Phase 3. VisionAnalyzer (OpenAI/Groq/Ollama/LiteLLM); analyze_image/analyze_screen/ocr_screen/ocr_image tools; router direct routes.
 
   - id: jobs
     name: Job Automation
