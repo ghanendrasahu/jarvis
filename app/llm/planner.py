@@ -19,6 +19,7 @@ class BasePlanner(Protocol):
         agent_context: str = "",
         tool_history: list[dict] | None = None,
         known_facts: dict | None = None,
+        rag_context: str = "",
     ) -> Plan:
         ...
 
@@ -93,6 +94,7 @@ class NullPlanner:
         agent_context: str = "",
         tool_history: list[dict] | None = None,
         known_facts: dict | None = None,
+        rag_context: str = "",
     ) -> Plan:
         return Plan(
             summary="No planner available",
@@ -120,6 +122,7 @@ class OpenAIPlanner:
         agent_context: str = "",
         tool_history: list[dict] | None = None,
         known_facts: dict | None = None,
+        rag_context: str = "",
     ) -> Plan:
         user_prompt = build_planner_prompt(
             command=command,
@@ -128,6 +131,7 @@ class OpenAIPlanner:
             agent_context=agent_context,
             tool_history=tool_history,
             known_facts=known_facts,
+            rag_context=rag_context,
         )
         completion = self.client.chat.completions.create(
             model=self.model,
@@ -174,6 +178,7 @@ class GroqPlanner:
         agent_context: str = "",
         tool_history: list[dict] | None = None,
         known_facts: dict | None = None,
+        rag_context: str = "",
     ) -> Plan:
         user_prompt = build_planner_prompt(
             command=command,
@@ -182,6 +187,7 @@ class GroqPlanner:
             agent_context=agent_context,
             tool_history=tool_history,
             known_facts=known_facts,
+            rag_context=rag_context,
         )
         completion = self.client.chat.completions.create(
             model=self.model,
@@ -211,6 +217,7 @@ class OllamaPlanner:
         agent_context: str = "",
         tool_history: list[dict] | None = None,
         known_facts: dict | None = None,
+        rag_context: str = "",
     ) -> Plan:
         user_prompt = build_planner_prompt(
             command=command,
@@ -219,6 +226,7 @@ class OllamaPlanner:
             agent_context=agent_context,
             tool_history=tool_history,
             known_facts=known_facts,
+            rag_context=rag_context,
         )
         response = requests.post(
             f"{self.settings.ollama_base_url.rstrip('/')}/api/chat",
@@ -264,6 +272,7 @@ class LiteLLMPlanner:
         agent_context: str = "",
         tool_history: list[dict] | None = None,
         known_facts: dict | None = None,
+        rag_context: str = "",
     ) -> Plan:
         user_prompt = build_planner_prompt(
             command=command,
@@ -272,6 +281,7 @@ class LiteLLMPlanner:
             agent_context=agent_context,
             tool_history=tool_history,
             known_facts=known_facts,
+            rag_context=rag_context,
         )
         kwargs: dict[str, Any] = {
             "model": self.model,

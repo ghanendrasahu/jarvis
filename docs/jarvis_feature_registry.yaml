@@ -8,6 +8,7 @@
 #
 # Last audit: Phase 0 baseline. Counts: 75 implemented, 42 partial,
 # 75 missing, 5 broken (39.1% raw / 50.0% partial-adjusted).
+# Phase 1 (RAG) updated: 79 implemented, 42 partial, 71 missing.
 
 registry_version: 1.2.0
 areas:
@@ -158,10 +159,14 @@ areas:
       - name: learned_facts
         status: implemented
       - name: semantic_retrieval
-        status: missing
-        notes: 0% RAG coverage. No embeddings / vector store.
+        status: implemented
+        notes: Phase 1. SQLite index, cosine retrieval; Ollama embeddings (nomic-embed-text) with offline lexical fallback.
       - name: document_indexing
-        status: missing
+        status: implemented
+        notes: Phase 1. remember_note / recall / index_file tools; notes dir auto-indexed on startup; secrets redacted on insert.
+      - name: planner_injection
+        status: implemented
+        notes: Phase 1. RetrievalPlanner decorator injects RETRIEVED_CONTEXT into main + agent planner prompts.
       - name: recap
         status: implemented
         notes: while-you-were-away summary.

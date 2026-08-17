@@ -23,6 +23,7 @@ class FakePlanner:
         agent_context: Any = None,
         tool_history: Any = None,
         known_facts: Any = None,
+        rag_context: Any = None,
     ) -> Plan:
         return self._queue.pop(0) if self._queue else Plan(summary="done", actions=[])
 
@@ -98,6 +99,7 @@ def test_agent_hits_action_cap():
         agent_context: Any = None,
         tool_history: Any = None,
         known_facts: Any = None,
+        rag_context: Any = None,
     ) -> Plan:
             return Plan(
                 summary="next",
@@ -132,6 +134,7 @@ def test_agent_stops_after_tool_fails_twice():
         agent_context: Any = None,
         tool_history: Any = None,
         known_facts: Any = None,
+        rag_context: Any = None,
     ) -> Plan:
             return Plan(
                 summary="retry",
@@ -157,6 +160,7 @@ def test_agent_returns_failed_on_planner_error():
         agent_context: Any = None,
         tool_history: Any = None,
         known_facts: Any = None,
+        rag_context: Any = None,
     ) -> Plan:
             raise RuntimeError("LLM provider unreachable")
 
@@ -190,6 +194,7 @@ def test_agent_stops_when_approval_required():
             agent_context: Any = None,
             tool_history: Any = None,
             known_facts: Any = None,
+        rag_context: Any = None,
         ) -> Plan:
             return Plan(
                 summary="run shell",
@@ -226,6 +231,7 @@ def test_agent_resumes_after_approval_continues_loop():
             agent_context: Any = None,
             tool_history: Any = None,
             known_facts: Any = None,
+        rag_context: Any = None,
         ) -> Plan:
             self.calls += 1
             if self.calls == 1:

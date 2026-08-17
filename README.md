@@ -74,6 +74,7 @@ Disabled = the HUD does not auto-start until you re-enable it (manual `run_jarvi
 - **Live agent feed** — the HUD feed streams each agent step (planning, tool selection, tool results) in real time while the agent works, so you can watch what it is doing.
 - **`read_webpage`** — the agent can open any URL and read the page text, so it can browse a site and reason about what it finds instead of only acting on it.
 - **Learned memory** — JARVIS remembers what it learns about you across runs (frequently opened apps, last WhatsApp contact) and injects it into the planner prompt as *known facts* plus a *tool history* recap so it stops repeating itself.
+- **Knowledge base (RAG)** — `remember <note>` saves personal notes into a local SQLite index; `recall <query>` retrieves the most relevant notes/files, and `index <folder>` indexes text files (notes auto-index from `data/notes` on startup). Retrieved context is injected into the planner prompt so JARVIS answers from your notes. Uses Ollama embeddings (`ollama pull nomic-embed-text`) when available, with an offline lexical fallback that always works.
 - **Approve-and-continue** — when a risky step needs your sign-off, JARVIS now *waits* for you instead of giving up: click **APPROVE** or **REJECT** on the HUD (or use the CLI) and the agent resumes the exact step where it stopped.
 - **Job resume + pipeline** — after the job agent pauses on a login/CAPTCHA wall, click **RESUME** on the HUD to continue from the exact page it stopped on. Track your pipeline with `job status`/`job update status <url> <status>` — statuses roll up into APPLIED / INTERVIEW / OFFER / REJECTED counters on the HUD.
 - **Scheduler** — say or type `schedule <command> daily at 09:00` (also `hourly`, `every N minutes`, `weekly on <day> at HH:MM`). `list_schedules` shows the queue, `cancel_schedule <id>` removes one. Each run appears in the HUD feed.
@@ -240,6 +241,7 @@ Three opt-in features keep JARVIS fast and cheap:
 - `VOICE_FOLLOWUP_WINDOW_SECONDS`, `VOICE_CONFIRM_BEFORE_SEND`
 - `TOOL_RETRY_ATTEMPTS`, `TOOL_RETRY_BACKOFF_SECONDS`
 - `BROWSER_PROFILE_DIR`, `BROWSER_AUTOMATION_TIMEOUT_MS`
+- `RAG_ENABLED`, `RAG_NOTES_DIR`, `RAG_EMBEDDINGS_ENABLED`, `RAG_EMBED_MODEL`, `RAG_TOP_K`
 
 ## Safety Model
 

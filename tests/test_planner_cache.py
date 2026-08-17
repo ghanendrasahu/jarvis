@@ -26,6 +26,7 @@ class FakePlanner:
         agent_context: str = "",
         tool_history: list[dict] | None = None,
         known_facts: dict | None = None,
+        rag_context: str = "",
     ) -> Plan:
         self.calls += 1
         self.last_command = command
@@ -41,6 +42,7 @@ class EmptyPlanner(FakePlanner):
         agent_context: str = "",
         tool_history: list[dict] | None = None,
         known_facts: dict | None = None,
+        rag_context: str = "",
     ) -> Plan:
         self.calls += 1
         return Plan()

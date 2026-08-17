@@ -79,6 +79,16 @@ class Settings(BaseSettings):
     tool_retry_backoff_seconds: float = 0.4
     db_retention_days: int = 60
 
+    # RAG / knowledge memory.
+    rag_enabled: bool = True
+    rag_index_path: str = "data/rag.db"
+    rag_notes_dir: str = "data/notes"
+    rag_embeddings_enabled: bool = True
+    rag_embed_model: str = "nomic-embed-text"
+    rag_top_k: int = 5
+    rag_chunk_chars: int = 512
+    rag_chunk_overlap_chars: int = 64
+
     browser_profile_dir: str = "data/browser_profile"
     browser_automation_timeout_ms: int = 15000
 

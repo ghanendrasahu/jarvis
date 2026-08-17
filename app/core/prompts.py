@@ -117,6 +117,7 @@ def build_planner_prompt(
     agent_context: str = "",
     tool_history: list[dict] | None = None,
     known_facts: dict | None = None,
+    rag_context: str = "",
 ) -> str:
     schema = {
         "summary": "one-line plan summary",
@@ -149,11 +150,19 @@ def build_planner_prompt(
         f"{json.dumps(history, indent=2)}\n\n"
         f"{_tool_history_section(tool_history)}"
         f"{_known_facts_section(known_facts)}"
+        f"{_rag_context_section(rag_context)}"
         f"{agent_section}"
         f"USER_COMMAND:\n{command}\n\n"
         "Return JSON with this exact shape:\n"
         f"{json.dumps(schema, indent=2)}"
     )
+
+
+def _rag_context_section(rag_context: str | None) -> str:
+    context = (rag_context or "").strip()
+    if not context:
+        return ""
+    return context + "\n\n"
 
 
 def _tool_history_section(tool_history: list[dict] | None) -> str:
