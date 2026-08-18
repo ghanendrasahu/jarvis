@@ -1,0 +1,3 @@
+# Optional PySide6 "pro" HUD (app/gui_qt.py)
+PySide6>=6.7.0
+qtawesome>=1.3.1

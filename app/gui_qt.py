@@ -1,14 +1,14 @@
 from __future__ import annotations
 
+import os
 import random
 import sys
 import threading
-import os
 from datetime import datetime
 
 import qtawesome as qta
-from PySide6.QtCore import QEasingCurve, Property, QPropertyAnimation, QTimer, Qt, Signal
-from PySide6.QtGui import QColor, QFont
+from PySide6.QtCore import Property, QEasingCurve, QPropertyAnimation, Qt, QTimer, Signal
+from PySide6.QtGui import QColor
 from PySide6.QtWidgets import (
     QApplication,
     QFrame,
@@ -20,17 +20,15 @@ from PySide6.QtWidgets import (
     QListWidget,
     QListWidgetItem,
     QMainWindow,
-    QPushButton,
     QPlainTextEdit,
     QProgressBar,
-    QSizePolicy,
-    QStackedLayout,
+    QPushButton,
     QVBoxLayout,
     QWidget,
 )
-import psutil
 
 from app.bootstrap import build_runtime
+from app.core.monitor import ResourceMonitor
 
 COLORS = {
     "bg": "#020617",
@@ -96,8 +94,9 @@ class PulseDot(QLabel):
 
 
 class WaveformWidget(QWidget):
-    def __init__(self):
+    def __init__(self, running_provider=None):
         super().__init__()
+        self.running_provider = running_provider or (lambda: False)
         layout = QVBoxLayout(self)
         layout.setContentsMargins(0, 0, 0, 0)
         self.bar = QProgressBar()
@@ -110,12 +109,13 @@ class WaveformWidget(QWidget):
         self.timer.start(120)
 
     def tick(self) -> None:
-        self.bar.setValue(random.randint(20, 95))
+        self.bar.setValue(random.randint(20, 95) if self.running_provider() else 0)
 
 
 class LiveChart(QWidget):
-    def __init__(self, color: str):
+    def __init__(self, color: str, provider=None):
         super().__init__()
+        self.provider = provider or (lambda: 0.0)
         layout = QVBoxLayout(self)
         layout.setContentsMargins(0, 0, 0, 0)
         self.bar = QProgressBar()
@@ -132,7 +132,10 @@ class LiveChart(QWidget):
         self.tick()
 
     def tick(self) -> None:
-        self.bar.setValue(random.randint(12, 96))
+        try:
+            self.bar.setValue(max(0, min(100, int(self.provider()))))
+        except Exception:
+            self.bar.setValue(0)
 
 
 class JarvisQtWindow(QMainWindow):
@@ -152,6 +155,8 @@ class JarvisQtWindow(QMainWindow):
         self._refreshing_approvals = False
         self._pending_ids: list[str] = []
         self._app_commands: list[str] = []
+        self._monitor = ResourceMonitor()
+        self._monitor.start()
         self.setWindowTitle("JARVIS Command Center")
         self.resize(1660, 960)
         self.setMinimumSize(1380, 820)
@@ -295,9 +300,9 @@ class JarvisQtWindow(QMainWindow):
         charts = QGridLayout()
         charts.setHorizontalSpacing(10)
         charts.setVerticalSpacing(10)
-        charts.addWidget(self._chart_card("CPU", COLORS["cyan"]), 0, 0)
-        charts.addWidget(self._chart_card("GPU", COLORS["blue"]), 0, 1)
-        charts.addWidget(self._chart_card("RAM", COLORS["green"]), 0, 2)
+        charts.addWidget(self._chart_card("CPU", COLORS["cyan"], lambda: self._monitor.snapshot().cpu_percent), 0, 0)
+        charts.addWidget(self._chart_card("GPU", COLORS["blue"], lambda: 0), 0, 1)
+        charts.addWidget(self._chart_card("RAM", COLORS["green"], lambda: self._monitor.snapshot().memory_percent), 0, 2)
         res_lay.addLayout(charts)
         lay.addWidget(resources)
 
@@ -309,12 +314,12 @@ class JarvisQtWindow(QMainWindow):
         lay.addWidget(terminal, 1)
         return center
 
-    def _chart_card(self, name: str, color: str) -> QWidget:
+    def _chart_card(self, name: str, color: str, provider=None) -> QWidget:
         w, lay = self._card(cls="miniCard")
         lbl = QLabel(name)
         lbl.setObjectName("miniLabel")
         lay.addWidget(lbl)
-        chart = LiveChart(color)
+        chart = LiveChart(color, provider)
         chart.setMinimumHeight(110)
         lay.addWidget(chart)
         return w
@@ -326,7 +331,7 @@ class JarvisQtWindow(QMainWindow):
         lay.setSpacing(12)
 
         voice, vlay = self._card("Voice Engine", "card")
-        wave = WaveformWidget()
+        wave = WaveformWidget(running_provider=lambda: self.runtime is not None and self.runtime.voice.is_running())
         wave.setMinimumHeight(110)
         vlay.addWidget(wave)
         lay.addWidget(voice)
@@ -364,9 +369,9 @@ class JarvisQtWindow(QMainWindow):
             ("RUNNING   - Approval routing", COLORS["amber"]),
             ("DONE      - Voice model sync", COLORS["blue"]),
         ]:
-            l = QLabel(txt)
-            l.setStyleSheet(f"color: {col}; font-weight: 600;")
-            play.addWidget(l)
+            row = QLabel(txt)
+            row.setStyleSheet(f"color: {col}; font-weight: 600;")
+            play.addWidget(row)
         lay.addWidget(pipeline)
 
         apps, app_lay = self._card("Available Apps", "card")
@@ -604,10 +609,9 @@ class JarvisQtWindow(QMainWindow):
         self.status_text.setText("STATUS: LISTENING" if running else "STATUS: ONLINE")
 
     def _refresh_local_metrics(self) -> None:
-        cpu = int(psutil.cpu_percent(interval=None))
-        mem = int(psutil.virtual_memory().percent)
-        self.metric_bars["CPU Usage"].setValue(cpu)
-        self.metric_bars["Memory Usage"].setValue(mem)
+        sample = self._monitor.snapshot()
+        self.metric_bars["CPU Usage"].setValue(max(0, min(100, int(sample.cpu_percent))))
+        self.metric_bars["Memory Usage"].setValue(max(0, min(100, int(sample.memory_percent))))
 
     def _set_busy(self, busy: bool) -> None:
         self._busy = busy
@@ -641,6 +645,10 @@ class JarvisQtWindow(QMainWindow):
         self._refresh_backend_data()
 
     def closeEvent(self, event) -> None:  # type: ignore[override]
+        try:
+            self._monitor.stop()
+        except Exception:
+            pass
         try:
             if self.runtime is not None:
                 self.runtime.voice.stop()

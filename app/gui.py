@@ -1,4 +1,4 @@
-from __future__ import annotations
+﻿from __future__ import annotations
 
 import math
 import queue
@@ -10,6 +10,7 @@ from datetime import datetime
 from typing import Any
 
 from app.bootstrap import build_runtime
+from app.core.monitor import ResourceMonitor
 
 BG = "#020617"
 PANEL = "#081225"
@@ -68,6 +69,8 @@ class Tooltip:
 class JarvisHudApp:
     def __init__(self) -> None:
         self.runtime = build_runtime()
+        self._monitor = ResourceMonitor()
+        self._monitor.start()
         self.root = tk.Tk()
         self.root.title("JARVIS AI Command HUD")
         self.root.geometry("1500x920")
@@ -316,38 +319,56 @@ class JarvisHudApp:
             if c is None:
                 return
 
-        def _spark(canvas: tk.Canvas, line_color: str, bars: bool = False) -> None:
+        chart = self._monitor.chart()
+        cpu_history = chart["cpu_history"]
+        mem_history = chart["memory_history"]
+
+        def _spark(canvas: tk.Canvas, line_color: str, values: list[float], unit: str = "%", bars: bool = False) -> None:
             canvas.delete("all")
             w = max(180, canvas.winfo_reqwidth())
             h = max(72, canvas.winfo_reqheight())
             canvas.create_rectangle(0, 0, w, h, fill="#071227", outline="")
+            if not values:
+                canvas.create_text(w // 2, h // 2, text="sampling...", fill="#3f5d8a", font=("JetBrains Mono", 9))
+                return
             if bars:
-                bw = max(8, w // 14)
-                x = 8
-                for _ in range(10):
-                    v = random.randint(16, h - 12)
-                    canvas.create_rectangle(x, h - v, x + bw, h - 8, fill="#58d6ff", outline="")
-                    x += bw + 5
+                bw = max(6, w // max(1, len(values)))
+                x = 4
+                for v in values[-20:]:
+                    vh = max(4, int((v / 100.0) * (h - 16)))
+                    canvas.create_rectangle(x, h - 8 - vh, x + bw, h - 8, fill="#58d6ff", outline="")
+                    x += bw + 2
             else:
-                points: list[float] = []
-                for x in range(0, w, 14):
-                    y = random.randint(18, h - 10)
-                    points.extend([x, y])
-                if len(points) >= 4:
-                    canvas.create_line(points, fill=line_color, width=2, smooth=True)
+                pts: list[float] = []
+                step = max(1.0, w / max(1, (len(values) - 1)))
+                for i, v in enumerate(values):
+                    y = (h - 8) - ((v / 100.0) * (h - 20))
+                    pts.extend([4 + i * step, y])
+                if len(pts) >= 4:
+                    canvas.create_line(pts, fill=line_color, width=2, smooth=True)
                 canvas.create_line(0, h - 8, w, h - 8, fill="#1f355d", width=1)
+            latest = values[-1] if values else 0.0
+            canvas.create_text(w - 6, 10, anchor="ne", text=f"{latest:.0f}{unit}", fill="#7fdfff", font=("JetBrains Mono", 9, "bold"))
 
-        _spark(self.cpu_canvas, "#59d7ff")
-        _spark(self.ram_canvas, "#8fdcff", bars=True)
-        _spark(self.net_canvas, "#63e8ff")
+        _spark(self.cpu_canvas, "#59d7ff", cpu_history, "%")
+        _spark(self.ram_canvas, "#8fdcff", mem_history, "%", bars=True)
+        net_sent = [chart["net_sent_kbps"]]
+        net_recv = [chart["net_recv_kbps"]]
+        net_values = net_sent + net_recv if len(net_sent) < 2 else (net_sent + net_recv)[-60:]
+        _spark(self.net_canvas, "#63e8ff", net_values, "kb/s")
 
         self.metrics_canvas.delete("all")
+        sample = self._monitor.snapshot()
         self.metrics_canvas.create_oval(12, 16, 108, 112, outline="#2a426d", width=12)
-        self.metrics_canvas.create_arc(12, 16, 108, 112, start=92, extent=124, outline="#5fd7ff", style=tk.ARC, width=12)
-        self.metrics_canvas.create_arc(12, 16, 108, 112, start=220, extent=62, outline="#f8c763", style=tk.ARC, width=12)
-        self.metrics_canvas.create_text(130, 36, anchor="w", text="TASK", fill="#7fdfff", font=("JetBrains Mono", 9, "bold"))
-        self.metrics_canvas.create_text(130, 58, anchor="w", text="PROG", fill="#f8c763", font=("JetBrains Mono", 9, "bold"))
-        self.metrics_canvas.create_text(130, 80, anchor="w", text="COM", fill="#9fb3d8", font=("JetBrains Mono", 9, "bold"))
+        cpu_extent = max(0, min(360, int((sample.cpu_percent / 100.0) * 360)))
+        self.metrics_canvas.create_arc(12, 16, 108, 112, start=90, extent=-cpu_extent, outline="#5fd7ff", style=tk.ARC, width=12)
+        self.metrics_canvas.create_text(130, 36, anchor="w", text=f"CPU {sample.cpu_percent:.0f}%", fill="#7fdfff", font=("JetBrains Mono", 9, "bold"))
+        self.metrics_canvas.create_text(130, 58, anchor="w", text=f"MEM {sample.memory_percent:.0f}%", fill="#f8c763", font=("JetBrains Mono", 9, "bold"))
+        self.metrics_canvas.create_text(
+            130, 80, anchor="w",
+            text=f"NET {sample.net_sent_kbps:.0f}/{sample.net_recv_kbps:.0f}",
+            fill="#9fb3d8", font=("JetBrains Mono", 9, "bold"),
+        )
 
     def _append_terminal(self, kind: str, text: str) -> None:
         self.terminal.configure(state=tk.NORMAL)
@@ -422,6 +443,10 @@ class JarvisHudApp:
         if len(pts) >= 4:
             self.wave_canvas.create_line(pts, fill=CYAN, width=2, smooth=True)
         self.wave_canvas.create_text(10, 10, anchor="nw", text="VOICE ACTIVE" if self._wave_active else "VOICE IDLE", fill=GREEN if self._wave_active else MUTED, font=("JetBrains Mono", 9, "bold"))
+        now = time.monotonic()
+        if now - getattr(self, "_last_resource_draw", 0.0) >= 1.0:
+            self._last_resource_draw = now
+            self._draw_resource_panels()
         self.root.after(50, self._animate_wave)
 
     def _refresh_approvals(self) -> None:
@@ -693,6 +718,10 @@ class JarvisHudApp:
     def _on_close(self) -> None:
         try:
             self.runtime.voice.stop()
+        except Exception:
+            pass
+        try:
+            self._monitor.stop()
         except Exception:
             pass
         self.root.destroy()

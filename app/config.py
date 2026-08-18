@@ -2,8 +2,7 @@ from __future__ import annotations
 
 from functools import lru_cache
 from pathlib import Path
-from typing import Annotated
-from typing import Any
+from typing import Annotated, Any
 
 from pydantic import Field, field_validator
 from pydantic_settings import BaseSettings, NoDecode, SettingsConfigDict
@@ -56,14 +55,36 @@ class Settings(BaseSettings):
     speech_ambient_adjust_duration_seconds: float = 0.25
     speech_ambient_adjust_interval_seconds: int = 25
 
+    api_token: str | None = None
+    cors_allowed_origins: Annotated[list[str], NoDecode] = Field(default_factory=list)
+
     approval_policy: str = "medium_and_high"
     auto_approve_low_risk: bool = True
     max_history_items: int = 40
     tool_retry_attempts: int = 1
     tool_retry_backoff_seconds: float = 0.4
+    db_retention_days: int = 60
 
     browser_profile_dir: str = "data/browser_profile"
     browser_automation_timeout_ms: int = 15000
+
+    agent_max_iterations: int = 6
+    agent_action_cap: int = 25
+    agent_approval_policy: str = "none"
+
+    job_profile_path: str = "config/job_profile.yaml"
+    job_site_profiles_path: str = "config/site_profiles.yaml"
+    resume_pdf_path: str = "data/resume/CV.pdf"
+    job_target_sites: Annotated[list[str], NoDecode] = Field(default_factory=lambda: ["linkedin", "indeed"])
+    job_max_apply_per_run: int = 5
+    job_apply_remote_only: bool = False
+    job_use_burner_account: bool = True
+
+    smtp_host: str | None = None
+    smtp_port: int = 587
+    smtp_username: str | None = None
+    smtp_password: str | None = None
+    smtp_from: str | None = None
 
     allowed_shell_commands: Annotated[list[str], NoDecode] = Field(
         default_factory=lambda: [
@@ -83,7 +104,7 @@ class Settings(BaseSettings):
     )
     allowed_roots: Annotated[list[str], NoDecode] = Field(default_factory=list)
 
-    @field_validator("allowed_shell_commands", "allowed_roots", mode="before")
+    @field_validator("allowed_shell_commands", "allowed_roots", "cors_allowed_origins", "job_target_sites", mode="before")
     @classmethod
     def _coerce_csv_lists(cls, value: Any) -> list[str]:
         return _parse_csv(value)
@@ -113,4 +134,7 @@ class Settings(BaseSettings):
 def get_settings() -> Settings:
     settings = Settings()
     settings.ensure_runtime_dirs()
+    from app.core.logging import setup_logging
+
+    setup_logging(settings.logs_dir)
     return settings

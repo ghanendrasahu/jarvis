@@ -6,24 +6,18 @@ from typing import Any
 
 from app.config import Settings
 from app.core.safe_paths import resolve_safe_path
+from app.core.utils import get_pyautogui, safe_float, safe_int
 from app.tools.registry import ToolRegistry
-
-
-def _pyautogui():
-    import pyautogui
-
-    pyautogui.FAILSAFE = True
-    return pyautogui
 
 
 def register_interaction_tools(registry: ToolRegistry, settings: Settings) -> None:
     def type_text(args: dict[str, Any]) -> dict[str, Any]:
         text = str(args.get("text", ""))
-        interval = float(args.get("interval", 0.02))
+        interval = safe_float(args.get("interval", 0.02), 0.02)
         if not text:
             raise ValueError("Missing text.")
-        time.sleep(float(args.get("pre_delay_seconds", 0.3)))
-        pyautogui = _pyautogui()
+        time.sleep(safe_float(args.get("pre_delay_seconds", 0.3), 0.3))
+        pyautogui = get_pyautogui()
         pyautogui.write(text, interval=interval)
         return {"typed_chars": len(text)}
 
@@ -32,16 +26,16 @@ def register_interaction_tools(registry: ToolRegistry, settings: Settings) -> No
         if not isinstance(keys, list) or not keys:
             raise ValueError("keys must be a non-empty list.")
         keys = [str(key).strip().lower() for key in keys if str(key).strip()]
-        pyautogui = _pyautogui()
+        pyautogui = get_pyautogui()
         pyautogui.hotkey(*keys)
         return {"pressed": keys}
 
     def click_mouse(args: dict[str, Any]) -> dict[str, Any]:
-        x = int(args.get("x", 0))
-        y = int(args.get("y", 0))
+        x = safe_int(args.get("x", 0))
+        y = safe_int(args.get("y", 0))
         button = str(args.get("button", "left")).lower()
-        clicks = int(args.get("clicks", 1))
-        pyautogui = _pyautogui()
+        clicks = max(1, safe_int(args.get("clicks", 1), 1))
+        pyautogui = get_pyautogui()
         pyautogui.click(x=x, y=y, button=button, clicks=clicks)
         return {"x": x, "y": y, "button": button, "clicks": clicks}
 
@@ -49,7 +43,7 @@ def register_interaction_tools(registry: ToolRegistry, settings: Settings) -> No
         path_value = str(args.get("output_path", "data/latest_screenshot.png"))
         resolved = resolve_safe_path(path_value, settings=settings, must_exist=False)
         resolved.parent.mkdir(parents=True, exist_ok=True)
-        pyautogui = _pyautogui()
+        pyautogui = get_pyautogui()
         image = pyautogui.screenshot()
         image.save(str(resolved))
         return {"path": str(resolved), "size_bytes": Path(resolved).stat().st_size}

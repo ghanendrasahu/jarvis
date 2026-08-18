@@ -1,57 +1,16 @@
-from __future__ import annotations
+﻿from __future__ import annotations
 
-import atexit
 import re
-import threading
 import time
 import urllib.parse
 import webbrowser
-from pathlib import Path
 from typing import Any
 
 import requests
 
 from app.config import Settings
+from app.core.utils import get_pyautogui, parse_duration_to_seconds, safe_int
 from app.tools.registry import ToolRegistry
-
-
-def _safe_int(value: Any, default: int = 0) -> int:
-    try:
-        return int(value)
-    except Exception:
-        return default
-
-
-def _parse_duration_to_seconds(raw_value: str) -> int:
-    text = raw_value.strip().lower()
-    if not text:
-        raise ValueError("Missing timestamp.")
-
-    match = re.fullmatch(r"(\d+):(\d{1,2})(?::(\d{1,2}))?", text)
-    if match:
-        first = int(match.group(1))
-        second = int(match.group(2))
-        third = match.group(3)
-        if third is None:
-            return (first * 60) + second
-        return (first * 3600) + (second * 60) + int(third)
-
-    unit_pattern = re.compile(
-        r"(?:(?P<hours>\d+)\s*h(?:ours?)?)?\s*"
-        r"(?:(?P<minutes>\d+)\s*m(?:in(?:ute)?s?)?)?\s*"
-        r"(?:(?P<seconds>\d+)\s*s(?:ec(?:ond)?s?)?)?$"
-    )
-    unit_match = unit_pattern.fullmatch(text)
-    if unit_match and any(unit_match.groupdict().values()):
-        hours = int(unit_match.group("hours") or 0)
-        minutes = int(unit_match.group("minutes") or 0)
-        seconds = int(unit_match.group("seconds") or 0)
-        return (hours * 3600) + (minutes * 60) + seconds
-
-    if text.isdigit():
-        return int(text)
-
-    raise ValueError(f"Unsupported timestamp format: '{raw_value}'")
 
 
 def _append_start_time(url: str, start_seconds: int) -> str:
@@ -67,6 +26,28 @@ def _append_start_time(url: str, start_seconds: int) -> str:
 def _first_youtube_video_url(query: str) -> tuple[str | None, str]:
     encoded = urllib.parse.quote_plus(query)
     search_url = f"https://www.youtube.com/results?search_query={encoded}"
+
+    # Preferred path: yt-dlp search extraction (robust to YouTube HTML changes).
+    try:
+        from yt_dlp import YoutubeDL
+
+        options = {
+            "quiet": True,
+            "no_warnings": True,
+            "skip_download": True,
+            "extract_flat": True,
+            "noplaylist": True,
+        }
+        with YoutubeDL(options) as ydl:
+            entries = ydl.extract_info(f"ytsearch1:{query}", download=False)
+            entries_list = (entries or {}).get("entries") or []
+            if entries_list:
+                video_id = entries_list[0].get("id")
+                if video_id:
+                    return video_id, f"https://www.youtube.com/watch?v={video_id}&autoplay=1"
+    except Exception:
+        pass
+
     headers = {
         "User-Agent": (
             "Mozilla/5.0 (Windows NT 10.0; Win64; x64) "
@@ -105,13 +86,6 @@ def _focus_window(title_hints: list[str]) -> str | None:
     return None
 
 
-def _pyautogui():
-    import pyautogui
-
-    pyautogui.FAILSAFE = True
-    return pyautogui
-
-
 def _read_clipboard_text() -> str:
     try:
         import tkinter as tk
@@ -127,86 +101,28 @@ def _read_clipboard_text() -> str:
 
 class _PlaywrightAutomation:
     def __init__(self, settings: Settings) -> None:
-        self._lock = threading.Lock()
-        self._playwright = None
-        self._context = None
+        from app.tools.browser_session import get_browser_session
+
+        self._session = get_browser_session(settings)
         self._settings = settings
-        self._timeout_ms = _safe_int(getattr(settings, "browser_automation_timeout_ms", 15000), 15000)
-        raw_profile = str(getattr(settings, "browser_profile_dir", "data/browser_profile")).strip() or "data/browser_profile"
-        self._profile_dir = Path(raw_profile).expanduser().resolve()
-        atexit.register(self.close)
+        self._timeout_ms = safe_int(getattr(settings, "browser_automation_timeout_ms", 15000), 15000)
 
     def close(self) -> None:
-        with self._lock:
-            try:
-                if self._context is not None:
-                    self._context.close()
-            except Exception:
-                pass
-            try:
-                if self._playwright is not None:
-                    self._playwright.stop()
-            except Exception:
-                pass
-            self._context = None
-            self._playwright = None
+        self._session.close()
 
     def _ensure_context(self):
-        with self._lock:
-            if self._context is not None:
-                return self._context
-
-            try:
-                from playwright.sync_api import sync_playwright
-            except Exception as exc:
-                raise RuntimeError(
-                    "Playwright is not available. Install dependency and run: playwright install chromium"
-                ) from exc
-
-            self._profile_dir.mkdir(parents=True, exist_ok=True)
-            self._playwright = sync_playwright().start()
-            try:
-                self._context = self._playwright.chromium.launch_persistent_context(
-                    user_data_dir=str(self._profile_dir),
-                    headless=False,
-                    no_viewport=True,
-                    args=[
-                        "--disable-notifications",
-                        "--start-maximized",
-                    ],
-                )
-            except Exception as exc:
-                try:
-                    self._playwright.stop()
-                except Exception:
-                    pass
-                self._playwright = None
-                self._context = None
-                raise RuntimeError(f"Failed to start Playwright browser context: {exc}") from exc
-            return self._context
+        return self._session.ensure_context()
 
     def _find_page(self, host_hints: list[str]) -> Any | None:
-        context = self._ensure_context()
-        lowered_hints = [item.lower() for item in host_hints]
-        for page in context.pages:
-            url = (page.url or "").lower()
-            if any(hint in url for hint in lowered_hints):
-                return page
-        return None
+        return self._session.find_page(host_hints)
 
     def _ensure_page(self, url: str, host_hints: list[str]) -> Any:
-        context = self._ensure_context()
-        page = self._find_page(host_hints)
-        if page is None:
-            page = context.new_page()
-        page.goto(url, wait_until="domcontentloaded", timeout=self._timeout_ms)
-        page.bring_to_front()
-        return page
+        return self._session.ensure_page(url, host_hints)
 
     def open_youtube_video(self, args: dict[str, Any]) -> dict[str, Any]:
         raw_url = str(args.get("url", "")).strip()
         query = str(args.get("query", "")).strip()
-        start_seconds = max(0, _safe_int(args.get("start_seconds", 0), 0))
+        start_seconds = max(0, safe_int(args.get("start_seconds", 0), 0))
         prefer_first = bool(args.get("prefer_first_result", True))
 
         page = self._ensure_page("https://www.youtube.com", ["youtube.com", "youtu.be"])
@@ -252,7 +168,7 @@ class _PlaywrightAutomation:
 
     def control_youtube(self, args: dict[str, Any]) -> dict[str, Any]:
         action = str(args.get("action", "")).strip().lower()
-        repeat = max(1, _safe_int(args.get("repeat", 1), 1))
+        repeat = max(1, safe_int(args.get("repeat", 1), 1))
         jump_percent = args.get("jump_percent")
 
         if not action:
@@ -291,7 +207,7 @@ class _PlaywrightAutomation:
         elif action in {"jump", "jump_percent"}:
             if jump_percent is None:
                 raise ValueError("jump_percent is required for jump action.")
-            percent = max(0, min(100, _safe_int(jump_percent, 0)))
+            percent = max(0, min(100, safe_int(jump_percent, 0)))
             page.evaluate(
                 "(p) => { const v = document.querySelector('video'); if (!v || !isFinite(v.duration) || v.duration <= 0) return false; "
                 "v.currentTime = v.duration * (p / 100); return true; }",
@@ -373,7 +289,7 @@ class _PlaywrightAutomation:
         timestamp = str(args.get("timestamp", "")).strip()
         if not timestamp:
             raise ValueError("Missing timestamp.")
-        seconds = max(0, _parse_duration_to_seconds(timestamp))
+        seconds = max(0, parse_duration_to_seconds(timestamp))
 
         page = self._find_page(["youtube.com/watch", "youtu.be/"])
         if page is None:
@@ -470,7 +386,7 @@ def register_browser_tools(registry: ToolRegistry, settings: Settings) -> None:
         except Exception:
             raw_url = str(args.get("url", "")).strip()
             query = str(args.get("query", "")).strip()
-            start_seconds = max(0, _safe_int(args.get("start_seconds", 0), 0))
+            start_seconds = max(0, safe_int(args.get("start_seconds", 0), 0))
             prefer_first = bool(args.get("prefer_first_result", True))
 
             opened_url = ""
@@ -501,7 +417,7 @@ def register_browser_tools(registry: ToolRegistry, settings: Settings) -> None:
             return automation.control_youtube(args)
         except Exception:
             action = str(args.get("action", "")).strip().lower()
-            repeat = max(1, _safe_int(args.get("repeat", 1), 1))
+            repeat = max(1, safe_int(args.get("repeat", 1), 1))
             jump_percent = args.get("jump_percent")
             pre_delay = float(args.get("pre_delay_seconds", 0.2))
 
@@ -544,7 +460,7 @@ def register_browser_tools(registry: ToolRegistry, settings: Settings) -> None:
             elif action in {"jump", "jump_percent"}:
                 if jump_percent is None:
                     raise ValueError("jump_percent is required for jump action.")
-                percent = _safe_int(jump_percent, 0)
+                percent = safe_int(jump_percent, 0)
                 digit = "0" if percent <= 0 else str(max(1, min(9, round(percent / 10))))
                 key_sequences = [[digit]]
             else:
@@ -554,7 +470,7 @@ def register_browser_tools(registry: ToolRegistry, settings: Settings) -> None:
             if focused is None:
                 raise RuntimeError("No YouTube window found to control.")
             time.sleep(max(0, pre_delay))
-            pyautogui = _pyautogui()
+            pyautogui = get_pyautogui()
             for sequence in key_sequences:
                 if len(sequence) == 1:
                     pyautogui.press(sequence[0])
@@ -575,13 +491,13 @@ def register_browser_tools(registry: ToolRegistry, settings: Settings) -> None:
             timestamp = str(args.get("timestamp", "")).strip()
             if not timestamp:
                 raise ValueError("Missing timestamp.")
-            seconds = max(0, _parse_duration_to_seconds(timestamp))
+            seconds = max(0, parse_duration_to_seconds(timestamp))
             focused = _focus_window(["youtube", " - youtube"])
             if focused is None:
                 raise RuntimeError("No YouTube window found to seek.")
             time.sleep(float(args.get("pre_delay_seconds", 0.2)))
 
-            pyautogui = _pyautogui()
+            pyautogui = get_pyautogui()
             pyautogui.hotkey("ctrl", "l")
             pyautogui.hotkey("ctrl", "c")
             time.sleep(0.1)
@@ -630,7 +546,7 @@ def register_browser_tools(registry: ToolRegistry, settings: Settings) -> None:
                 focused = _focus_window(["whatsapp"])
                 if focused is None:
                     raise RuntimeError("Could not focus WhatsApp window to send message.")
-                pyautogui = _pyautogui()
+                pyautogui = get_pyautogui()
                 pyautogui.press("enter")
                 sent = True
             return {

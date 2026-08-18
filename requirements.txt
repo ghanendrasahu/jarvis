@@ -13,3 +13,7 @@ SpeechRecognition==3.10.4
 python-dotenv==1.0.1
 PyYAML==6.0.2
 pytest==8.3.4
+# Optional reliability/voice enhancements
+yt-dlp>=2024.12.13
+webrtcvad==2.0.10
+

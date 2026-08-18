@@ -6,6 +6,17 @@ services:
       - "8000:8000"
     env_file:
       - .env
+    environment:
+      # Override Windows-only paths for the Linux container.
+      WORKSPACE_ROOT: /app
+      DATA_DIR: /app/data
+      LOGS_DIR: /app/logs
+      DATABASE_PATH: /app/data/jarvis.db
+      BROWSER_PROFILE_DIR: /app/data/browser_profile
+      RESUME_PDF: /app/data/resume/CV.pdf
+      JOB_PROFILE: /app/config/job_profile.yaml
+      JOB_SITE_PROFILES: /app/config/site_profiles.yaml
+      ALLOWED_ROOTS: /app
     volumes:
-      - ./:/app
-
+      - ./data:/app/data
+    restart: unless-stopped
