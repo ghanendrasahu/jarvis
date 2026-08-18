@@ -1,19 +1,23 @@
 # JARVIS (Voice + Desktop + Browser Automation)
 
 JARVIS is a local automation assistant built with `Python + FastAPI + CLI/Voice + tool-based execution`.
-It supports system commands, file actions, desktop automation, and now stronger YouTube/WhatsApp control.
+It supports system commands, file actions, desktop automation, browser control (YouTube/WhatsApp), an
+autonomous plan→execute→observe→re-plan agent, and config-driven job-application automation.
 
 ## What’s Improved
 
-This version adds all 7 requested upgrades:
+This version adds all requested upgrades across five phases:
 
 1. **Playwright-first browser control** for YouTube + WhatsApp (with keyboard fallback).
 2. **Typo-tolerant router** for noisy voice/text inputs.
 3. **Desktop/Start Menu shortcut discovery** tools.
-4. **Reliability layer** with tool retries + execution metadata.
+4. **Reliability layer**: tool retries, execution metadata, rotating logs, WAL-backed SQLite, VAD voice gating.
 5. **Runtime context memory** (`active_surface`) for follow-up commands like `next`.
 6. **Evaluation metrics dashboard** (latency, success/failure rates, top failing tools).
-7. **Voice UX upgrades**: wake-word follow-up window + safe WhatsApp send confirmation flow.
+7. **Security hardening**: `API_TOKEN` auth, rate limiting, CORS, and a hardened shell policy.
+8. **Autonomous agent loop** (`agent_done`, iteration/action caps, double-failure stop, approval handoff).
+9. **Job-application automation**: search top job boards, auto-fill forms, upload a PDF resume, auto-submit,
+   with a per-site selector config and a dedupe/audit trail.
 
 ## Quick Start (Windows)
 
@@ -81,11 +85,13 @@ flowchart LR
   A["Voice / CLI / API"] --> B["Orchestrator"]
   B --> C["Direct Router (typo + context aware)"]
   B --> D["LLM Planner"]
-  C --> E["Action Executor (retry + approval)"]
-  D --> E
-  E --> F["Tool Registry"]
-  F --> G["System + File + Shell + Interaction + Browser + Metrics Tools"]
-  B --> H["Memory Store (history + context + metrics)"]
+  B --> E["Autonomous Agent loop"]
+  C --> F["Action Executor (retry + approval)"]
+  D --> F
+  E --> F
+  F --> G["Tool Registry"]
+  G --> H["System + File + Shell + Interaction + Browser + Agent + Job Tools"]
+  B --> I["Memory Store (history + context + metrics + jobs)"]
 ```
 
 ## Core Direct Commands
@@ -107,6 +113,16 @@ If your active surface is YouTube, these work directly:
 - `skip 20`, `rewind 10`
 - `seek 2:30`
 
+### Autonomous Agent
+Commands that start with research/investigate/figure out/troubleshoot/diagnose/set up/automate/build me/
+scan/audit/monitor/analyze/check if run through the multi-iteration agent loop instead of a single plan.
+
+### Job Automation
+- `apply for <query>` — search configured job boards and apply automatically (pauses on login/CAPTCHA).
+- `job status` — current task status, phase, progress, and counters.
+- `job applied` — audit trail of applications (dedupe across runs).
+- `job cancel` — stop the running task.
+
 ### Discovery / Desktop
 - `list shortcuts`
 - `list apps`
@@ -126,6 +142,22 @@ If your active surface is YouTube, these work directly:
 ### Runtime Quality / Dashboard
 - `metrics`
 - `show dashboard`
+
+## Job Automation Setup
+
+1. Edit `config/job_profile.yaml` with your real identity, skills, work history, and form-field answers.
+2. Edit `config/site_profiles.yaml` to enable/disable boards and fix selectors if a site's DOM changes.
+3. Set `JOB_TARGET_SITES=linkedin,indeed,...` and `RESUME_PDF=data/resume/CV.pdf` in `.env`.
+4. Run: `apply for python developer` (or `POST /v1/job/apply`).
+
+Behavior notes:
+- The agent skips jobs already applied to (URL dedupe in SQLite).
+- `JOB_MAX_APPLY_PER_RUN` caps submissions per run; `JOB_APPLY_REMOTE_ONLY=true` only applies to remote roles.
+- It pauses (and records `paused_reason`) on CAPTCHAs and login walls — it never bypasses CAPTCHAs.
+- Uses one persistent Playwright profile (`BROWSER_PROFILE_DIR`), so you can pre-login once.
+
+> **Terms of service caveat**: auto-applying (e.g. LinkedIn Easy Apply) can violate a job site's ToS.
+> Keep `JOB_USE_BURNER_ACCOUNT=true` and use a throwaway account; run at modest volume.
 
 ## Voice Mode Notes
 
@@ -152,10 +184,17 @@ Voice diagnostics in CLI:
 - `GET /v1/metrics`
 - `POST /v1/voice/start`
 - `POST /v1/voice/stop`
+- `POST /v1/job/apply`
+- `GET /v1/job/task`
+- `POST /v1/job/cancel`
+- `GET /v1/job/applied`
+
+All endpoints except `/v1/health` require `Authorization: Bearer <API_TOKEN>` and are rate limited.
 
 Example:
 ```bash
 curl -X POST http://localhost:8000/v1/execute \
+  -H "Authorization: Bearer $JARVIS_TOKEN" \
   -H "Content-Type: application/json" \
   -d "{\"command\":\"play lofi focus on youtube\",\"source\":\"api\",\"auto_approve\":false}"
 ```
@@ -176,28 +215,32 @@ When you run `run_gui.ps1`, a Jarvis popup opens with:
 - Quick action buttons (YouTube, Apps, Shortcuts, Metrics)
 - Output panel (responses + tool statuses)
 - Pending approvals panel with `Refresh` and `Approve Selected`
+- Live CPU/RAM/network resource meters
 
 This gives you direct laptop control without typing in terminal each time.
 
 ## Important Config Knobs (`.env`)
 
-- `VOICE_FOLLOWUP_WINDOW_SECONDS`
-- `VOICE_CONFIRM_BEFORE_SEND`
-- `SPEECH_AMBIENT_ADJUST_DURATION_SECONDS`
-- `SPEECH_AMBIENT_ADJUST_INTERVAL_SECONDS`
-- `TOOL_RETRY_ATTEMPTS`
-- `TOOL_RETRY_BACKOFF_SECONDS`
-- `BROWSER_PROFILE_DIR`
-- `BROWSER_AUTOMATION_TIMEOUT_MS`
-- `APPROVAL_POLICY`
-- `ALLOWED_SHELL_COMMANDS`
+- `API_TOKEN` — bearer token required for API calls
+- `CORS_ALLOWED_ORIGINS` — comma-separated allowed origins
+- `APPROVAL_POLICY`, `AUTO_APPROVE_LOW_RISK`
+- `ALLOWED_SHELL_COMMANDS`, `ALLOWED_ROOTS`
+- `DB_RETENTION_DAYS`
+- `AGENT_MAX_ITERATIONS`, `AGENT_ACTION_CAP`, `AGENT_APPROVAL_POLICY`
+- `JOB_TARGET_SITES`, `JOB_MAX_APPLY_PER_RUN`, `JOB_APPLY_REMOTE_ONLY`, `JOB_USE_BURNER_ACCOUNT`
+- `JOB_PROFILE`, `JOB_SITE_PROFILES`, `RESUME_PDF`
+- `VOICE_FOLLOWUP_WINDOW_SECONDS`, `VOICE_CONFIRM_BEFORE_SEND`
+- `TOOL_RETRY_ATTEMPTS`, `TOOL_RETRY_BACKOFF_SECONDS`
+- `BROWSER_PROFILE_DIR`, `BROWSER_AUTOMATION_TIMEOUT_MS`
 
 ## Safety Model
 
 - Approval policy supports: `none`, `high_only`, `medium_and_high`, `all`.
-- Shell commands are prefix-allowlisted.
+- Shell commands are prefix-allowlisted and reject compound/pipe operators, destructive patterns,
+  and obfuscated execution (`-EncodedCommand`, `Invoke-Expression`, `Bypass`, etc.).
 - Protected OS processes are blocked from termination.
 - File tools obey safe-root restrictions.
+- The job agent never bypasses CAPTCHAs and pauses on login walls.
 
 ## Troubleshooting
 
@@ -209,35 +252,56 @@ This gives you direct laptop control without typing in terminal each time.
    - Ensure WhatsApp Web is logged in.
    - In voice mode, confirm flow needs `confirm send`.
 
-3. **Voice feels slow**
+3. **Job agent gets stuck or pauses**
+   - Check `job status` / `GET /v1/job/task` for `paused_reason` (login/CAPTCHA).
+   - Pre-login in the persistent browser profile, then re-run.
+   - If a site’s selectors changed, update `config/site_profiles.yaml`.
+
+4. **Voice feels slow**
    - Lower `SPEECH_AMBIENT_ADJUST_INTERVAL_SECONDS`
    - Tune `SPEECH_TIMEOUT_SECONDS` and `PHRASE_TIME_LIMIT_SECONDS`.
 
-4. **Command not recognized due spelling/noise**
+5. **Command not recognized due spelling/noise**
    - Use `/metrics` and inspect recent command failures.
    - Add aliases in `app/core/router.py` (`_WORD_ALIASES`).
+
+## Testing
+
+```bash
+python -m pytest -q
+ruff check app tests
+mypy app
+```
 
 ## Project Structure
 
 ```text
 app/
-  bootstrap.py
-  main.py
+  agents/
+    job_agent.py          # autonomous job search + apply workflow
+  bootstrap.py            # runtime assembly (registry, agent, job agent, voice)
+  main.py                 # FastAPI app + job/voice/metrics routes
   cli.py
-  config.py
+  config.py               # env-driven settings
   core/
+    agent.py              # plan->execute->observe->re-plan loop
     approvals.py
     executor.py
-    memory.py
+    memory.py             # SQLite history, context, metrics, jobs_applied
+    monitor.py            # psutil resource metrics
     orchestrator.py
     prompts.py
     router.py
   llm/
     planner.py
   tools/
+    agent_tools.py        # agent_done
+    browser_action.py     # reusable browser DSL
+    browser_session.py    # shared persistent Playwright session
     browser_tools.py
     file_tools.py
     interaction_tools.py
+    job_tools.py
     metrics_tools.py
     shell_tools.py
     system_tools.py
@@ -246,6 +310,9 @@ app/
     listener.py
     speaker.py
     loop.py
+config/
+  job_profile.yaml        # your identity/skills/form answers
+  site_profiles.yaml      # job-board search + selector profiles
 tests/
 scripts/
 ```
