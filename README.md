@@ -93,6 +93,13 @@ Turn it off/on anytime:
 
 Disabled = the HUD does not auto-start until you re-enable it (manual `start_jarvis.ps1` always works).
 
+## Dashboard extras
+
+- **Smart alerts** — a beep + toast in the corner of the HUD whenever a command fails, an approval is waiting, the job agent pauses, or the bot hits an error. Click the toast to jump to the HUD.
+- **HELP panel** — click the **HELP** chip for an in-app list of every command and tool (built from the live tool registry).
+- **Minimize to tray** — click the **TRAY** chip to hide the HUD into the system tray (JARVIS icon). Right-click the icon for *Show HUD / Mini window / Exit*.
+- **Summon hotkey** — press `Ctrl+Shift+J` anywhere in Windows to pop up the floating mini HUD on demand.
+
 ## Architecture
 
 ```mermaid

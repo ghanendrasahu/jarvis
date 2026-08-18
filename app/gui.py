@@ -14,7 +14,10 @@ from typing import Any
 
 from app.bootstrap import build_runtime
 from app.core.monitor import ResourceMonitor
+from app.hotkey import GlobalHotkey
 from app.minihud import MiniHud, voice_phase
+from app.toast import Toaster
+from app.tray import TrayIcon
 
 BG = "#020617"
 PANEL = "#081225"
@@ -101,10 +104,17 @@ class JarvisHudApp:
         self._chat_history: list[dict[str, str]] = []
         self._cmd_history: list[str] = []
         self._cmd_history_index = -1
+        self._last_pending_count = 0
+        self._job_prev_status = ""
 
         self._build_ui()
         self._refresh_voice_button()
         self._refresh_auto_start_button()
+        self._toaster = Toaster(self.root)
+        self._tray = TrayIcon(on_show=self._tray_show, on_mini=self._tray_mini, on_exit=self._tray_exit)
+        self._hotkey = GlobalHotkey()
+        if self._hotkey.start(lambda: self._events.put(("summon_mini", None))):
+            self._append_terminal("SYS", "Global hotkey Ctrl+Shift+J registered.")
         self._poll_events()
         self._animate_wave()
         self._animate_scene()
@@ -168,6 +178,12 @@ class JarvisHudApp:
         self.auto_start_button = self._chip(dock, "AUTOSTART", self._toggle_auto_start)
         self.auto_start_button.grid(row=0, column=4, padx=(0, 8))
         self._tooltips.append(Tooltip(self.auto_start_button, "Toggle auto-start when this project opens / Windows login"))
+        help_btn = self._chip(dock, "HELP", self._open_help)
+        help_btn.grid(row=0, column=5, padx=(0, 8))
+        self._tooltips.append(Tooltip(help_btn, "Show all commands and tools"))
+        self.tray_button = self._chip(dock, "TRAY", self._toggle_tray)
+        self.tray_button.grid(row=0, column=6, padx=(0, 8))
+        self._tooltips.append(Tooltip(self.tray_button, "Minimize to system tray  /  Ctrl+Shift+J summons the mini HUD"))
 
         self.online_label = tk.Label(
             top, text="STATUS: OPERATIONAL", bg="#0d2332", fg=GREEN, font=("JetBrains Mono", 10, "bold"), padx=10, pady=5
@@ -594,6 +610,78 @@ class JarvisHudApp:
             fg=GREEN if on else AMBER,
         )
 
+    def _toggle_tray(self) -> None:
+        if not self._tray.available:
+            self.root.bell()
+            self._toaster.notify("Tray unavailable", "pystray is not installed.", RED)
+            return
+        if self.root.state() == "withdrawn":
+            self._raise_main_window()
+            return
+        if not self._tray.start():
+            self._raise_main_window()
+            return
+        self.tray_button.configure(text="TRAY ON", bg="#173f2e", fg=GREEN)
+        self._toaster.notify(
+            "JARVIS in tray", "HUD is running in the tray.\nUse the JARVIS icon or Ctrl+Shift+J to bring it back.", GREEN
+        )
+        self.root.withdraw()
+
+    def _tray_show(self) -> None:
+        try:
+            self.root.after(0, self._raise_main_window)
+        except Exception:
+            pass
+
+    def _tray_mini(self) -> None:
+        try:
+            self.root.after(0, self.mini.show)
+        except Exception:
+            pass
+
+    def _tray_exit(self) -> None:
+        try:
+            self.root.after(0, self._on_close)
+        except Exception:
+            pass
+
+    def _open_help(self) -> None:
+        win = tk.Toplevel(self.root)
+        win.title("JARVIS \u2014 What can I do?")
+        win.configure(bg=BG)
+        win.geometry("740x580")
+        win.transient(self.root)
+        text = tk.Text(win, bg="#030915", fg=TEXT, relief=tk.FLAT, bd=0, wrap="word", font=("JetBrains Mono", 9), padx=16, pady=10)
+        scroll = tk.Scrollbar(win, command=text.yview)
+        text.configure(yscrollcommand=scroll.set)
+        scroll.pack(side="right", fill="y")
+        text.pack(fill="both", expand=True)
+        text.tag_configure("h", foreground=CYAN, font=("JetBrains Mono", 11, "bold"))
+        text.tag_configure("d", foreground=TEXT)
+        text.tag_configure("m", foreground=MUTED)
+
+        entries: list[tuple[str, str]] = [
+            ("h", "VOICE + DOCK\n"),
+            ("d", "  youtube pause          toggle play/pause\n"),
+            ("d", "  youtube next           next video\n"),
+            ("d", "  list apps              show apps in the launcher\n"),
+            ("d", "  open whatsapp chat <name>\n"),
+            ("d", "  open <app or site>     e.g. 'open chrome', 'open google'\n"),
+            ("d", "  search web <query>\n"),
+            ("d", "  take screenshot\n"),
+            ("d", "  play <song>            music via yt-dlp\n"),
+            ("h", "\nJOB AGENT\n"),
+            ("d", "  apply for <role> at <company>\n"),
+            ("d", "  job status / job cancel\n"),
+            ("h", f"\nTOOLS ({len(self.runtime.registry.catalog())})\n"),
+        ]
+        for tool in self.runtime.registry.catalog():
+            entries.append(("d", f"  {tool.get('name', '')}\n"))
+            entries.append(("m", f"      {tool.get('description', '')}  [risk: {tool.get('risk', 'low')}]\n"))
+        for tag, chunk in entries:
+            text.insert(tk.END, chunk, (tag,))
+        text.configure(state=tk.DISABLED)
+
     def _toggle_voice(self) -> None:
         self._set_busy(True)
 
@@ -871,8 +959,12 @@ class JarvisHudApp:
         command = str(payload.get("command", "command"))
         if has_failure:
             self._append_feed("feed_err", f"\u2717 {command} FAILED")
+            self.root.bell()
+            self._toaster.notify("Command failed", command, RED)
         elif has_pending:
             self._append_feed("feed_pending", f"\u23f3 {command} awaiting approval")
+            self.root.bell()
+            self._toaster.notify("Approval required", command, AMBER, on_click=self._raise_main_window)
         else:
             self._append_feed("feed_ok", f"\u2713 {command} done")
         self._refresh_approvals()
@@ -899,6 +991,16 @@ class JarvisHudApp:
                     self._pending_ids.append(aid)
                 if not payload:
                     self.approval_box.insert(tk.END, "No pending approvals.")
+                if len(payload) > self._last_pending_count and len(payload) > 0:
+                    self.root.bell()
+                    self._toaster.notify(
+                        "Approval pending", f"{len(payload)} action(s) waiting for you.", AMBER, on_click=self._raise_main_window
+                    )
+                self._last_pending_count = len(payload)
+            elif event == "summon_mini":
+                self._raise_main_window()
+                self.mini.show()
+                self._toaster.notify("JARVIS", "Mini HUD summoned \u2014 Ctrl+Shift+J", CYAN, duration_ms=2500)
             elif event == "approval_result":
                 self._set_busy(False)
                 self._append_terminal("OK", payload.get("message", ""))
@@ -923,6 +1025,8 @@ class JarvisHudApp:
             elif event == "error":
                 self._set_busy(False)
                 self._append_terminal("ERR", str(payload))
+                self.root.bell()
+                self._toaster.notify("JARVIS error", str(payload), RED)
         self.root.after(80, self._poll_events)
 
     def _update_job_panel(self, payload: dict[str, Any]) -> None:
@@ -941,6 +1045,10 @@ class JarvisHudApp:
         self.job_stat_labels["APPLIED"].configure(text=f"APPLIED {applied}")
         self.job_stat_labels["SKIPPED"].configure(text=f"SKIPPED {skipped}")
         self.job_stat_labels["FAILED"].configure(text=f"FAILED {failed}")
+        if status == "paused" and self._job_prev_status != "paused":
+            self.root.bell()
+            self._toaster.notify("Job paused", reason or "Task paused, waiting on you.", AMBER, on_click=self._raise_main_window)
+        self._job_prev_status = status
 
     def _on_close(self) -> None:
         try:
@@ -949,6 +1057,15 @@ class JarvisHudApp:
             pass
         try:
             self._monitor.stop()
+        except Exception:
+            pass
+        try:
+            if self._hotkey is not None:
+                self._hotkey.stop()
+        except Exception:
+            pass
+        try:
+            self._tray.stop()
         except Exception:
             pass
         self._save_ui_config()
