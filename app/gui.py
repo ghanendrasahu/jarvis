@@ -1,5 +1,7 @@
 ﻿from __future__ import annotations
 
+import ctypes
+import json
 import math
 import queue
 import random
@@ -7,10 +9,12 @@ import threading
 import time
 import tkinter as tk
 from datetime import datetime
+from pathlib import Path
 from typing import Any
 
 from app.bootstrap import build_runtime
 from app.core.monitor import ResourceMonitor
+from app.minihud import MiniHud, voice_phase
 
 BG = "#020617"
 PANEL = "#081225"
@@ -77,6 +81,12 @@ class JarvisHudApp:
         self.root.minsize(1280, 820)
         self.root.configure(bg=BG)
 
+        self._ui_config_path = Path(__file__).resolve().parent.parent / "data" / "jarvis_ui.json"
+        self.mini = MiniHud(
+            self.root, self.runtime, self._monitor, on_run_command=self._run_mini_command, on_open_main=self._raise_main_window
+        )
+        self.mini.hide()
+
         self._events: queue.Queue[tuple[str, Any]] = queue.Queue()
         self._busy = False
         self._wave_phase = 0.0
@@ -89,6 +99,8 @@ class JarvisHudApp:
         self._all_app_launch_items: list[dict[str, str]] = []
         self._chat_streaming = False
         self._chat_history: list[dict[str, str]] = []
+        self._cmd_history: list[str] = []
+        self._cmd_history_index = -1
 
         self._build_ui()
         self._refresh_voice_button()
@@ -101,6 +113,8 @@ class JarvisHudApp:
         self._bind_hotkeys()
 
         self.root.protocol("WM_DELETE_WINDOW", self._on_close)
+        self._restore_ui_config()
+        self.root.after(5000, self._job_tick)
 
     def _make_panel(self, parent: tk.Misc, bg_color: str = PANEL) -> tk.Frame:
         frame = tk.Frame(parent, bg=bg_color, highlightbackground=STROKE, highlightthickness=1, bd=0)
@@ -147,6 +161,9 @@ class JarvisHudApp:
             btn = self._chip(dock, label, lambda c=cmd: self._run_preset(c))
             btn.grid(row=0, column=i, padx=(0, 8))
             self._tooltips.append(Tooltip(btn, f"Run: {cmd}"))
+        mini_btn = self._chip(dock, "MINI", self.mini.toggle)
+        mini_btn.grid(row=0, column=3, padx=(0, 8))
+        self._tooltips.append(Tooltip(mini_btn, "Show/hide the floating mini HUD"))
 
         self.online_label = tk.Label(
             top, text="STATUS: OPERATIONAL", bg="#0d2332", fg=GREEN, font=("JetBrains Mono", 10, "bold"), padx=10, pady=5
@@ -193,6 +210,8 @@ class JarvisHudApp:
         )
         self.command_entry.pack(fill="x", ipady=6)
         self.command_entry.bind("<Return>", lambda _: self._run_command())
+        self.command_entry.bind("<Up>", lambda _: self._history_step(-1))
+        self.command_entry.bind("<Down>", lambda _: self._history_step(1))
         self.run_button = tk.Button(cmd, text="EXECUTE", command=self._run_command, bg=CYAN, fg="#021018", relief=tk.FLAT, bd=0, padx=12, pady=7)
         self.run_button.grid(row=0, column=2, padx=(10, 0))
 
@@ -212,6 +231,18 @@ class JarvisHudApp:
         self.cpu_canvas.grid(row=2, column=0, sticky="ew", padx=(10, 6), pady=(2, 10))
         self.ram_canvas.grid(row=2, column=1, sticky="ew", padx=6, pady=(2, 10))
         self.net_canvas.grid(row=2, column=2, sticky="ew", padx=(6, 10), pady=(2, 10))
+
+        feed_shell = self._make_panel(left, PANEL_2)
+        feed_shell.grid(row=3, column=0, sticky="ew", padx=14, pady=(0, 8))
+        feed_shell.columnconfigure(0, weight=1)
+        tk.Label(feed_shell, text="ACTIVITY FEED", bg=PANEL_2, fg=MUTED, font=("JetBrains Mono", 9, "bold")).grid(
+            row=0, column=0, sticky="w", padx=10, pady=(6, 2)
+        )
+        self.feed_text = tk.Text(feed_shell, bg="#030915", fg=TEXT, relief=tk.FLAT, bd=0, height=7, font=("Consolas", 9))
+        self.feed_text.grid(row=1, column=0, sticky="nsew", padx=8, pady=(0, 8))
+        self.feed_text.configure(state=tk.DISABLED)
+        for tag, color in [("feed_cmd", CYAN), ("feed_ok", GREEN), ("feed_pending", AMBER), ("feed_err", RED), ("feed_sys", MUTED)]:
+            self.feed_text.tag_configure(tag, foreground=color)
 
         term_shell = self._make_panel(left, PANEL_2)
         term_shell.grid(row=4, column=0, sticky="nsew", padx=14, pady=(0, 14))
@@ -285,19 +316,42 @@ class JarvisHudApp:
         right.grid(row=0, column=2, sticky="nsew")
         right.columnconfigure(0, weight=1)
         right.rowconfigure(5, weight=1)
-        tk.Label(right, text="ACTIONS PIPELINE", bg=PANEL, fg=MUTED, font=("JetBrains Mono", 10, "bold")).grid(row=0, column=0, sticky="w", padx=12, pady=(10, 8))
-        pipeline = self._make_panel(right, "#0b152b")
-        pipeline.grid(row=1, column=0, sticky="ew", padx=12, pady=(0, 8))
-        for i, (txt, col) in enumerate(
-            [
-                ("UPCOMING\nFETCHING_METRICS", GREEN),
-                ("IN-PROGRESS\nAPPROVAL_REQUIRED", AMBER),
-                ("COMPLETE\nQUEUE", MUTED),
-            ]
-        ):
-            tk.Label(pipeline, text=txt, bg="#0b152b", fg=col, justify="left", font=("JetBrains Mono", 9, "bold")).grid(
-                row=i, column=0, sticky="w", padx=8, pady=(6 if i == 0 else 2, 2)
-            )
+        tk.Label(right, text="JOB AGENT", bg=PANEL, fg=MUTED, font=("JetBrains Mono", 10, "bold")).grid(row=0, column=0, sticky="w", padx=12, pady=(10, 8))
+        job_panel = self._make_panel(right, "#0b152b")
+        job_panel.grid(row=1, column=0, sticky="ew", padx=12, pady=(0, 8))
+        job_panel.columnconfigure(0, weight=1)
+        self.job_status_label = tk.Label(
+            job_panel, text="No job-application task running.", bg="#0b152b", fg=MUTED,
+            font=("JetBrains Mono", 8), justify="left", anchor="w", wraplength=280,
+        )
+        self.job_status_label.grid(row=0, column=0, sticky="ew", padx=8, pady=(6, 2))
+        job_stats = tk.Frame(job_panel, bg="#0b152b")
+        job_stats.grid(row=1, column=0, sticky="ew", padx=8)
+        self.job_stat_labels: dict[str, tk.Label] = {}
+        for i, (name, col) in enumerate([("APPLIED", GREEN), ("SKIPPED", AMBER), ("FAILED", RED)]):
+            lbl = tk.Label(job_stats, text=f"{name} 0", bg="#0b152b", fg=col, font=("JetBrains Mono", 8, "bold"))
+            lbl.grid(row=0, column=i, padx=(0, 12), sticky="w")
+            self.job_stat_labels[name] = lbl
+        job_ctrl = tk.Frame(job_panel, bg="#0b152b")
+        job_ctrl.grid(row=2, column=0, sticky="ew", padx=8, pady=(4, 6))
+        job_ctrl.columnconfigure(0, weight=1)
+        self.job_query_entry = tk.Entry(
+            job_ctrl, bg="#050d1d", fg=TEXT, insertbackground=CYAN, relief=tk.FLAT, bd=0, font=("JetBrains Mono", 9)
+        )
+        self.job_query_entry.grid(row=0, column=0, sticky="ew", ipady=4)
+        self.job_query_entry.bind("<Return>", lambda _: self._start_job_apply())
+        tk.Button(
+            job_ctrl, text="APPLY", command=self._start_job_apply, bg=CYAN, fg="#021018", relief=tk.FLAT, bd=0,
+            padx=8, pady=4, font=("JetBrains Mono", 8, "bold"), cursor="hand2",
+        ).grid(row=0, column=1, padx=(6, 0))
+        tk.Button(
+            job_ctrl, text="STATUS", command=self._refresh_job_status, bg="#143049", fg=TEXT, relief=tk.FLAT, bd=0,
+            padx=8, pady=4, font=("JetBrains Mono", 8, "bold"), cursor="hand2",
+        ).grid(row=0, column=2, padx=(6, 0))
+        tk.Button(
+            job_ctrl, text="CANCEL", command=self._cancel_job, bg="#3a1a24", fg=RED, relief=tk.FLAT, bd=0,
+            padx=8, pady=4, font=("JetBrains Mono", 8, "bold"), cursor="hand2",
+        ).grid(row=0, column=3, padx=(6, 0))
         tk.Label(right, text="AVAILABLE APPS  (ALT+1..ALT+9)", bg=PANEL, fg=MUTED, font=("JetBrains Mono", 9, "bold")).grid(row=2, column=0, sticky="w", padx=12, pady=(4, 6))
         self.app_filter_var = tk.StringVar()
         self.app_filter_var.trace_add("write", lambda *_: self._apply_app_filter())
@@ -378,6 +432,15 @@ class JarvisHudApp:
         self.terminal.see(tk.END)
         self.terminal.configure(state=tk.DISABLED)
 
+    def _append_feed(self, tag: str, text: str) -> None:
+        self.feed_text.configure(state=tk.NORMAL)
+        self.feed_text.insert(tk.END, text + "\n", (tag,))
+        lines = int(self.feed_text.index("end-1c").split(".")[0])
+        if lines > 40:
+            self.feed_text.delete("1.0", f"{lines - 30}.0")
+        self.feed_text.see(tk.END)
+        self.feed_text.configure(state=tk.DISABLED)
+
     def _set_busy(self, busy: bool) -> None:
         self._busy = busy
         self.run_button.configure(state=tk.DISABLED if busy else tk.NORMAL)
@@ -393,7 +456,20 @@ class JarvisHudApp:
         command = self.command_entry.get().strip()
         if not command:
             return
+        self.command_entry.delete(0, tk.END)
+        self._run_command_text(command)
+
+    def _run_mini_command(self, command: str) -> None:
+        self._run_command_text(command)
+
+    def _run_command_text(self, command: str) -> None:
+        if not command or self._busy:
+            return
+        self._push_history(command)
         self._append_terminal("CMD", f"> {command}")
+        self._append_feed("feed_cmd", f"\u25b6 {command}")
+        self.mini.notify_command(command)
+        self.mini.show()
         self._set_busy(True)
 
         def worker() -> None:
@@ -404,6 +480,85 @@ class JarvisHudApp:
                 self._events.put(("error", str(exc)))
 
         threading.Thread(target=worker, daemon=True).start()
+
+    def _push_history(self, command: str) -> None:
+        if command in self._cmd_history:
+            self._cmd_history.remove(command)
+        self._cmd_history.insert(0, command)
+        self._cmd_history = self._cmd_history[:50]
+        self._cmd_history_index = -1
+
+    def _history_step(self, direction: int) -> None:
+        if not self._cmd_history:
+            return
+        n = len(self._cmd_history)
+        idx = min(max(self._cmd_history_index + direction, 0), n - 1)
+        self._cmd_history_index = idx
+        self.command_entry.delete(0, tk.END)
+        self.command_entry.insert(0, self._cmd_history[idx])
+        self.command_entry.icursor(tk.END)
+
+    def _start_job_apply(self) -> None:
+        query = self.job_query_entry.get().strip()
+        if not query:
+            return
+        self.job_query_entry.delete(0, tk.END)
+        self._run_command_text(f"apply for {query}")
+
+    def _refresh_job_status(self) -> None:
+        def worker() -> None:
+            try:
+                payload = self.runtime.registry.execute("job_status", {})
+                self._events.put(("job_status", payload))
+            except Exception as exc:
+                self._events.put(("error", str(exc)))
+
+        threading.Thread(target=worker, daemon=True).start()
+
+    def _cancel_job(self) -> None:
+        self._set_busy(True)
+
+        def worker() -> None:
+            try:
+                payload = self.runtime.registry.execute("job_cancel", {})
+                self._events.put(("job_status", payload))
+                self._events.put(("job_msg", payload.get("result_text", "Job task canceled.")))
+            except Exception as exc:
+                self._events.put(("error", str(exc)))
+
+        threading.Thread(target=worker, daemon=True).start()
+
+    def _job_tick(self) -> None:
+        try:
+            if not self.root.winfo_exists():
+                return
+            self._refresh_job_status()
+        finally:
+            self.root.after(5000, self._job_tick)
+
+    def _raise_main_window(self) -> None:
+        self.root.deiconify()
+        self.root.lift()
+        self.root.focus_force()
+
+    def _restore_ui_config(self) -> None:
+        try:
+            cfg = json.loads(self._ui_config_path.read_text(encoding="utf-8"))
+            geo = cfg.get("main_geometry")
+            if geo and geo.count("x") == 1 and "+" in geo:
+                self.root.geometry(geo)
+            if cfg.get("mini_visible"):
+                self.mini.show()
+        except Exception:
+            pass
+
+    def _save_ui_config(self) -> None:
+        try:
+            cfg = {"main_geometry": self.root.geometry(), "mini_visible": self.mini.is_visible()}
+            self._ui_config_path.parent.mkdir(parents=True, exist_ok=True)
+            self._ui_config_path.write_text(json.dumps(cfg), encoding="utf-8")
+        except Exception:
+            pass
 
     def _toggle_voice(self) -> None:
         self._set_busy(True)
@@ -435,14 +590,18 @@ class JarvisHudApp:
         w = max(1, self.wave_canvas.winfo_width())
         h = max(1, self.wave_canvas.winfo_height())
         c = h // 2
-        amp = 22 if self._wave_active else 6
-        self._wave_phase += 0.18
+        try:
+            status = self.runtime.voice.status()
+        except Exception:
+            status = {}
+        phase, color, amp, speed = voice_phase(status)
+        self._wave_phase += speed
         pts: list[float] = []
         for x in range(0, w + 1, 6):
             pts.extend([x, c + math.sin((x * 0.05) + self._wave_phase) * amp])
         if len(pts) >= 4:
-            self.wave_canvas.create_line(pts, fill=CYAN, width=2, smooth=True)
-        self.wave_canvas.create_text(10, 10, anchor="nw", text="VOICE ACTIVE" if self._wave_active else "VOICE IDLE", fill=GREEN if self._wave_active else MUTED, font=("JetBrains Mono", 9, "bold"))
+            self.wave_canvas.create_line(pts, fill=color, width=2, smooth=True)
+        self.wave_canvas.create_text(10, 10, anchor="nw", text=f"VOICE {phase}", fill=color, font=("JetBrains Mono", 9, "bold"))
         now = time.monotonic()
         if now - getattr(self, "_last_resource_draw", 0.0) >= 1.0:
             self._last_resource_draw = now
@@ -662,6 +821,8 @@ class JarvisHudApp:
     def _handle_command_result(self, payload: dict[str, Any]) -> None:
         self._set_busy(False)
         self._append_terminal("OK", payload.get("response_text", ""))
+        has_failure = False
+        has_pending = False
         for item in payload.get("results") or []:
             tool = item.get("tool")
             status = item.get("status")
@@ -669,8 +830,17 @@ class JarvisHudApp:
                 self._append_terminal("OK", f"{tool}: completed")
             elif status == "pending":
                 self._append_terminal("WARN", f"{tool}: pending approval")
+                has_pending = True
             else:
                 self._append_terminal("ERR", f"{tool}: {item.get('error')}")
+                has_failure = True
+        command = str(payload.get("command", "command"))
+        if has_failure:
+            self._append_feed("feed_err", f"\u2717 {command} FAILED")
+        elif has_pending:
+            self._append_feed("feed_pending", f"\u23f3 {command} awaiting approval")
+        else:
+            self._append_feed("feed_ok", f"\u2713 {command} done")
         self._refresh_approvals()
 
     def _poll_events(self) -> None:
@@ -710,10 +880,33 @@ class JarvisHudApp:
                 if done:
                     self._chat_history.append({"role": "assistant", "content": done})
                     self._chat_history = self._chat_history[-12:]
+            elif event == "job_status":
+                self._update_job_panel(payload)
+            elif event == "job_msg":
+                self._set_busy(False)
+                self._append_terminal("OK", str(payload))
+                self._append_feed("feed_sys", str(payload))
             elif event == "error":
                 self._set_busy(False)
                 self._append_terminal("ERR", str(payload))
         self.root.after(80, self._poll_events)
+
+    def _update_job_panel(self, payload: dict[str, Any]) -> None:
+        task = payload.get("task") or {}
+        status = str(task.get("status") or "idle")
+        phase = str(task.get("phase") or "-")
+        applied = int(task.get("applied") or 0)
+        skipped = int(task.get("skipped") or 0)
+        failed = int(task.get("failed") or 0)
+        reason = str(task.get("paused_reason") or "").strip()
+        color = {"idle": MUTED, "running": CYAN, "paused": AMBER, "completed": GREEN, "canceled": MUTED}.get(status, MUTED)
+        text = f"[{status.upper()} \u00b7 {phase}]"
+        if reason:
+            text += f"\nPaused: {reason}"
+        self.job_status_label.configure(text=text, fg=color)
+        self.job_stat_labels["APPLIED"].configure(text=f"APPLIED {applied}")
+        self.job_stat_labels["SKIPPED"].configure(text=f"SKIPPED {skipped}")
+        self.job_stat_labels["FAILED"].configure(text=f"FAILED {failed}")
 
     def _on_close(self) -> None:
         try:
@@ -724,13 +917,29 @@ class JarvisHudApp:
             self._monitor.stop()
         except Exception:
             pass
+        self._save_ui_config()
+        try:
+            self.mini.close()
+        except Exception:
+            pass
         self.root.destroy()
 
     def run(self) -> None:
         self.root.mainloop()
 
 
+def _enable_dpi_awareness() -> None:
+    try:
+        ctypes.windll.shcore.SetProcessDpiAwareness(2)
+    except Exception:
+        try:
+            ctypes.windll.user32.SetProcessDPIAware()
+        except Exception:
+            pass
+
+
 def main() -> None:
+    _enable_dpi_awareness()
     JarvisHudApp().run()
 
 
