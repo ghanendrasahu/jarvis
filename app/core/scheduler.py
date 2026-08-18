@@ -81,6 +81,7 @@ class Scheduler:
         self._poll_seconds = poll_seconds
         self._thread: threading.Thread | None = None
         self._running = False
+        self._active: set[threading.Thread] = set()
         self.on_run: Callable[[dict[str, Any], str, str], None] | None = None
 
     def start(self) -> bool:
@@ -167,8 +168,18 @@ class Scheduler:
                     self.on_run(job, status, text)
                 except Exception:
                     pass
+            self._active.discard(threading.current_thread())
 
-        threading.Thread(target=worker, daemon=True).start()
+        thread = threading.Thread(target=worker, daemon=True)
+        self._active.add(thread)
+        thread.start()
+
+    def wait_idle(self, timeout: float = 5.0) -> bool:
+        """Block until all in-flight job workers finish (used by shutdown/tests)."""
+        deadline = time.monotonic() + timeout
+        while self._active and time.monotonic() < deadline:
+            time.sleep(0.02)
+        return not self._active
 
     def _update_after_run(self, job_id: str, status: str, text: str) -> None:
         jobs = self._jobs()

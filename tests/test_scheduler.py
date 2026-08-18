@@ -1,6 +1,5 @@
 from __future__ import annotations
 
-import time
 from datetime import UTC, datetime, timedelta
 
 from app.config import Settings
@@ -57,12 +56,8 @@ def test_scheduler_runs_due_job_and_removes(tmp_path):
 
     scheduler.tick()
 
-    deadline = time.monotonic() + 20.0
+    assert scheduler.wait_idle(timeout=20)
     updated = scheduler.list_jobs()[0]
-    while updated["last_status"] is None and time.monotonic() < deadline:
-        time.sleep(0.05)
-        updated = scheduler.list_jobs()[0]
-
     assert updated["last_status"] == "completed"
     assert orchestrator.calls == ["system status"]
     runs = memory.get_state("scheduled_runs", default=[])

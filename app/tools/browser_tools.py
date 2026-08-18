@@ -38,9 +38,9 @@ def _first_youtube_video_url(query: str) -> tuple[str | None, str]:
             "extract_flat": True,
             "noplaylist": True,
         }
-        with YoutubeDL(options) as ydl:
+        with YoutubeDL(options) as ydl:  # type: ignore[arg-type]
             entries = ydl.extract_info(f"ytsearch1:{query}", download=False)
-            entries_list = list((entries or {}).get("entries") or [])
+            entries_list = list((entries or {}).get("entries") or [])  # type: ignore[arg-type]
             if entries_list:
                 video_id = entries_list[0].get("id")
                 if video_id:
