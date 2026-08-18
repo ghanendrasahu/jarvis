@@ -37,46 +37,14 @@ All versions live in `pyproject.toml`; `requirements.txt` is a thin `-e .[dev]` 
 - or `LLM_PROVIDER=groq` + `GROQ_API_KEY=...`
 - or `LLM_PROVIDER=ollama` (with Ollama running)
 
-4. Run API:
+4. Run JARVIS (desktop HUD with the embedded web deck — no browser needed):
 ```powershell
-.\scripts\run_api.ps1
+.\scripts\run_jarvis.ps1
 ```
 
-5. Run CLI:
+Optional — standalone API server for LAN/phone access:
 ```powershell
-.\scripts\run_cli.ps1
-```
-
-If PowerShell policy blocks scripts:
-```cmd
-scripts\run_cli.cmd
-```
-
-6. Run Desktop GUI popup:
-```powershell
-.\scripts\run_gui.ps1
-```
-Fallback (CMD):
-```cmd
-scripts\run_gui.cmd
-```
-
-## One-Command Start
-
-Use this single command to start Jarvis popup:
-```powershell
-.\scripts\start_jarvis.ps1
-```
-
-With voice auto-start:
-```powershell
-.\scripts\start_jarvis.ps1 voice
-```
-
-CMD fallback:
-```cmd
-scripts\start_jarvis.cmd
-scripts\start_jarvis.cmd voice
+.\scripts\run_jarvis.ps1 -Api
 ```
 
 ## Auto-Start
@@ -91,7 +59,7 @@ Turn it off/on anytime:
 - Click the **AUTOSTART ON / AUTOSTART OFF** chip in the HUD top bar, or
 - `.\scripts\auto_start.ps1 off` / `on` / `status`
 
-Disabled = the HUD does not auto-start until you re-enable it (manual `start_jarvis.ps1` always works).
+Disabled = the HUD does not auto-start until you re-enable it (manual `run_jarvis.ps1` always works).
 
 ## Dashboard extras
 
@@ -110,9 +78,9 @@ Disabled = the HUD does not auto-start until you re-enable it (manual `start_jar
 - **Job resume + pipeline** — after the job agent pauses on a login/CAPTCHA wall, click **RESUME** on the HUD to continue from the exact page it stopped on. Track your pipeline with `job status`/`job update status <url> <status>` — statuses roll up into APPLIED / INTERVIEW / OFFER / REJECTED counters on the HUD.
 - **Scheduler** — say or type `schedule <command> daily at 09:00` (also `hourly`, `every N minutes`, `weekly on <day> at HH:MM`). `list_schedules` shows the queue, `cancel_schedule <id>` removes one. Each run appears in the HUD feed.
 
-## Web Dashboard
+## Embedded Web Deck
 
-A polished, animated browser dashboard served by the same FastAPI engine — `scripts/web_ui.ps1` (or `web_ui.cmd`) starts the server and opens `http://127.0.0.1:8000`.
+The full animated dashboard now lives **inside** the HUD window — click the **DECK** chip to open it (WebView2/Chromium, no browser needed). It runs the same FastAPI engine in-process, sharing one runtime.
 
 - **Live feed** — run commands from the glowing command bar; agent steps, approvals, job updates, and scheduler runs stream in over a WebSocket.
 - **Voice panel** — start/stop the voice engine with an animated waveform.
@@ -124,7 +92,7 @@ A polished, animated browser dashboard served by the same FastAPI engine — `sc
 - **Video backgrounds** — click the **◳** button: keep the animated aurora canvas, paste any looping video URL (galaxy, anime, nature…), or drop a `.mp4` into `data/backgrounds/` and pick it from the list (served locally at `/backgrounds/…`). A dim + blur overlay keeps the UI readable; the video pauses when the tab is hidden.
 - **Security** — first launch asks for your `API_TOKEN` (saved in `localStorage`); auto-connects if auth is disabled.
 
-The existing Tkinter HUD (`run_gui.ps1`), mini-window, tray, and hotkey are unchanged and work alongside the web UI.
+The HUD, mini-window, tray, and hotkey are unchanged and work alongside the deck.
 
 ## Architecture
 
@@ -266,7 +234,7 @@ curl -X POST http://localhost:8000/v1/execute \
 
 ## Desktop GUI
 
-`run_gui.ps1` (or `start_jarvis.ps1`) opens the JARVIS command HUD (`app/gui.py`):
+`scripts\run_jarvis.ps1` opens the JARVIS command HUD (`app/gui.py`):
 
 - **Command bar** with ↑/↓ history + `EXECUTE` button, plus quick preset chips (Play/Pause, Next, Apps, MINI, TRAY, RECAP)
 - **Live terminal + activity feed** — responses, tool statuses, and a scrolling ✓/⏳/✗ command feed (agent steps stream in live)
@@ -375,7 +343,7 @@ config/
   job_profile.yaml        # your identity/skills/form answers
   site_profiles.yaml      # job-board search + selector profiles
 tests/
-scripts/                # launchers (.ps1/.cmd) + bootstrap + clean.ps1
+scripts/                # run_jarvis.ps1 (single launcher) + bootstrap + clean + auto_start
 ```
 
 ## Maintenance

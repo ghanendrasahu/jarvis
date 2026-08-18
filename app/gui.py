@@ -13,7 +13,9 @@ from pathlib import Path
 from typing import Any
 
 from app.bootstrap import build_runtime
+from app.core.events import EventHub
 from app.core.monitor import ResourceMonitor
+from app.embedded_server import EmbeddedWebServer
 from app.hotkey import GlobalHotkey
 from app.minihud import MiniHud, voice_phase
 from app.toast import Toaster
@@ -75,7 +77,8 @@ class Tooltip:
 
 class JarvisHudApp:
     def __init__(self) -> None:
-        self.runtime = build_runtime()
+        self._hub = EventHub()
+        self.runtime = build_runtime(events=self._hub)
         self._monitor = ResourceMonitor()
         self._monitor.start()
         self.root = tk.Tk()
@@ -106,6 +109,10 @@ class JarvisHudApp:
         self._cmd_history_index = -1
         self._last_pending_count = 0
         self._job_prev_status = ""
+        self._deck_frame: tk.Frame | None = None
+        self._webview: Any = None
+        self._deck_visible = False
+        self._server: EmbeddedWebServer | None = None
 
         self._build_ui()
         self._refresh_voice_button()
@@ -122,11 +129,13 @@ class JarvisHudApp:
         self._refresh_approvals()
         self._refresh_app_launcher()
         self._bind_hotkeys()
+        self.root.bind_all("<Button-1>", self._force_focus, add="+")
 
         self.root.protocol("WM_DELETE_WINDOW", self._on_close)
         self._restore_ui_config()
-        self.runtime.scheduler.on_run = lambda job, status, text: self._events.put(("sched_run", (job, status, text)))
+        self.runtime.scheduler.on_run = self._scheduler_on_run
         self.runtime.scheduler.start()
+        self._start_embedded_server()
         self._maybe_show_recap()
         self.root.after(5000, self._job_tick)
 
@@ -190,20 +199,23 @@ class JarvisHudApp:
         recap_btn = self._chip(dock, "RECAP", self._recap)
         recap_btn.grid(row=0, column=7, padx=(0, 8))
         self._tooltips.append(Tooltip(recap_btn, "What happened while you were away"))
+        self.deck_button = self._chip(dock, "DECK", self._toggle_deck)
+        self.deck_button.grid(row=0, column=8, padx=(0, 8))
+        self._tooltips.append(Tooltip(self.deck_button, "Embedded web command deck — no browser"))
 
         self.online_label = tk.Label(
             top, text="STATUS: OPERATIONAL", bg="#0d2332", fg=GREEN, font=("JetBrains Mono", 10, "bold"), padx=10, pady=5
         )
         self.online_label.grid(row=0, column=2, sticky="e")
 
-        body = tk.Frame(self.root, bg=BG)
-        body.grid(row=1, column=0, sticky="nsew", padx=16, pady=(0, 16))
-        body.columnconfigure(0, weight=11)
-        body.columnconfigure(1, weight=4)
-        body.columnconfigure(2, weight=4)
-        body.rowconfigure(0, weight=1)
+        self.body = tk.Frame(self.root, bg=BG)
+        self.body.grid(row=1, column=0, sticky="nsew", padx=16, pady=(0, 16))
+        self.body.columnconfigure(0, weight=11)
+        self.body.columnconfigure(1, weight=4)
+        self.body.columnconfigure(2, weight=4)
+        self.body.rowconfigure(0, weight=1)
 
-        left = self._make_panel(body, PANEL)
+        left = self._make_panel(self.body, PANEL)
         left.grid(row=0, column=0, sticky="nsew", padx=(0, 10))
         left.columnconfigure(0, weight=1)
         left.rowconfigure(4, weight=1)
@@ -283,7 +295,7 @@ class JarvisHudApp:
         for tag, color in [("ts", "#7c8aa8"), ("cmd", CYAN), ("ok", GREEN), ("pending", AMBER), ("err", RED), ("sys", INDIGO)]:
             self.terminal.tag_configure(tag, foreground=color)
 
-        mid = self._make_panel(body, PANEL)
+        mid = self._make_panel(self.body, PANEL)
         mid.grid(row=0, column=1, sticky="nsew", padx=(0, 10))
         mid.columnconfigure(0, weight=1)
         mid.rowconfigure(6, weight=1)
@@ -348,7 +360,7 @@ class JarvisHudApp:
         self.chat_entry.bind("<Return>", lambda _: self._ask_chatbot())
         tk.Button(chat_input, text="ASK", command=self._ask_chatbot, bg=INDIGO, fg="#05101b", relief=tk.FLAT, bd=0, padx=10, pady=6).grid(row=0, column=1, padx=(8, 0))
 
-        right = self._make_panel(body, PANEL)
+        right = self._make_panel(self.body, PANEL)
         right.grid(row=0, column=2, sticky="nsew")
         right.columnconfigure(0, weight=1)
         right.rowconfigure(5, weight=1)
@@ -907,6 +919,119 @@ class JarvisHudApp:
         for i in range(1, 10):
             self.root.bind_all(f"<Alt-Key-{i}>", lambda e, idx=i - 1: self._open_app_by_index(idx))
 
+    def _force_focus(self, event: tk.Event) -> None:
+        if self._deck_visible and isinstance(event.widget, (tk.Entry, tk.Listbox, tk.Text)):
+            try:
+                event.widget.focus_force()
+            except Exception:
+                pass
+
+    def _start_embedded_server(self) -> None:
+        try:
+            server = EmbeddedWebServer(self.runtime, self._hub, self.runtime.settings.web_ui_port)
+            server.start()
+            self._server = server
+            self._append_terminal("SYS", f"Embedded web deck on {server.base_url}")
+        except Exception as exc:
+            self._append_terminal("ERR", f"Embedded web server failed: {exc}")
+
+    def _scheduler_on_run(self, job: dict[str, Any], status: str, text: str) -> None:
+        self._events.put(("sched_run", (job, status, text)))
+        try:
+            self._hub.publish(
+                "scheduler_run",
+                {"command": job.get("command"), "status": status, "result": text, "job_id": job.get("id")},
+            )
+        except Exception:
+            pass
+
+    def _toggle_deck(self) -> None:
+        if self._deck_frame is None:
+            try:
+                self._build_deck()
+            except Exception as exc:
+                self._append_terminal("ERR", f"Web deck unavailable: {exc}")
+                self._toaster.notify("Web deck unavailable", str(exc), RED)
+            return
+        if self._deck_visible:
+            self._deck_frame.place_forget()
+            self._deck_visible = False
+        else:
+            self._deck_frame.place(relx=0, rely=0, relwidth=1, relheight=1)
+            self._deck_frame.lift()
+            self._deck_visible = True
+
+    def _deck_bootstrap_js(self) -> str:
+        token = (self.runtime.settings.api_token or "").strip()
+        js = f"window.localStorage.setItem('jarvis_token', {json.dumps(token)});"
+        if not token:
+            js += (
+                "window.addEventListener('DOMContentLoaded', function(){"
+                "var o=document.getElementById('overlay');"
+                "if(o&&!o.classList.contains('hidden')){"
+                "var b=document.getElementById('connect-btn');if(b)b.click();"
+                "}});"
+            )
+        return js
+
+    def _wait_web_server(self, timeout: float = 3.0) -> bool:
+        if self._server is None:
+            return False
+        import urllib.request
+
+        deadline = time.monotonic() + timeout
+        while time.monotonic() < deadline:
+            try:
+                with urllib.request.urlopen(self._server.base_url + "v1/health", timeout=0.5):
+                    return True
+            except Exception:
+                time.sleep(0.1)
+        return False
+
+    def _build_deck(self) -> None:
+        try:
+            from tkwebview import TkWebview
+        except Exception as exc:
+            raise RuntimeError(f"tkwebview not available: {exc}") from exc
+
+        if self._server is None:
+            raise RuntimeError("Embedded web server is not running.")
+
+        frame = tk.Frame(self.body, bg=BG)
+        frame.place(relx=0, rely=0, relwidth=1, relheight=1)
+
+        header = tk.Frame(frame, bg=BG)
+        header.pack(fill="x", padx=10, pady=(10, 6))
+        tk.Label(header, text="JARVIS DECK", bg=BG, fg=CYAN, font=("JetBrains Mono", 11, "bold")).pack(side="left")
+        tk.Button(
+            header,
+            text="\u2715 CLOSE DECK",
+            command=self._toggle_deck,
+            bg="#0f1f3c",
+            fg=TEXT,
+            activebackground="#183159",
+            bd=0,
+            relief=tk.FLAT,
+            cursor="hand2",
+            font=("JetBrains Mono", 9, "bold"),
+            padx=10,
+            pady=4,
+        ).pack(side="right")
+
+        wrap = tk.Frame(frame, bg="black")
+        wrap.pack(fill="both", expand=True, padx=10, pady=(0, 10))
+        webview = TkWebview(wrap)
+        webview.pack(fill="both", expand=True)
+        wrap.update_idletasks()
+
+        self._wait_web_server()
+        webview.init(self._deck_bootstrap_js())
+        webview.navigate(self._server.base_url)
+
+        self._deck_frame = frame
+        self._webview = webview
+        self._deck_visible = True
+
     def _refresh_app_launcher(self) -> None:
         def worker() -> None:
             try:
@@ -1242,6 +1367,16 @@ class JarvisHudApp:
             pass
         try:
             self._tray.stop()
+        except Exception:
+            pass
+        try:
+            if self._webview is not None:
+                self._webview.destroy()
+        except Exception:
+            pass
+        try:
+            if self._server is not None:
+                self._server.stop()
         except Exception:
             pass
         self._save_ui_config()

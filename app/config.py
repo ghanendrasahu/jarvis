@@ -57,6 +57,7 @@ class Settings(BaseSettings):
 
     api_token: str | None = None
     cors_allowed_origins: Annotated[list[str], NoDecode] = Field(default_factory=list)
+    web_ui_port: int = 8000
 
     approval_policy: str = "medium_and_high"
     auto_approve_low_risk: bool = True
