@@ -4,7 +4,7 @@ import time
 import urllib.parse
 from collections.abc import Callable, Iterable
 from datetime import UTC, datetime
-from typing import Any
+from typing import Any, cast
 
 from app.config import Settings
 from app.core.agent import AgentRunResult, AutonomousAgent
@@ -16,6 +16,7 @@ from app.core.memory import MemoryStore
 from app.core.router import DirectCommandRouter
 from app.llm.planner import BasePlanner
 from app.models.schemas import (
+    CommandStatus,
     ExecuteApprovalResponse,
     ExecuteCommandResponse,
     Plan,
@@ -105,7 +106,7 @@ class JarvisOrchestrator:
         return payload
 
     @staticmethod
-    def _status_from_results(results: Iterable[ToolExecutionResult]) -> str:
+    def _status_from_results(results: Iterable[ToolExecutionResult]) -> CommandStatus:
         results_list = list(results)
         if not results_list:
             return "completed"
@@ -291,7 +292,7 @@ class JarvisOrchestrator:
 
         quick_reply = self._instant_reply(cleaned)
         if quick_reply is not None:
-            status = "completed"
+            status = cast(CommandStatus, "completed")
             payload = ExecuteCommandResponse(
                 command=cleaned,
                 source=source,
@@ -553,7 +554,10 @@ class JarvisOrchestrator:
                 output=item.output,
                 error=item.error,
             )
-        status = resumed.status if resumed.status in {"completed", "partial", "failed", "needs_approval"} else "partial"
+        status = cast(
+            CommandStatus,
+            resumed.status if resumed.status in {"completed", "partial", "failed", "needs_approval"} else "partial",
+        )
         self._update_runtime_context(command=pending.command, response_status=status, results=resumed.results)
         completed = sum(1 for item in resumed.results if item.status == "completed")
         failed = sum(1 for item in resumed.results if item.status == "failed")

@@ -138,7 +138,7 @@ class Scheduler:
                 return True
         return False
 
-    def list(self) -> list[dict[str, Any]]:
+    def list_jobs(self) -> list[dict[str, Any]]:
         return self._jobs()
 
     def tick(self) -> None:

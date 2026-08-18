@@ -33,7 +33,7 @@ jobs:
           pip install mypy
           pip install -r requirements.txt
       - name: Typecheck
-        run: mypy app
+        run: mypy app tests
 
   test:
     name: Tests
@@ -49,4 +49,4 @@ jobs:
         env:
           WORKSPACE_ROOT: ${{ github.workspace }}
           API_TOKEN: test-token
-        run: python -m pytest
+        run: python -m pytest --cov

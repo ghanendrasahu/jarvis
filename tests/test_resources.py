@@ -53,4 +53,6 @@ def test_gpu_status_probe_shape():
 
     if gpu["utilization"] is None:
         pytest.skip("GPU counters unavailable on this machine")
-    assert gpu["utilization"] >= 0.0
+    utilization = gpu["utilization"]
+    assert isinstance(utilization, (int, float))
+    assert utilization >= 0.0

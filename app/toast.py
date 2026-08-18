@@ -49,8 +49,12 @@ class Toaster:
         )
         msg.pack(fill="x", padx=10, pady=(2, 10))
         if on_click is not None:
-            msg.bind("<Button-1>", lambda _e: (self._dismiss(), on_click()))
-            frame.bind("<Button-1>", lambda _e: (self._dismiss(), on_click()), add="+")
+            def _handle_click() -> None:
+                self._dismiss()
+                on_click()
+
+            msg.bind("<Button-1>", lambda _e: _handle_click())
+            frame.bind("<Button-1>", lambda _e: _handle_click(), add="+")
         self.root.update_idletasks()
         try:
             width = max(340, frame.winfo_reqwidth() + 16)

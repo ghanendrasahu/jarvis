@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import threading
 from collections.abc import Callable
+from typing import Any
 
 try:
     import pystray
@@ -33,7 +34,7 @@ class TrayIcon:
         self._on_show = on_show
         self._on_mini = on_mini
         self._on_exit = on_exit
-        self._icon: pystray.Icon | None = None
+        self._icon: Any | None = None
         self._thread: threading.Thread | None = None
 
     @property

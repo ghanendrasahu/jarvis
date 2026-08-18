@@ -7,7 +7,7 @@ import requests
 
 from app.config import Settings
 from app.core.prompts import JARVIS_IDENTITY_PROMPT, build_planner_prompt
-from app.models.schemas import Action, Plan
+from app.models.schemas import Action, Plan, RiskLevel
 
 
 class BasePlanner(Protocol):
@@ -53,9 +53,13 @@ def _extract_json(raw_text: str) -> dict[str, Any]:
 
 
 def _to_plan(payload: dict[str, Any]) -> Plan:
-    def normalize_risk(raw_value: Any) -> str:
+    def normalize_risk(raw_value: Any) -> RiskLevel:
         value = str(raw_value or "medium").lower().strip()
-        return value if value in {"low", "medium", "high"} else "medium"
+        if value == "high":
+            return "high"
+        if value == "low":
+            return "low"
+        return "medium"
 
     actions_data = payload.get("actions") or []
     actions: list[Action] = []

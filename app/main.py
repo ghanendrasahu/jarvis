@@ -116,7 +116,7 @@ def create_app(runtime: Runtime | None = None, hub: EventHub | None = None, mana
 
     @app.get("/v1/schedules", dependencies=[_AUTH, _RATELIMIT])
     def schedules_list() -> list[dict]:
-        return app.state.runtime.scheduler.list()
+        return app.state.runtime.scheduler.list_jobs()
 
     @app.post("/v1/schedules", dependencies=[_AUTH, _RATELIMIT])
     def schedules_create(request: ScheduleCreateRequest) -> dict:

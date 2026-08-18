@@ -17,8 +17,8 @@ class BrowserSession:
 
     def __init__(self, settings: Settings) -> None:
         self._lock = threading.Lock()
-        self._playwright = None
-        self._context = None
+        self._playwright: Any = None
+        self._context: Any = None
         self._settings = settings
         self._timeout_ms = safe_int(getattr(settings, "browser_automation_timeout_ms", 15000), 15000)
         raw_profile = str(getattr(settings, "browser_profile_dir", "data/browser_profile")).strip() or "data/browser_profile"

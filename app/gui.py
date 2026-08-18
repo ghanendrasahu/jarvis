@@ -237,11 +237,11 @@ class JarvisHudApp:
             b.grid(row=0, column=i, padx=(0, 8))
             self._tooltips.append(Tooltip(b, tip))
 
-        cmd = tk.Frame(left, bg=PANEL)
-        cmd.grid(row=1, column=0, sticky="ew", padx=14, pady=(0, 8))
-        cmd.columnconfigure(1, weight=1)
-        tk.Label(cmd, text="COMMAND BAR", bg=PANEL, fg=MUTED, font=("JetBrains Mono", 10, "bold")).grid(row=0, column=0, sticky="w", padx=(0, 10))
-        self.entry_wrap = tk.Frame(cmd, bg="#1c3257", padx=1, pady=1)
+        cmd_panel = tk.Frame(left, bg=PANEL)
+        cmd_panel.grid(row=1, column=0, sticky="ew", padx=14, pady=(0, 8))
+        cmd_panel.columnconfigure(1, weight=1)
+        tk.Label(cmd_panel, text="COMMAND BAR", bg=PANEL, fg=MUTED, font=("JetBrains Mono", 10, "bold")).grid(row=0, column=0, sticky="w", padx=(0, 10))
+        self.entry_wrap = tk.Frame(cmd_panel, bg="#1c3257", padx=1, pady=1)
         self.entry_wrap.grid(row=0, column=1, sticky="ew")
         self.command_entry = tk.Entry(
             self.entry_wrap, bg="#040a16", fg=TEXT, insertbackground=CYAN, relief=tk.FLAT, bd=0, font=("JetBrains Mono", 11)
@@ -250,13 +250,13 @@ class JarvisHudApp:
         self.command_entry.bind("<Return>", lambda _: self._run_command())
         self.command_entry.bind("<Up>", lambda _: self._history_step(-1))
         self.command_entry.bind("<Down>", lambda _: self._history_step(1))
-        self.run_button = tk.Button(cmd, text="EXECUTE", command=self._run_command, bg=CYAN, fg="#021018", relief=tk.FLAT, bd=0, padx=12, pady=7)
+        self.run_button = tk.Button(cmd_panel, text="EXECUTE", command=self._run_command, bg=CYAN, fg="#021018", relief=tk.FLAT, bd=0, padx=12, pady=7)
         self.run_button.grid(row=0, column=2, padx=(10, 0))
 
         resources = self._make_panel(left, PANEL_2)
         resources.grid(row=2, column=0, sticky="ew", padx=14, pady=(0, 8))
-        for col in range(3):
-            resources.columnconfigure(col, weight=1)
+        for col_idx in range(3):
+            resources.columnconfigure(col_idx, weight=1)
         tk.Label(resources, text="RESOURCES", bg=PANEL_2, fg="#c7d8f7", font=("JetBrains Mono", 11, "bold")).grid(
             row=0, column=0, sticky="w", padx=10, pady=(8, 2), columnspan=3
         )
@@ -715,7 +715,11 @@ class JarvisHudApp:
         text.configure(state=tk.DISABLED)
 
         if auto:
-            self._toaster.notify("While you were away", "Click to open the catch-up recap.", CYAN, on_click=lambda: (win.destroy(), self._raise_main_window()))
+            def _open_recap() -> None:
+                win.destroy()
+                self._raise_main_window()
+
+            self._toaster.notify("While you were away", "Click to open the catch-up recap.", CYAN, on_click=_open_recap)
 
     def _auto_start_path(self) -> Path:
         return Path(__file__).resolve().parent.parent / "data" / "auto_start.json"
@@ -917,7 +921,10 @@ class JarvisHudApp:
 
     def _bind_hotkeys(self) -> None:
         for i in range(1, 10):
-            self.root.bind_all(f"<Alt-Key-{i}>", lambda e, idx=i - 1: self._open_app_by_index(idx))
+            def _open_alt(_e: tk.Event, idx: int = i - 1) -> None:
+                self._open_app_by_index(idx)
+
+            self.root.bind_all(f"<Alt-Key-{i}>", _open_alt)
 
     def _force_focus(self, event: tk.Event) -> None:
         if self._deck_visible and isinstance(event.widget, (tk.Entry, tk.Listbox, tk.Text)):
@@ -1151,7 +1158,7 @@ class JarvisHudApp:
             return False
         client = OpenAI(api_key=self.runtime.settings.openai_api_key)
         model = str(getattr(self.runtime.settings, "openai_model", "gpt-4.1-mini"))
-        msgs: list[dict[str, str]] = [{"role": "system", "content": "You are AI Bot inside Jarvis HUD. Keep answers concise and useful."}]
+        msgs: list[Any] = [{"role": "system", "content": "You are AI Bot inside Jarvis HUD. Keep answers concise and useful."}]
         msgs.extend(self._chat_history[-10:])
         msgs.append({"role": "user", "content": q})
         stream = client.chat.completions.create(model=model, messages=msgs, stream=True, temperature=0.3)
@@ -1180,7 +1187,7 @@ class JarvisHudApp:
         self.scene.create_rectangle(cx - 58, cy - 8, cx - 48, cy + 72, fill="#78e1ff", outline="")
         self.scene.create_rectangle(cx + 48, cy - 8, cx + 58, cy + 72, fill="#78e1ff", outline="")
         self._scene_particles.clear()
-        for _ in range(20):
+        for _i in range(20):
             x = random.uniform(0, w)
             y = random.uniform(0, h)
             r = random.uniform(2, 5)

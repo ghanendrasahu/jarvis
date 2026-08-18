@@ -1,10 +1,11 @@
 from __future__ import annotations
 
 import time
+from typing import cast
 
 from app.config import Settings
 from app.core.approvals import ApprovalManager
-from app.models.schemas import Action, ToolExecutionResult
+from app.models.schemas import Action, RiskLevel, ToolExecutionResult
 from app.tools.registry import ToolRegistry
 
 RISK_WEIGHT = {"low": 1, "medium": 2, "high": 3}
@@ -40,7 +41,7 @@ class ActionExecutor:
                 error=f"Unknown tool: {action.tool}",
             )
 
-        effective_risk = _max_risk(action.risk, tool.risk)
+        effective_risk = cast(RiskLevel, _max_risk(action.risk, tool.risk))
 
         if self._requires_approval(effective_risk) and not auto_approve:
             approval_id = self.approvals.create(command=command, action=action.model_copy(update={"risk": effective_risk}))

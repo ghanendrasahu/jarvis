@@ -1,11 +1,14 @@
 from __future__ import annotations
 
-from typing import Any
+from typing import Any, cast
 
 from app.config import Settings
 from app.core.agent import AutonomousAgent
 from app.core.approvals import ApprovalManager
+from app.core.executor import ActionExecutor
+from app.core.memory import MemoryStore
 from app.models.schemas import Action, Plan, ToolExecutionResult
+from app.tools.registry import ToolRegistry
 
 
 class FakePlanner:
@@ -15,7 +18,7 @@ class FakePlanner:
     def plan(
         self,
         command: str,
-        catalog: Any,
+        tool_catalog: Any,
         history: Any,
         agent_context: Any = None,
         tool_history: Any = None,
@@ -61,11 +64,11 @@ def _agent(planner: FakePlanner, executor: FakeExecutor, **settings_overrides: A
     stub = FakeRegistryAndMemory(executor)
     return AutonomousAgent(
         settings=settings,
-        registry=stub,
+        registry=cast(ToolRegistry, stub),
         planner=planner,
-        executor=executor,
+        executor=cast(ActionExecutor, executor),
         approvals=ApprovalManager(),
-        memory=stub,
+        memory=cast(MemoryStore, stub),
     )
 
 
@@ -90,7 +93,7 @@ def test_agent_hits_action_cap():
         def plan(
         self,
         command: str,
-        catalog: Any,
+        tool_catalog: Any,
         history: Any,
         agent_context: Any = None,
         tool_history: Any = None,
@@ -124,7 +127,7 @@ def test_agent_stops_after_tool_fails_twice():
         def plan(
         self,
         command: str,
-        catalog: Any,
+        tool_catalog: Any,
         history: Any,
         agent_context: Any = None,
         tool_history: Any = None,
@@ -149,7 +152,7 @@ def test_agent_returns_failed_on_planner_error():
         def plan(
         self,
         command: str,
-        catalog: Any,
+        tool_catalog: Any,
         history: Any,
         agent_context: Any = None,
         tool_history: Any = None,
@@ -182,7 +185,7 @@ def test_agent_stops_when_approval_required():
         def plan(
             self,
             command: str,
-            catalog: Any,
+            tool_catalog: Any,
             history: Any,
             agent_context: Any = None,
             tool_history: Any = None,
@@ -218,7 +221,7 @@ def test_agent_resumes_after_approval_continues_loop():
         def plan(
             self,
             command: str,
-            catalog: Any,
+            tool_catalog: Any,
             history: Any,
             agent_context: Any = None,
             tool_history: Any = None,

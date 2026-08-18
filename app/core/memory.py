@@ -184,7 +184,7 @@ class MemoryStore:
             result.append(payload)
         return result
 
-    def set_state(self, key: str, value: dict[str, Any]) -> None:
+    def set_state(self, key: str, value: Any) -> None:
         if not key.strip():
             raise ValueError("State key cannot be empty.")
         created_at = datetime.now(UTC).isoformat()
@@ -202,7 +202,7 @@ class MemoryStore:
             )
             self._conn.commit()
 
-    def get_state(self, key: str, default: dict[str, Any] | None = None) -> dict[str, Any]:
+    def get_state(self, key: str, default: Any = None) -> Any:
         with self._lock:
             row = self._conn.execute(
                 """

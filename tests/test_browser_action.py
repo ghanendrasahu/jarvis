@@ -1,6 +1,10 @@
+from typing import cast
+
 import pytest
 
+from app.config import Settings
 from app.tools.browser_action import BrowserActionTool, _normalize_steps
+from app.tools.browser_session import BrowserSession
 
 
 def test_normalize_accepts_valid_steps():
@@ -32,6 +36,6 @@ def test_normalize_rejects_step_without_action():
 
 
 def test_browser_action_requires_steps_argument():
-    tool = BrowserActionTool(settings=None, session=object())
+    tool = BrowserActionTool(cast(Settings, None), cast(BrowserSession, object()))
     with pytest.raises(ValueError, match="non-empty 'steps'"):
         tool.run({})

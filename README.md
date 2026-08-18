@@ -47,6 +47,11 @@ Optional — standalone API server for LAN/phone access:
 .\scripts\run_jarvis.ps1 -Api
 ```
 
+Optional — interactive text CLI (voice device diagnostics, approvals, metrics):
+```powershell
+.\scripts\run_jarvis.ps1 -Cli   # or: python -m app.cli
+```
+
 ## Auto-Start
 
 The HUD can start itself automatically in two places:
@@ -240,7 +245,7 @@ curl -X POST http://localhost:8000/v1/execute \
 - **Live terminal + activity feed** — responses, tool statuses, and a scrolling ✓/⏳/✗ command feed (agent steps stream in live)
 - **Voice engine** with a state-aware wave (LISTENING / PROCESSING / ATTENTION / IDLE) and start/stop toggle
 - **Job agent panel** — live status (phase, applied/skipped/failed, pause reason) with APPLY / STATUS / CANCEL / RESUME and APPLIED / INTERVIEW / OFFER / REJECTED pipeline counters
-- **Approvals panel** with APPROVE / REJECT**, **AI Bot chat**, **app launcher** (Alt+1..9), **resource meters** (CPU/RAM/network), scene viewer
+- **Approvals panel** with APPROVE / REJECT, **AI Bot chat**, **app launcher** (Alt+1..9), **resource meters** (CPU/RAM/network), scene viewer
 
 **Mini floating window** (`app/minihud.py`):
 - While you work elsewhere, a small always-on-top window shows live activity (current/last command, result status, voice state, CPU/RAM bars) and a quick-command box.
@@ -297,7 +302,7 @@ curl -X POST http://localhost:8000/v1/execute \
 ```bash
 python -m pytest -q
 ruff check app tests
-mypy app
+mypy app tests
 ```
 
 ## Project Structure

@@ -3,6 +3,7 @@ from __future__ import annotations
 import time
 from collections.abc import Iterable
 from dataclasses import dataclass
+from typing import Any
 
 from app.config import Settings
 
@@ -49,13 +50,13 @@ class _VadGate:
 class VoiceListener:
     def __init__(self, settings: Settings) -> None:
         self.settings = settings
-        self._recognizer = None
+        self._recognizer: Any = None
         self._backend = "groq_whisper" if bool(settings.groq_api_key) else "google_web_speech"
         self._device_index: int | None = None
         self._last_ambient_adjust_at: float | None = None
         self._vad = _VadGate()
 
-    def _get_recognizer(self):
+    def _get_recognizer(self) -> Any:
         if self._recognizer is None:
             import speech_recognition as sr
 
@@ -114,10 +115,10 @@ class VoiceListener:
         return score
 
     def _auto_pick_microphone(self, names: Iterable[str]) -> int | None:
-        indexed = list(enumerate(names))
-        if not indexed:
+        scored = [(self._score_mic_name(name), index, name) for index, name in enumerate(names)]
+        if not scored:
             return None
-        best_index, best_score = max(indexed, key=lambda item: self._score_mic_name(item[1]))
+        best_score, best_index, _ = max(scored)
         if best_score < 10:
             return None
         return best_index
@@ -140,7 +141,7 @@ class VoiceListener:
                 recognizer.adjust_for_ambient_noise(
                     source,
                     duration=max(0.05, float(self.settings.speech_ambient_adjust_duration_seconds)),
-                )
+                )  # type: ignore[arg-type]  # duration is float at runtime; stubs type it as int
                 self._last_ambient_adjust_at = now
             try:
                 audio = recognizer.listen(

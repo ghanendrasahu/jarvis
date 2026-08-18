@@ -144,7 +144,7 @@ class MiniHud:
         self._drag_off_y = event.y_root - self.win.winfo_rooty()
 
     def _drag_move(self, event: tk.Event) -> None:
-        if self._drag_off_x is None:
+        if self._drag_off_x is None or self._drag_off_y is None:
             return
         x = event.x_root - self._drag_off_x
         y = event.y_root - self._drag_off_y

@@ -31,7 +31,7 @@ def _first_youtube_video_url(query: str) -> tuple[str | None, str]:
     try:
         from yt_dlp import YoutubeDL
 
-        options = {
+        options: dict[str, Any] = {
             "quiet": True,
             "no_warnings": True,
             "skip_download": True,
@@ -40,7 +40,7 @@ def _first_youtube_video_url(query: str) -> tuple[str | None, str]:
         }
         with YoutubeDL(options) as ydl:
             entries = ydl.extract_info(f"ytsearch1:{query}", download=False)
-            entries_list = (entries or {}).get("entries") or []
+            entries_list = list((entries or {}).get("entries") or [])
             if entries_list:
                 video_id = entries_list[0].get("id")
                 if video_id:

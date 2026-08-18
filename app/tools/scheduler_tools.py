@@ -14,7 +14,7 @@ def register_scheduler_tools(registry: ToolRegistry, scheduler: Scheduler) -> No
         return {"result_text": f"Scheduled '{command}' ({recurrence}). id={job['id']}", "job": job}
 
     def list_schedules(_: dict[str, Any]) -> dict[str, Any]:
-        jobs = scheduler.list()
+        jobs = scheduler.list_jobs()
         return {"count": len(jobs), "jobs": jobs, "result_text": f"{len(jobs)} schedule(s)."}
 
     def cancel_schedule(args: dict[str, Any]) -> dict[str, Any]:

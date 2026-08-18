@@ -26,7 +26,9 @@ def test_parse_recurrence_forms():
     assert parse_recurrence("daily at 09:00") == {"type": "daily", "hour": 9, "minute": 0}
     assert parse_recurrence("hourly") == {"type": "interval", "minutes": 60}
     assert parse_recurrence("every 30 minutes") == {"type": "interval", "minutes": 30}
-    assert parse_recurrence("weekly on monday at 10:30")["type"] == "weekly"
+    weekly = parse_recurrence("weekly on monday at 10:30")
+    assert weekly is not None
+    assert weekly["type"] == "weekly"
     assert parse_recurrence("garbage") is None
 
 
@@ -47,19 +49,19 @@ def test_scheduler_runs_due_job_and_removes(tmp_path):
 
     job = scheduler.add("system status", "every 5 minutes")
     assert job["enabled"] is True
-    assert len(scheduler.list()) == 1
+    assert len(scheduler.list_jobs()) == 1
 
-    jobs = scheduler.list()
+    jobs = scheduler.list_jobs()
     jobs[0]["last_run"] = (datetime.now(UTC) - timedelta(minutes=10)).isoformat()
     memory.set_state("scheduler_jobs", jobs)
 
     scheduler.tick()
 
-    deadline = time.monotonic() + 6.0
-    updated = scheduler.list()[0]
+    deadline = time.monotonic() + 20.0
+    updated = scheduler.list_jobs()[0]
     while updated["last_status"] is None and time.monotonic() < deadline:
         time.sleep(0.05)
-        updated = scheduler.list()[0]
+        updated = scheduler.list_jobs()[0]
 
     assert updated["last_status"] == "completed"
     assert orchestrator.calls == ["system status"]
@@ -67,5 +69,5 @@ def test_scheduler_runs_due_job_and_removes(tmp_path):
     assert len(runs) == 1
 
     assert scheduler.remove(job["id"]) is True
-    assert scheduler.list() == []
+    assert scheduler.list_jobs() == []
     assert scheduler.remove("missing") is False

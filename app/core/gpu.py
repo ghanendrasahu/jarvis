@@ -4,6 +4,7 @@ import ctypes
 import subprocess
 import time
 from ctypes import wintypes
+from typing import cast
 
 _PDH = ctypes.WinDLL("pdh.dll")
 _PDH.PdhOpenQueryW.argtypes = [wintypes.LPCWSTR, wintypes.DWORD, ctypes.POINTER(ctypes.c_void_p)]
@@ -103,14 +104,15 @@ def get_gpu_status() -> dict[str, object]:
     global _cache
     now = time.monotonic()
     cached = _cache.get("value")
-    if cached is not None and now - float(_cache.get("at", 0)) < 3.0:
-        return dict(cached)  # type: ignore[arg-type]
+    cached_at = _cache.get("at", 0.0)
+    if cached is not None and isinstance(cached_at, (int, float)) and now - float(cached_at) < 3.0:
+        return cast(dict[str, object], cached)
 
     utilization = _pdh_sum(r"\GPU Engine(*)\Utilization Percentage")
     mem_bytes = _pdh_sum(r"\GPU Adapter Memory(*)\Dedicated Usage")
     if not mem_bytes:
         mem_bytes = _pdh_sum(r"\GPU Adapter Memory(*)\Total Committed")
-    status = {
+    status: dict[str, object] = {
         "name": _adapter_name(),
         "utilization": round(utilization, 1) if utilization is not None else None,
         "memory_used_mb": round(mem_bytes / (1024 * 1024), 0) if mem_bytes else None,
