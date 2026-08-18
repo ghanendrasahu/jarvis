@@ -251,6 +251,21 @@ curl -X POST http://localhost:8000/v1/execute \
 - While you work elsewhere, a small always-on-top window shows live activity (current/last command, result status, voice state, CPU/RAM bars) and a quick-command box.
 - Drag it anywhere; it auto-pops when you run a command and its position is remembered between runs.
 
+## Optimization
+
+Three opt-in features keep JARVIS fast and cheap:
+
+- **LLM result cache** — planner output is stored in SQLite keyed by normalized command, so repeating a
+  command ("system status", "play lofi on youtube") skips the LLM call entirely and answers instantly.
+  Toggle with `LLM_CACHE_ENABLED` (default `true`); tune `LLM_CACHE_TTL_DAYS` and `LLM_CACHE_MAX_ENTRIES`.
+  Only the plan is cached — every command still executes its tools each time.
+- **Model tiering** — route routine planning to a fast/cheap model and the autonomous-agent loop to a
+  bigger one. Set `AGENT_LLM_PROVIDER` (empty = same as `LLM_PROVIDER`) plus the matching
+  `AGENT_OPENAI_MODEL` / `AGENT_GROQ_MODEL` / `AGENT_OLLAMA_MODEL`.
+- **LiteLLM gateway** — optional multi-provider routing/fallback. Install with
+  `pip install -e .[litellm]`, set `LLM_PROVIDER=litellm` and `LITELLM_MODEL=groq/llama-3.3-70b-versatile`
+  (provider-prefixed names), optionally `LITELLM_API_BASE` / `LITELLM_API_KEY`.
+
 ## Important Config Knobs (`.env`)
 
 - `API_TOKEN` — bearer token required for API calls

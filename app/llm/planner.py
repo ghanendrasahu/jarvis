@@ -105,8 +105,9 @@ class NullPlanner:
 
 
 class OpenAIPlanner:
-    def __init__(self, settings: Settings) -> None:
+    def __init__(self, settings: Settings, model: str | None = None) -> None:
         self.settings = settings
+        self.model = model or settings.openai_model
         from openai import OpenAI
 
         self.client = OpenAI(api_key=settings.openai_api_key)
@@ -129,7 +130,7 @@ class OpenAIPlanner:
             known_facts=known_facts,
         )
         completion = self.client.chat.completions.create(
-            model=self.settings.openai_model,
+            model=self.model,
             messages=[
                 {"role": "system", "content": JARVIS_IDENTITY_PROMPT},
                 {"role": "user", "content": user_prompt},
@@ -155,8 +156,9 @@ def _message_content(message: Any) -> str:
 
 
 class GroqPlanner:
-    def __init__(self, settings: Settings) -> None:
+    def __init__(self, settings: Settings, model: str | None = None) -> None:
         self.settings = settings
+        self.model = model or settings.groq_model
         from openai import OpenAI
 
         self.client = OpenAI(
@@ -182,7 +184,7 @@ class GroqPlanner:
             known_facts=known_facts,
         )
         completion = self.client.chat.completions.create(
-            model=self.settings.groq_model,
+            model=self.model,
             messages=[
                 {"role": "system", "content": JARVIS_IDENTITY_PROMPT},
                 {"role": "user", "content": user_prompt},
@@ -197,8 +199,9 @@ class GroqPlanner:
 
 
 class OllamaPlanner:
-    def __init__(self, settings: Settings) -> None:
+    def __init__(self, settings: Settings, model: str | None = None) -> None:
         self.settings = settings
+        self.model = model or settings.ollama_model
 
     def plan(
         self,
@@ -220,7 +223,7 @@ class OllamaPlanner:
         response = requests.post(
             f"{self.settings.ollama_base_url.rstrip('/')}/api/chat",
             json={
-                "model": self.settings.ollama_model,
+                "model": self.model,
                 "messages": [
                     {"role": "system", "content": JARVIS_IDENTITY_PROMPT},
                     {"role": "user", "content": user_prompt},
@@ -237,30 +240,100 @@ class OllamaPlanner:
         return _to_plan(payload)
 
 
-def create_planner(settings: Settings) -> BasePlanner:
-    provider = settings.llm_provider.lower().strip()
+class LiteLLMPlanner:
+    """OpenAI-compatible planning through LiteLLM (multi-provider routing/fallback).
+
+    Requires the optional extra: ``pip install -e .[litellm]``.
+    Model names are provider-prefixed, e.g. ``groq/llama-3.3-70b-versatile``.
+    """
+
+    def __init__(self, settings: Settings, model: str | None = None) -> None:
+        self.settings = settings
+        self.model = model or settings.litellm_model
+        try:
+            import litellm  # type: ignore[import-not-found]  # optional extra: pip install -e .[litellm]
+        except ImportError as exc:
+            raise ImportError("litellm extra not installed; run: pip install -e .[litellm]") from exc
+        self._litellm = litellm
+
+    def plan(
+        self,
+        command: str,
+        tool_catalog: list[dict],
+        history: list[dict],
+        agent_context: str = "",
+        tool_history: list[dict] | None = None,
+        known_facts: dict | None = None,
+    ) -> Plan:
+        user_prompt = build_planner_prompt(
+            command=command,
+            tool_catalog=tool_catalog,
+            history=history,
+            agent_context=agent_context,
+            tool_history=tool_history,
+            known_facts=known_facts,
+        )
+        kwargs: dict[str, Any] = {
+            "model": self.model,
+            "messages": [
+                {"role": "system", "content": JARVIS_IDENTITY_PROMPT},
+                {"role": "user", "content": user_prompt},
+            ],
+            "temperature": 0.1,
+            "drop_params": True,
+        }
+        if self.settings.litellm_api_base:
+            kwargs["api_base"] = self.settings.litellm_api_base
+        if self.settings.litellm_api_key:
+            kwargs["api_key"] = self.settings.litellm_api_key
+        response = self._litellm.completion(**kwargs)
+        message = response.choices[0].message
+        content = _message_content(message)
+        payload = _extract_json(content)
+        return _to_plan(payload)
+
+
+def _agent_provider(settings: Settings) -> str:
+    agent_provider = (settings.agent_llm_provider or "").strip().lower()
+    return agent_provider or settings.llm_provider.lower().strip()
+
+
+def create_planner(settings: Settings, for_agent: bool = False) -> BasePlanner:
+    provider = _agent_provider(settings) if for_agent else settings.llm_provider.lower().strip()
 
     if provider == "openai":
         if not settings.openai_api_key:
             return NullPlanner("OPENAI_API_KEY is not set.")
+        model = settings.agent_openai_model if for_agent else settings.openai_model
         try:
-            return OpenAIPlanner(settings)
+            return OpenAIPlanner(settings, model=model)
         except ImportError:
             return NullPlanner("openai package is not installed.")
         except Exception as exc:
             return NullPlanner(f"OpenAI init failed: {exc}")
 
     if provider == "ollama":
-        return OllamaPlanner(settings)
+        model = settings.agent_ollama_model if for_agent else settings.ollama_model
+        return OllamaPlanner(settings, model=model)
 
     if provider == "groq":
         if not settings.groq_api_key:
             return NullPlanner("GROQ_API_KEY is not set.")
+        model = settings.agent_groq_model if for_agent else settings.groq_model
         try:
-            return GroqPlanner(settings)
+            return GroqPlanner(settings, model=model)
         except ImportError:
             return NullPlanner("openai package is not installed.")
         except Exception as exc:
             return NullPlanner(f"Groq init failed: {exc}")
 
-    return NullPlanner(f"Unsupported llm_provider: {settings.llm_provider}")
+    if provider == "litellm":
+        model = settings.litellm_model if not for_agent else (settings.agent_litellm_model or settings.litellm_model)
+        try:
+            return LiteLLMPlanner(settings, model=model)
+        except ImportError as exc:
+            return NullPlanner(str(exc))
+        except Exception as exc:
+            return NullPlanner(f"LiteLLM init failed: {exc}")
+
+    return NullPlanner(f"Unsupported llm_provider: {provider}")

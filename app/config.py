@@ -42,6 +42,23 @@ class Settings(BaseSettings):
     ollama_base_url: str = "http://localhost:11434"
     ollama_model: str = "llama3.1:8b"
 
+    # Fast-planner result cache (repeat commands skip the LLM call entirely).
+    llm_cache_enabled: bool = True
+    llm_cache_ttl_days: int = 7
+    llm_cache_max_entries: int = 500
+
+    # Agent reasoning tier: empty provider = reuse the main LLM provider/model.
+    agent_llm_provider: str = ""
+    agent_openai_model: str = ""
+    agent_groq_model: str = ""
+    agent_ollama_model: str = ""
+    agent_litellm_model: str = ""
+
+    # LiteLLM gateway (optional extra: pip install -e .[litellm]).
+    litellm_model: str = "groq/llama-3.3-70b-versatile"
+    litellm_api_base: str | None = None
+    litellm_api_key: str | None = None
+
     wake_word: str = "jarvis"
     voice_enabled: bool = True
     tts_enabled: bool = True

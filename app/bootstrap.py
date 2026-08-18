@@ -43,12 +43,13 @@ def build_runtime(events: EventHub | None = None) -> Runtime:
 
     approvals = ApprovalManager()
     planner = create_planner(settings)
+    reasoning_planner = create_planner(settings, for_agent=True)
     router = DirectCommandRouter()
     executor = ActionExecutor(registry=registry, approvals=approvals, settings=settings)
     agent = AutonomousAgent(
         settings=settings,
         registry=registry,
-        planner=planner,
+        planner=reasoning_planner,
         executor=executor,
         approvals=approvals,
         memory=memory,

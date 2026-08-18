@@ -13,7 +13,7 @@ from app.core.events import EventHub
 from app.core.executor import ActionExecutor
 from app.core.logging import get_logger
 from app.core.memory import MemoryStore
-from app.core.router import DirectCommandRouter
+from app.core.router import DirectCommandRouter, _normalize_command
 from app.llm.planner import BasePlanner
 from app.models.schemas import (
     CommandStatus,
@@ -220,6 +220,53 @@ class JarvisOrchestrator:
     def _save_runtime_context(self, payload: dict) -> None:
         self.memory.set_state("runtime_context", payload)
 
+    def _planner_cache_key(self, command: str, context: dict) -> str:
+        surface = str((context or {}).get("active_surface") or "").strip().lower()
+        return f"{_normalize_command(command)}|surface={surface}|model={self.settings.llm_provider}/{self._planner_model()}"
+
+    def _planner_model(self) -> str:
+        provider = self.settings.llm_provider.lower().strip()
+        if provider == "openai":
+            return self.settings.openai_model
+        if provider == "groq":
+            return self.settings.groq_model
+        if provider == "ollama":
+            return self.settings.ollama_model
+        if provider == "litellm":
+            return self.settings.litellm_model
+        return "unknown"
+
+    def _plan_or_cached(self, command: str, context: dict) -> Plan:
+        """Plan via the LLM, skipping the call when a valid cached plan exists."""
+        if not self.settings.llm_cache_enabled:
+            return self._call_planner(command, context)
+        key = self._planner_cache_key(command, context)
+        cached = self.memory.cache_get(key, ttl_days=self.settings.llm_cache_ttl_days)
+        if cached is not None:
+            try:
+                plan = Plan.model_validate(cached)
+                if plan.actions or plan.final_response:
+                    logger.debug("planner cache hit for: %s", command)
+                    return plan
+            except Exception:
+                logger.debug("planner cache entry unusable for: %s", command)
+        plan = self._call_planner(command, context)
+        if plan.actions or plan.final_response:
+            self.memory.cache_set(key, plan.model_dump(mode="json"), max_entries=self.settings.llm_cache_max_entries)
+        return plan
+
+    def _call_planner(self, command: str, context: dict) -> Plan:
+        history = self.memory.recent_conversation(limit=self.settings.max_history_items)
+        tool_history = self.memory.recent_tool_history(limit=self.settings.max_history_items)
+        known_facts = (context or {}).get("learned_facts") or {}
+        return self.planner.plan(
+            command,
+            self.registry.catalog(),
+            history,
+            tool_history=tool_history,
+            known_facts=known_facts,
+        )
+
     @staticmethod
     def _learned_facts(prior: dict, results: list[ToolExecutionResult]) -> dict:
         facts = dict(prior.get("learned_facts") or {})
@@ -328,17 +375,8 @@ class JarvisOrchestrator:
                 return self._failed_response(cleaned, source, f"The autonomous agent failed: {exc}")
             return self._emit_done(self._response_from_agent(cleaned, source, agent_result))
         else:
-            history = self.memory.recent_conversation(limit=self.settings.max_history_items)
-            tool_history = self.memory.recent_tool_history(limit=self.settings.max_history_items)
-            known_facts = context.get("learned_facts") or {}
             try:
-                plan = self.planner.plan(
-                    cleaned,
-                    self.registry.catalog(),
-                    history,
-                    tool_history=tool_history,
-                    known_facts=known_facts,
-                )
+                plan = self._plan_or_cached(cleaned, context)
             except Exception as exc:
                 logger.warning("planner failed for command: %s", cleaned)
                 return self._failed_response(cleaned, source, f"Planning failed: {exc}")

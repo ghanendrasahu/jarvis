@@ -31,6 +31,9 @@ dev = [
     "ruff>=0.8.0",
     "mypy>=1.13.0",
 ]
+litellm = [
+    "litellm>=1.60.0",
+]
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]

@@ -67,6 +67,15 @@ class MemoryStore:
             )
             conn.execute(
                 """
+                CREATE TABLE IF NOT EXISTS planner_cache (
+                    key TEXT PRIMARY KEY,
+                    value_json TEXT NOT NULL,
+                    updated_at TEXT NOT NULL
+                )
+                """
+            )
+            conn.execute(
+                """
                 CREATE TABLE IF NOT EXISTS execution_metrics (
                     id INTEGER PRIMARY KEY AUTOINCREMENT,
                     created_at TEXT NOT NULL,
@@ -102,6 +111,7 @@ class MemoryStore:
             conn.execute("CREATE INDEX IF NOT EXISTS idx_tool_history_tool ON tool_history(tool)")
             conn.execute("CREATE INDEX IF NOT EXISTS idx_execution_metrics_created ON execution_metrics(created_at)")
             conn.execute("CREATE INDEX IF NOT EXISTS idx_command_history_created ON command_history(created_at)")
+            conn.execute("CREATE INDEX IF NOT EXISTS idx_planner_cache_updated ON planner_cache(updated_at)")
             conn.commit()
 
     def prune(self, days: int = 60) -> dict[str, int]:
@@ -218,6 +228,65 @@ class MemoryStore:
             return json.loads(row["value_json"] or "{}")
         except Exception:
             return dict(default or {})
+
+    def cache_get(self, key: str, ttl_days: int = 0) -> Any:
+        """Return a cached planner value, evicting it if it is older than ``ttl_days`` (0 = never expires)."""
+        if not key.strip():
+            return None
+        with self._lock:
+            row = self._conn.execute(
+                """
+                SELECT value_json, updated_at
+                FROM planner_cache
+                WHERE key = ?
+                """,
+                (key.strip(),),
+            ).fetchone()
+        if not row:
+            return None
+        if ttl_days > 0:
+            cutoff = (datetime.now(UTC) - timedelta(days=ttl_days)).isoformat()
+            if row["updated_at"] < cutoff:
+                self._evict_cache(key.strip())
+                return None
+        try:
+            return json.loads(row["value_json"] or "{}")
+        except Exception:
+            self._evict_cache(key.strip())
+            return None
+
+    def cache_set(self, key: str, value: Any, max_entries: int = 500) -> None:
+        if not key.strip():
+            raise ValueError("Cache key cannot be empty.")
+        payload = json.dumps(value)
+        created_at = datetime.now(UTC).isoformat()
+        with self._lock:
+            self._conn.execute(
+                """
+                INSERT INTO planner_cache (key, value_json, updated_at)
+                VALUES (?, ?, ?)
+                ON CONFLICT(key) DO UPDATE SET
+                    value_json=excluded.value_json,
+                    updated_at=excluded.updated_at
+                """,
+                (key.strip(), payload, created_at),
+            )
+            if max_entries > 0:
+                self._conn.execute(
+                    """
+                    DELETE FROM planner_cache
+                    WHERE key NOT IN (
+                        SELECT key FROM planner_cache ORDER BY updated_at DESC LIMIT ?
+                    )
+                    """,
+                    (max_entries,),
+                )
+            self._conn.commit()
+
+    def _evict_cache(self, key: str) -> None:
+        with self._lock:
+            self._conn.execute("DELETE FROM planner_cache WHERE key = ?", (key,))
+            self._conn.commit()
 
     def log_execution_metric(
         self,

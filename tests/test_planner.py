@@ -41,3 +41,39 @@ def test_to_plan_survives_empty_actions():
     plan: Plan = _to_plan({"summary": "noop", "actions": None, "final_response": "Done"})
     assert plan.actions == []
     assert plan.final_response == "Done"
+
+
+def test_create_planner_agent_tier_falls_back_to_main_provider():
+    from app.config import Settings
+    from app.llm.planner import OpenAIPlanner, create_planner
+
+    settings = Settings(workspace_root=".", llm_provider="openai", openai_api_key="k")
+    planner = create_planner(settings, for_agent=True)
+    assert isinstance(planner, OpenAIPlanner)
+    assert planner.model == settings.openai_model
+
+
+def test_create_planner_agent_tier_uses_override():
+    from app.config import Settings
+    from app.llm.planner import GroqPlanner, create_planner
+
+    settings = Settings(
+        workspace_root=".",
+        llm_provider="openai",
+        openai_api_key="k",
+        agent_llm_provider="groq",
+        groq_api_key="g",
+        agent_groq_model="groq/big-model",
+    )
+    planner = create_planner(settings, for_agent=True)
+    assert isinstance(planner, GroqPlanner)
+    assert planner.model == "groq/big-model"
+
+
+def test_create_planner_litellm_missing_extra_returns_null():
+    from app.config import Settings
+    from app.llm.planner import NullPlanner, create_planner
+
+    settings = Settings(workspace_root=".", llm_provider="litellm")
+    planner = create_planner(settings)
+    assert isinstance(planner, NullPlanner)
