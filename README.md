@@ -25,6 +25,7 @@ This version adds all requested upgrades across five phases:
 ```powershell
 .\scripts\bootstrap.ps1
 ```
+All versions live in `pyproject.toml`; `requirements.txt` is a thin `-e .[dev]` shim so `bootstrap.ps1` stays simple.
 
 2. Install Playwright browser runtime (required for full browser automation):
 ```powershell
@@ -209,15 +210,17 @@ curl -X POST http://localhost:8000/v1/execute \
 
 ## Desktop GUI
 
-When you run `run_gui.ps1`, a Jarvis popup opens with:
-- Command box + `Run` button
-- Voice `Start/Stop` toggle
-- Quick action buttons (YouTube, Apps, Shortcuts, Metrics)
-- Output panel (responses + tool statuses)
-- Pending approvals panel with `Refresh` and `Approve Selected`
-- Live CPU/RAM/network resource meters
+`run_gui.ps1` (or `start_jarvis.ps1`) opens the JARVIS command HUD (`app/gui.py`):
 
-This gives you direct laptop control without typing in terminal each time.
+- **Command bar** with ↑/↓ history + `EXECUTE` button, plus quick preset chips (Play/Pause, Next, Apps, MINI)
+- **Live terminal + activity feed** — responses, tool statuses, and a scrolling ✓/⏳/✗ command feed
+- **Voice engine** with a state-aware wave (LISTENING / PROCESSING / ATTENTION / IDLE) and start/stop toggle
+- **Job agent panel** — live status (phase, applied/skipped/failed, pause reason) with APPLY / STATUS / CANCEL
+- **Approvals panel**, **AI Bot chat**, **app launcher** (Alt+1..9), **resource meters** (CPU/RAM/network), scene viewer
+
+**Mini floating window** (`app/minihud.py`):
+- While you work elsewhere, a small always-on-top window shows live activity (current/last command, result status, voice state, CPU/RAM bars) and a quick-command box.
+- Drag it anywhere; it auto-pops when you run a command and its position is remembered between runs.
 
 ## Important Config Knobs (`.env`)
 
@@ -282,6 +285,8 @@ app/
   bootstrap.py            # runtime assembly (registry, agent, job agent, voice)
   main.py                 # FastAPI app + job/voice/metrics routes
   cli.py
+  gui.py                  # tkinter command HUD (dashboard)
+  minihud.py              # draggable always-on-top mini window
   config.py               # env-driven settings
   core/
     agent.py              # plan->execute->observe->re-plan loop
@@ -314,5 +319,11 @@ config/
   job_profile.yaml        # your identity/skills/form answers
   site_profiles.yaml      # job-board search + selector profiles
 tests/
-scripts/
+scripts/                # launchers (.ps1/.cmd) + bootstrap + clean.ps1
 ```
+
+## Maintenance
+
+- `.\scripts\clean.ps1` removes generated caches (`__pycache__`, pytest/ruff caches) and prunes
+  Chromium profile cache folders — it keeps your saved logins in `data/browser_profile`.
+- `data/`, `logs/`, and `.venv/` are gitignored runtime state.
