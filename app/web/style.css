@@ -224,15 +224,17 @@ body {
 }
 
 @media (max-width: 980px) {
-  .rail { width: auto; }
-  .nav-btn { justify-content: center; padding: 10px; }
-  .nb-label { display: none; }
-  .nav-btn .badge { position: absolute; margin-top: -22px; margin-left: 26px; }
-  .nav-btn { position: relative; }
-  .brand-sub { display: none; }
+  .statusbar { flex-wrap: wrap; row-gap: 8px; }
+  .status-meters { flex: 1 1 100%; order: 3; justify-content: space-around; }
   .status-meters .meter { gap: 5px; }
   .meter-info b { font-size: 11px; }
   .meter-ring { width: 22px; height: 22px; }
+  .brand-sub { display: none; }
+  .status-right { margin-left: auto; }
+  .rail { width: auto; }
+  .nav-btn { position: relative; justify-content: center; padding: 10px; }
+  .nb-label { display: none; }
+  .nav-btn .badge { position: absolute; top: 4px; right: 4px; margin: 0; }
 }
 
 @media (max-width: 720px) {
@@ -240,7 +242,7 @@ body {
   .shell { height: auto; min-height: 100vh; }
   .body { flex-direction: column; }
   .rail { flex-direction: row; width: 100%; align-items: center; }
-  .rail-spacer { flex: 1; }
+  .rail-spacer { display: none; }
   .nav-btn { flex: 1; }
   .main { min-height: 60vh; }
   .status-meters { display: none; }
