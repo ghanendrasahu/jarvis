@@ -2,7 +2,9 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 
+from app.agents.job_agent import JobAgent, get_job_agent
 from app.config import Settings, get_settings
+from app.core.agent import AutonomousAgent
 from app.core.approvals import ApprovalManager
 from app.core.executor import ActionExecutor
 from app.core.memory import MemoryStore
@@ -22,13 +24,16 @@ class Runtime:
     memory: MemoryStore
     planner: BasePlanner
     executor: ActionExecutor
+    agent: AutonomousAgent
     orchestrator: JarvisOrchestrator
     voice: VoiceController
+    job_agent: JobAgent
 
 
 def build_runtime() -> Runtime:
     settings = get_settings()
     memory = MemoryStore(settings.database_path)
+    memory.prune(settings.db_retention_days)
     registry = ToolRegistry()
     register_all_tools(registry, settings, memory=memory)
 
@@ -36,6 +41,14 @@ def build_runtime() -> Runtime:
     planner = create_planner(settings)
     router = DirectCommandRouter()
     executor = ActionExecutor(registry=registry, approvals=approvals, settings=settings)
+    agent = AutonomousAgent(
+        settings=settings,
+        registry=registry,
+        planner=planner,
+        executor=executor,
+        approvals=approvals,
+        memory=memory,
+    )
     orchestrator = JarvisOrchestrator(
         settings=settings,
         registry=registry,
@@ -44,8 +57,10 @@ def build_runtime() -> Runtime:
         executor=executor,
         approvals=approvals,
         memory=memory,
+        agent=agent,
     )
     voice = VoiceController(settings=settings, orchestrator=orchestrator)
+    job_agent = get_job_agent(settings=settings, memory=memory)
 
     return Runtime(
         settings=settings,
@@ -54,6 +69,8 @@ def build_runtime() -> Runtime:
         memory=memory,
         planner=planner,
         executor=executor,
+        agent=agent,
         orchestrator=orchestrator,
         voice=voice,
+        job_agent=job_agent,
     )

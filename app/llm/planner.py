@@ -11,7 +11,13 @@ from app.models.schemas import Action, Plan
 
 
 class BasePlanner(Protocol):
-    def plan(self, command: str, tool_catalog: list[dict], history: list[dict]) -> Plan:
+    def plan(
+        self,
+        command: str,
+        tool_catalog: list[dict],
+        history: list[dict],
+        agent_context: str = "",
+    ) -> Plan:
         ...
 
 
@@ -60,7 +66,13 @@ class NullPlanner:
     def __init__(self, reason: str = "No LLM provider configured.") -> None:
         self.reason = reason
 
-    def plan(self, command: str, tool_catalog: list[dict], history: list[dict]) -> Plan:
+    def plan(
+        self,
+        command: str,
+        tool_catalog: list[dict],
+        history: list[dict],
+        agent_context: str = "",
+    ) -> Plan:
         return Plan(
             summary="No planner available",
             actions=[],
@@ -78,8 +90,16 @@ class OpenAIPlanner:
 
         self.client = OpenAI(api_key=settings.openai_api_key)
 
-    def plan(self, command: str, tool_catalog: list[dict], history: list[dict]) -> Plan:
-        user_prompt = build_planner_prompt(command=command, tool_catalog=tool_catalog, history=history)
+    def plan(
+        self,
+        command: str,
+        tool_catalog: list[dict],
+        history: list[dict],
+        agent_context: str = "",
+    ) -> Plan:
+        user_prompt = build_planner_prompt(
+            command=command, tool_catalog=tool_catalog, history=history, agent_context=agent_context
+        )
         completion = self.client.chat.completions.create(
             model=self.settings.openai_model,
             messages=[
@@ -104,8 +124,16 @@ class GroqPlanner:
             base_url=settings.groq_base_url,
         )
 
-    def plan(self, command: str, tool_catalog: list[dict], history: list[dict]) -> Plan:
-        user_prompt = build_planner_prompt(command=command, tool_catalog=tool_catalog, history=history)
+    def plan(
+        self,
+        command: str,
+        tool_catalog: list[dict],
+        history: list[dict],
+        agent_context: str = "",
+    ) -> Plan:
+        user_prompt = build_planner_prompt(
+            command=command, tool_catalog=tool_catalog, history=history, agent_context=agent_context
+        )
         completion = self.client.chat.completions.create(
             model=self.settings.groq_model,
             messages=[
@@ -124,8 +152,16 @@ class OllamaPlanner:
     def __init__(self, settings: Settings) -> None:
         self.settings = settings
 
-    def plan(self, command: str, tool_catalog: list[dict], history: list[dict]) -> Plan:
-        user_prompt = build_planner_prompt(command=command, tool_catalog=tool_catalog, history=history)
+    def plan(
+        self,
+        command: str,
+        tool_catalog: list[dict],
+        history: list[dict],
+        agent_context: str = "",
+    ) -> Plan:
+        user_prompt = build_planner_prompt(
+            command=command, tool_catalog=tool_catalog, history=history, agent_context=agent_context
+        )
         response = requests.post(
             f"{self.settings.ollama_base_url.rstrip('/')}/api/chat",
             json={

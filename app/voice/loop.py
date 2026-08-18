@@ -1,15 +1,18 @@
-from __future__ import annotations
+﻿from __future__ import annotations
 
 import re
 import threading
 import time
-from datetime import datetime, timezone
+from datetime import UTC, datetime
 from typing import Any
 
 from app.config import Settings
+from app.core.logging import get_logger
 from app.core.orchestrator import JarvisOrchestrator
 from app.voice.listener import VoiceListener
 from app.voice.speaker import Speaker
+
+logger = get_logger("voice")
 
 
 class VoiceController:
@@ -43,7 +46,7 @@ class VoiceController:
             return False
         self._stop_event.clear()
         with self._state_lock:
-            self._started_at = datetime.now(timezone.utc).isoformat()
+            self._started_at = datetime.now(UTC).isoformat()
             self._last_activity_at = self._started_at
             self._last_transcript = ""
             self._last_command = ""
@@ -132,19 +135,21 @@ class VoiceController:
                 result = self.listener.listen_once()
             except Exception as exc:
                 with self._state_lock:
-                    self._last_activity_at = datetime.now(timezone.utc).isoformat()
+                    self._last_activity_at = datetime.now(UTC).isoformat()
                     self._last_error = str(exc)
                 time.sleep(0.5)
                 continue
 
             with self._state_lock:
                 self._listen_attempts += 1
-                self._last_activity_at = datetime.now(timezone.utc).isoformat()
+                self._last_activity_at = datetime.now(UTC).isoformat()
 
             if result.issue:
                 with self._state_lock:
                     if result.issue == "timeout":
                         self._timeout_count += 1
+                    elif result.issue == "no_speech":
+                        pass
                     elif result.issue == "unknown_audio":
                         self._unknown_audio_count += 1
                     elif result.issue.startswith("request_error"):
@@ -169,8 +174,8 @@ class VoiceController:
             if lowered.startswith("approve "):
                 approval_id = lowered.split("approve ", 1)[1].strip()
                 approval_response = self.orchestrator.approve(approval_id)
-                print(f"\n[voice] approval: {approval_id}")
-                print(f"[voice] response: {approval_response.message}")
+                logger.info("[voice] approval: %s", approval_id)
+                logger.info("[voice] response: %s", approval_response.message)
                 self._speak_async(approval_response.message[: self.settings.max_voice_response_chars])
                 continue
 
@@ -194,8 +199,8 @@ class VoiceController:
                 command = f"send whatsapp to {pending['phone']}: {pending['message']}"
                 execution = self.orchestrator.execute_command(command=command, source="voice", auto_approve=False)
                 self._pending_whatsapp_confirmation = None
-                print(f"\n[voice] command: {command}")
-                print(f"[voice] response: {execution.response_text}")
+                logger.info("[voice] command: %s", command)
+                logger.info("[voice] response: %s", execution.response_text)
                 self._speak_async(execution.response_text[: self.settings.max_voice_response_chars])
                 continue
 
@@ -228,14 +233,14 @@ class VoiceController:
                     response = (
                         f"{execution.response_text} Draft is ready. Say 'confirm send' to send now or 'cancel'."
                     )
-                    print(f"\n[voice] command: {draft_command}")
-                    print(f"[voice] response: {response}")
+                    logger.info("[voice] command: %s", draft_command)
+                    logger.info("[voice] response: %s", response)
                     self._speak_async(response[: self.settings.max_voice_response_chars])
                     continue
 
             execution = self.orchestrator.execute_command(command=command, source="voice", auto_approve=False)
-            print(f"\n[voice] command: {command}")
-            print(f"[voice] response: {execution.response_text}")
+            logger.info("[voice] command: %s", command)
+            logger.info("[voice] response: %s", execution.response_text)
             self._speak_async(execution.response_text[: self.settings.max_voice_response_chars])
 
     def probe_once(self) -> dict[str, str | None]:

@@ -2,10 +2,14 @@ from __future__ import annotations
 
 import json
 import sqlite3
-from datetime import datetime, timezone
+from datetime import UTC, datetime, timedelta
 from pathlib import Path
 from threading import Lock
 from typing import Any
+
+from app.core.logging import get_logger
+
+logger = get_logger("memory")
 
 
 class MemoryStore:
@@ -13,15 +17,20 @@ class MemoryStore:
         self.database_path = database_path
         self._lock = Lock()
         Path(database_path).expanduser().resolve().parent.mkdir(parents=True, exist_ok=True)
+        self._conn = self._connect()
         self._init_db()
 
     def _connect(self) -> sqlite3.Connection:
         connection = sqlite3.connect(self.database_path, check_same_thread=False)
         connection.row_factory = sqlite3.Row
+        connection.execute("PRAGMA journal_mode=WAL")
+        connection.execute("PRAGMA busy_timeout=5000")
+        connection.execute("PRAGMA synchronous=NORMAL")
         return connection
 
     def _init_db(self) -> None:
-        with self._connect() as conn:
+        with self._lock:
+            conn = self._conn
             conn.execute(
                 """
                 CREATE TABLE IF NOT EXISTS command_history (
@@ -72,20 +81,56 @@ class MemoryStore:
                 )
                 """
             )
+            conn.execute(
+                """
+                CREATE TABLE IF NOT EXISTS jobs_applied (
+                    id INTEGER PRIMARY KEY AUTOINCREMENT,
+                    created_at TEXT NOT NULL,
+                    site TEXT NOT NULL,
+                    title TEXT NOT NULL,
+                    company TEXT,
+                    location TEXT,
+                    url TEXT NOT NULL,
+                    status TEXT NOT NULL,
+                    notes TEXT
+                )
+                """
+            )
+            conn.execute("CREATE INDEX IF NOT EXISTS idx_jobs_applied_url ON jobs_applied(url)")
+            conn.execute("CREATE INDEX IF NOT EXISTS idx_jobs_applied_status ON jobs_applied(status)")
+            conn.execute("CREATE INDEX IF NOT EXISTS idx_tool_history_status ON tool_history(status)")
+            conn.execute("CREATE INDEX IF NOT EXISTS idx_tool_history_tool ON tool_history(tool)")
+            conn.execute("CREATE INDEX IF NOT EXISTS idx_execution_metrics_created ON execution_metrics(created_at)")
+            conn.execute("CREATE INDEX IF NOT EXISTS idx_command_history_created ON command_history(created_at)")
             conn.commit()
 
-    def log_command(self, source: str, command: str, response_text: str) -> None:
-        created_at = datetime.now(timezone.utc).isoformat()
+    def prune(self, days: int = 60) -> dict[str, int]:
+        """Delete history/metrics older than ``days``. Returns rows removed per table."""
+        if days <= 0:
+            return {"command_history": 0, "tool_history": 0, "execution_metrics": 0}
+        cutoff = (datetime.now(UTC) - timedelta(days=days)).isoformat()
+        counts: dict[str, int] = {}
         with self._lock:
-            with self._connect() as conn:
-                conn.execute(
-                    """
-                    INSERT INTO command_history (created_at, source, command, response_text)
-                    VALUES (?, ?, ?, ?)
-                    """,
-                    (created_at, source, command, response_text),
-                )
-                conn.commit()
+            conn = self._conn
+            for table in ("command_history", "tool_history", "execution_metrics"):
+                cursor = conn.execute(f"DELETE FROM {table} WHERE created_at < ?", (cutoff,))
+                counts[table] = cursor.rowcount
+            conn.commit()
+        if any(counts.values()):
+            logger.info("pruned old records: %s", counts)
+        return counts
+
+    def log_command(self, source: str, command: str, response_text: str) -> None:
+        created_at = datetime.now(UTC).isoformat()
+        with self._lock:
+            self._conn.execute(
+                """
+                INSERT INTO command_history (created_at, source, command, response_text)
+                VALUES (?, ?, ?, ?)
+                """,
+                (created_at, source, command, response_text),
+            )
+            self._conn.commit()
 
     def log_tool_result(
         self,
@@ -96,45 +141,42 @@ class MemoryStore:
         output: dict[str, Any] | None = None,
         error: str | None = None,
     ) -> None:
-        created_at = datetime.now(timezone.utc).isoformat()
+        created_at = datetime.now(UTC).isoformat()
         output_json = json.dumps(output or {})
         with self._lock:
-            with self._connect() as conn:
-                conn.execute(
-                    """
-                    INSERT INTO tool_history (created_at, command, tool, status, risk, output_json, error)
-                    VALUES (?, ?, ?, ?, ?, ?, ?)
-                    """,
-                    (created_at, command, tool, status, risk, output_json, error),
-                )
-                conn.commit()
+            self._conn.execute(
+                """
+                INSERT INTO tool_history (created_at, command, tool, status, risk, output_json, error)
+                VALUES (?, ?, ?, ?, ?, ?, ?)
+                """,
+                (created_at, command, tool, status, risk, output_json, error),
+            )
+            self._conn.commit()
 
     def recent_conversation(self, limit: int = 10) -> list[dict[str, Any]]:
         with self._lock:
-            with self._connect() as conn:
-                rows = conn.execute(
-                    """
-                    SELECT created_at, source, command, response_text
-                    FROM command_history
-                    ORDER BY id DESC
-                    LIMIT ?
-                    """,
-                    (limit,),
-                ).fetchall()
+            rows = self._conn.execute(
+                """
+                SELECT created_at, source, command, response_text
+                FROM command_history
+                ORDER BY id DESC
+                LIMIT ?
+                """,
+                (limit,),
+            ).fetchall()
         return [dict(row) for row in rows]
 
     def recent_tool_history(self, limit: int = 30) -> list[dict[str, Any]]:
         with self._lock:
-            with self._connect() as conn:
-                rows = conn.execute(
-                    """
-                    SELECT created_at, command, tool, status, risk, output_json, error
-                    FROM tool_history
-                    ORDER BY id DESC
-                    LIMIT ?
-                    """,
-                    (limit,),
-                ).fetchall()
+            rows = self._conn.execute(
+                """
+                SELECT created_at, command, tool, status, risk, output_json, error
+                FROM tool_history
+                ORDER BY id DESC
+                LIMIT ?
+                """,
+                (limit,),
+            ).fetchall()
         result: list[dict[str, Any]] = []
         for row in rows:
             payload = dict(row)
@@ -145,33 +187,31 @@ class MemoryStore:
     def set_state(self, key: str, value: dict[str, Any]) -> None:
         if not key.strip():
             raise ValueError("State key cannot be empty.")
-        created_at = datetime.now(timezone.utc).isoformat()
+        created_at = datetime.now(UTC).isoformat()
         payload = json.dumps(value)
         with self._lock:
-            with self._connect() as conn:
-                conn.execute(
-                    """
-                    INSERT INTO runtime_state (key, value_json, updated_at)
-                    VALUES (?, ?, ?)
-                    ON CONFLICT(key) DO UPDATE SET
-                        value_json=excluded.value_json,
-                        updated_at=excluded.updated_at
-                    """,
-                    (key.strip(), payload, created_at),
-                )
-                conn.commit()
+            self._conn.execute(
+                """
+                INSERT INTO runtime_state (key, value_json, updated_at)
+                VALUES (?, ?, ?)
+                ON CONFLICT(key) DO UPDATE SET
+                    value_json=excluded.value_json,
+                    updated_at=excluded.updated_at
+                """,
+                (key.strip(), payload, created_at),
+            )
+            self._conn.commit()
 
     def get_state(self, key: str, default: dict[str, Any] | None = None) -> dict[str, Any]:
         with self._lock:
-            with self._connect() as conn:
-                row = conn.execute(
-                    """
-                    SELECT value_json
-                    FROM runtime_state
-                    WHERE key = ?
-                    """,
-                    (key.strip(),),
-                ).fetchone()
+            row = self._conn.execute(
+                """
+                SELECT value_json
+                FROM runtime_state
+                WHERE key = ?
+                """,
+                (key.strip(),),
+            ).fetchone()
         if not row:
             return dict(default or {})
         try:
@@ -190,44 +230,42 @@ class MemoryStore:
         actions_failed: int,
         actions_pending: int,
     ) -> None:
-        created_at = datetime.now(timezone.utc).isoformat()
+        created_at = datetime.now(UTC).isoformat()
         with self._lock:
-            with self._connect() as conn:
-                conn.execute(
-                    """
-                    INSERT INTO execution_metrics (
-                        created_at, source, command, status, duration_ms,
-                        actions_total, actions_completed, actions_failed, actions_pending
-                    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
-                    """,
-                    (
-                        created_at,
-                        source,
-                        command,
-                        status,
-                        int(duration_ms),
-                        int(actions_total),
-                        int(actions_completed),
-                        int(actions_failed),
-                        int(actions_pending),
-                    ),
-                )
-                conn.commit()
+            self._conn.execute(
+                """
+                INSERT INTO execution_metrics (
+                    created_at, source, command, status, duration_ms,
+                    actions_total, actions_completed, actions_failed, actions_pending
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+                """,
+                (
+                    created_at,
+                    source,
+                    command,
+                    status,
+                    int(duration_ms),
+                    int(actions_total),
+                    int(actions_completed),
+                    int(actions_failed),
+                    int(actions_pending),
+                ),
+            )
+            self._conn.commit()
 
     def recent_execution_metrics(self, limit: int = 200) -> list[dict[str, Any]]:
         safe_limit = max(1, min(5000, int(limit)))
         with self._lock:
-            with self._connect() as conn:
-                rows = conn.execute(
-                    """
-                    SELECT created_at, source, command, status, duration_ms,
-                           actions_total, actions_completed, actions_failed, actions_pending
-                    FROM execution_metrics
-                    ORDER BY id DESC
-                    LIMIT ?
-                    """,
-                    (safe_limit,),
-                ).fetchall()
+            rows = self._conn.execute(
+                """
+                SELECT created_at, source, command, status, duration_ms,
+                       actions_total, actions_completed, actions_failed, actions_pending
+                FROM execution_metrics
+                ORDER BY id DESC
+                LIMIT ?
+                """,
+                (safe_limit,),
+            ).fetchall()
         return [dict(row) for row in rows]
 
     def metrics_summary(self, limit: int = 500) -> dict[str, Any]:
@@ -257,17 +295,16 @@ class MemoryStore:
         failed_count = status_counts.get("failed", 0)
 
         with self._lock:
-            with self._connect() as conn:
-                failed_tools_rows = conn.execute(
-                    """
-                    SELECT tool, COUNT(*) as failures
-                    FROM tool_history
-                    WHERE status = 'failed'
-                    GROUP BY tool
-                    ORDER BY failures DESC
-                    LIMIT 10
-                    """
-                ).fetchall()
+            failed_tools_rows = self._conn.execute(
+                """
+                SELECT tool, COUNT(*) as failures
+                FROM tool_history
+                WHERE status = 'failed'
+                GROUP BY tool
+                ORDER BY failures DESC
+                LIMIT 10
+                """
+            ).fetchall()
 
         return {
             "window": safe_limit,
@@ -278,3 +315,60 @@ class MemoryStore:
             "failure_rate": round(failed_count / total, 4),
             "top_failed_tools": [dict(row) for row in failed_tools_rows],
         }
+
+    def close(self) -> None:
+        with self._lock:
+            try:
+                self._conn.close()
+            except Exception:
+                pass
+
+    def is_job_applied(self, url: str) -> bool:
+        with self._lock:
+            row = self._conn.execute(
+                "SELECT 1 FROM jobs_applied WHERE url = ? AND status = 'applied' LIMIT 1",
+                (url,),
+            ).fetchone()
+        return row is not None
+
+    def log_job_application(
+        self,
+        site: str,
+        title: str,
+        company: str | None,
+        location: str | None,
+        url: str,
+        status: str,
+        notes: str | None = None,
+    ) -> None:
+        created_at = datetime.now(UTC).isoformat()
+        with self._lock:
+            self._conn.execute(
+                """
+                INSERT INTO jobs_applied (created_at, site, title, company, location, url, status, notes)
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+                """,
+                (created_at, site, title, company, location, url, status, notes),
+            )
+            self._conn.commit()
+
+    def recent_job_applications(self, limit: int = 50) -> list[dict[str, Any]]:
+        safe_limit = max(1, min(500, int(limit)))
+        with self._lock:
+            rows = self._conn.execute(
+                """
+                SELECT created_at, site, title, company, location, url, status, notes
+                FROM jobs_applied
+                ORDER BY id DESC
+                LIMIT ?
+                """,
+                (safe_limit,),
+            ).fetchall()
+        return [dict(row) for row in rows]
+
+    def job_applications_summary(self) -> dict[str, int]:
+        with self._lock:
+            rows = self._conn.execute(
+                "SELECT status, COUNT(*) AS count FROM jobs_applied GROUP BY status"
+            ).fetchall()
+        return {str(row["status"]): int(row["count"]) for row in rows}

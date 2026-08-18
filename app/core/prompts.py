@@ -2,7 +2,6 @@ from __future__ import annotations
 
 import json
 
-
 JARVIS_IDENTITY_PROMPT = """
 You are JARVIS - an elite-level AI executive assistant designed for high-performance problem solving, automation, and decision support.
 
@@ -99,7 +98,24 @@ PLANNER RULES FOR THIS RUNTIME
 """.strip()
 
 
-def build_planner_prompt(command: str, tool_catalog: list[dict], history: list[dict]) -> str:
+def _trim_catalog(tool_catalog: list[dict]) -> list[dict]:
+    """Return a token-light catalog: name + description only."""
+    trimmed: list[dict] = []
+    for item in tool_catalog or []:
+        name = str(item.get("name", "")).strip()
+        if not name:
+            continue
+        description = str(item.get("description", "")).strip()
+        trimmed.append({"name": name, "description": description})
+    return trimmed
+
+
+def build_planner_prompt(
+    command: str,
+    tool_catalog: list[dict],
+    history: list[dict],
+    agent_context: str = "",
+) -> str:
     schema = {
         "summary": "one-line plan summary",
         "actions": [
@@ -112,12 +128,47 @@ def build_planner_prompt(command: str, tool_catalog: list[dict], history: list[d
         ],
         "final_response": "concise response text for user",
     }
+    agent_section = ""
+    if agent_context:
+        agent_section = (
+            "AGENT MODE (autonomous multi-step execution):\n"
+            f"{agent_context}\n\n"
+            "Rules:\n"
+            "- You are mid-task. Decide the next action(s) that make progress.\n"
+            "- Do NOT repeat an action that already failed in the history above.\n"
+            "- When the task is fully complete, emit exactly one action: "
+            '{"tool": "agent_done", "args": {"summary": "what was accomplished"}, "risk": "low"}\n'
+            "- If you cannot make progress, emit agent_done with the blocker in final_response.\n"
+        )
     return (
         "TOOL_CATALOG:\n"
-        f"{json.dumps(tool_catalog, indent=2)}\n\n"
+        f"{json.dumps(_trim_catalog(tool_catalog), indent=2)}\n\n"
         "RECENT_HISTORY:\n"
         f"{json.dumps(history, indent=2)}\n\n"
+        f"{agent_section}"
         f"USER_COMMAND:\n{command}\n\n"
         "Return JSON with this exact shape:\n"
         f"{json.dumps(schema, indent=2)}"
     )
+
+
+def build_agent_observation(results: list[dict]) -> str:
+    """Summarize prior tool executions for the next planning iteration."""
+    if not results:
+        return ""
+    lines: list[str] = []
+    for index, item in enumerate(results, start=1):
+        tool = item.get("tool", "?")
+        status = item.get("status", "?")
+        output = item.get("output") or {}
+        summary = ""
+        if status == "completed":
+            keys = [k for k in ("opened", "count", "message", "url", "extracted", "done", "summary") if k in output]
+            if keys:
+                summary = f" -> {output[keys[0]]}"
+        elif status == "failed":
+            summary = f" -> error: {item.get('error', 'unknown')}"
+        elif status == "pending":
+            summary = " -> awaiting approval"
+        lines.append(f"{index}. {tool} [{status}]{summary}")
+    return "\n".join(lines)

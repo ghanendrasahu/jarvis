@@ -1,8 +1,8 @@
 from __future__ import annotations
 
-from dataclasses import dataclass
-from typing import Iterable
 import time
+from collections.abc import Iterable
+from dataclasses import dataclass
 
 from app.config import Settings
 
@@ -13,6 +13,39 @@ class ListenResult:
     issue: str | None = None
 
 
+class _VadGate:
+    """Optional voice-activity gate so STT APIs are only called on real speech."""
+
+    def __init__(self) -> None:
+        self._vad = None
+        self._available = False
+        try:
+            import webrtcvad
+
+            self._vad = webrtcvad.Vad(2)
+            self._available = True
+        except Exception:
+            self._available = False
+
+    @property
+    def available(self) -> bool:
+        return self._available
+
+    def has_speech(self, audio) -> bool:
+        if not self._available or self._vad is None:
+            return True
+        try:
+            samples = audio.get_raw_data(convert_rate=16000, convert_width=2)
+            frame_size = int(16000 * 0.02) * 2  # 20ms frames
+            frames = [samples[i : i + frame_size] for i in range(0, len(samples) - frame_size + 1, frame_size)]
+            if not frames:
+                return False
+            speech_frames = sum(1 for frame in frames if self._vad.is_speech(frame, 16000))
+            return speech_frames / len(frames) >= 0.25
+        except Exception:
+            return True
+
+
 class VoiceListener:
     def __init__(self, settings: Settings) -> None:
         self.settings = settings
@@ -20,6 +53,7 @@ class VoiceListener:
         self._backend = "openai_whisper_api" if bool(settings.openai_api_key) else "google_web_speech"
         self._device_index: int | None = None
         self._last_ambient_adjust_at: float | None = None
+        self._vad = _VadGate()
 
     def _get_recognizer(self):
         if self._recognizer is None:
@@ -116,6 +150,9 @@ class VoiceListener:
                 )
             except sr.WaitTimeoutError:
                 return ListenResult(transcript=None, issue="timeout")
+
+        if not self._vad.has_speech(audio):
+            return ListenResult(transcript=None, issue="no_speech")
 
         try:
             if self.settings.openai_api_key and hasattr(recognizer, "recognize_whisper_api"):
