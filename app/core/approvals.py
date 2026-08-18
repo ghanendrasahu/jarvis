@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
-from datetime import datetime, timedelta, timezone
+from datetime import UTC, datetime, timedelta
 from threading import Lock
 from uuid import uuid4
 
@@ -24,13 +24,13 @@ class ApprovalManager:
         self._pending: dict[str, PendingApproval] = {}
 
     def _cleanup_expired(self) -> None:
-        now = datetime.now(timezone.utc)
+        now = datetime.now(UTC)
         expired_ids = [key for key, item in self._pending.items() if item.expires_at <= now]
         for approval_id in expired_ids:
             self._pending.pop(approval_id, None)
 
     def create(self, command: str, action: Action) -> str:
-        created_at = datetime.now(timezone.utc)
+        created_at = datetime.now(UTC)
         expires_at = created_at + timedelta(minutes=self._ttl_minutes)
         approval_id = str(uuid4())[:8]
         pending = PendingApproval(

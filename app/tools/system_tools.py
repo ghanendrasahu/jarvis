@@ -5,8 +5,8 @@ import platform
 import shutil
 import subprocess
 import webbrowser
-from pathlib import Path
 from datetime import datetime
+from pathlib import Path
 from typing import Any
 
 import psutil
