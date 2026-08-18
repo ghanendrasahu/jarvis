@@ -12,6 +12,7 @@ from fastapi.staticfiles import StaticFiles
 from app.api.security import enforce_rate_limit, verify_api_token
 from app.bootstrap import Runtime, build_runtime
 from app.core.events import EventHub
+from app.core.media import background_path, list_backgrounds
 from app.core.resources import collect_resources
 from app.models.schemas import (
     ExecuteApprovalResponse,
@@ -23,6 +24,7 @@ from app.models.schemas import (
 
 _hub = EventHub()
 _web_dir = Path(__file__).resolve().parent / "web"
+_backgrounds_dir = Path(__file__).resolve().parent.parent / "data" / "backgrounds"
 
 
 @asynccontextmanager
@@ -259,6 +261,19 @@ async def ws_events(websocket: WebSocket) -> None:
 @app.get("/")
 def index() -> FileResponse:
     return FileResponse(_web_dir / "index.html")
+
+
+@app.get("/v1/backgrounds", dependencies=[_AUTH, _RATELIMIT])
+def backgrounds() -> list[dict]:
+    return list_backgrounds(_backgrounds_dir)
+
+
+@app.get("/backgrounds/{name}")
+def background_file(name: str) -> FileResponse:
+    path = background_path(_backgrounds_dir, name)
+    if path is None:
+        raise HTTPException(status_code=404, detail="Background not found.")
+    return FileResponse(path, media_type="image/gif" if path.suffix.lower() == ".gif" else "video/mp4")
 
 
 if (Path(__file__).resolve().parent / "web").is_dir():

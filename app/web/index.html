@@ -9,6 +9,8 @@
 </head>
 <body>
   <canvas id="bg"></canvas>
+  <video id="bgvideo" muted loop playsinline></video>
+  <div id="bgdim"></div>
 
   <div class="shell">
     <!-- STATUS BAR -->
@@ -31,6 +33,7 @@
         <span class="pill" id="voice-pill">VOICE IDLE</span>
         <span class="pill" id="conn-pill">OFFLINE</span>
         <div class="icon-row">
+          <button class="icon-btn" id="bg-btn" title="Background">◳</button>
           <button class="icon-btn" id="theme-btn" title="Cycle theme">◆</button>
           <button class="icon-btn" id="gfx-btn" title="Graphics mode">◐</button>
         </div>
@@ -124,6 +127,22 @@
         </section>
 
       </main>
+    </div>
+  </div>
+
+  <!-- BACKGROUND SETTINGS -->
+  <div class="overlay hidden" id="bg-overlay">
+    <div class="connect glass bg-modal">
+      <h1 style="font-size:16px;letter-spacing:3px">BACKGROUND</h1>
+      <div class="bg-opts">
+        <button class="chip bg-mode" data-mode="aurora">Aurora canvas</button>
+        <button class="chip bg-mode" data-mode="url">Video URL</button>
+        <button class="chip bg-mode" data-mode="local">Local file</button>
+      </div>
+      <p class="sub" id="bg-hint"></p>
+      <input id="bg-url" type="text" placeholder="https://…/galaxy-loop.mp4" autocomplete="off" hidden>
+      <div class="bg-local" id="bg-local" hidden></div>
+      <button class="btn btn-primary" id="bg-done">DONE</button>
     </div>
   </div>
 

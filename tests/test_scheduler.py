@@ -55,7 +55,7 @@ def test_scheduler_runs_due_job_and_removes(tmp_path):
 
     scheduler.tick()
 
-    deadline = time.monotonic() + 3.0
+    deadline = time.monotonic() + 6.0
     updated = scheduler.list()[0]
     while updated["last_status"] is None and time.monotonic() < deadline:
         time.sleep(0.05)

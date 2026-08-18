@@ -121,6 +121,7 @@ A polished, animated browser dashboard served by the same FastAPI engine — `sc
 - **Scheduler** — create/list/cancel recurring commands with the same syntax as the CLI/voice tools.
 - **Always-on status bar** — CPU / GPU / RAM / disk ring meters + sparkline history (GPU read in-process via Windows PDH counters, works on Intel UHD).
 - **Themes & perf** — cycle three themes (Aurora / Cyber / Light); **Lite graphics mode is the default** (battery-friendly, static aurora + few particles) with a Full mode toggle. Animations run at ~30 fps and fully pause when the tab is hidden.
+- **Video backgrounds** — click the **◳** button: keep the animated aurora canvas, paste any looping video URL (galaxy, anime, nature…), or drop a `.mp4` into `data/backgrounds/` and pick it from the list (served locally at `/backgrounds/…`). A dim + blur overlay keeps the UI readable; the video pauses when the tab is hidden.
 - **Security** — first launch asks for your `API_TOKEN` (saved in `localStorage`); auto-connects if auth is disabled.
 
 The existing Tkinter HUD (`run_gui.ps1`), mini-window, tray, and hotkey are unchanged and work alongside the web UI.
@@ -241,6 +242,7 @@ Voice diagnostics in CLI:
 - `GET /v1/schedules` · `POST /v1/schedules` · `DELETE /v1/schedules/{id}`
 - `GET /v1/resources`
 - `POST /v1/job/resume`
+- `GET /v1/backgrounds` · `GET /backgrounds/{name}` — list + serve local background videos from `data/backgrounds/`
 - `WS /ws/events` — live event stream (`?token=` for auth) with topics: `command_start`, `command_done`, `agent_step`, `scheduler_run`, `approval`
 
 All endpoints except `/v1/health` require `Authorization: Bearer <API_TOKEN>` and are rate limited.

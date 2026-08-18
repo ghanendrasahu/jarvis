@@ -7,12 +7,14 @@ const LS = {
   gfx: "jarvis_gfx",
   panel: "jarvis_panel",
   history: "jarvis_cmd_history",
+  bg: "jarvis_bg",
 };
 
 const state = {
   token: localStorage.getItem(LS.token) || "",
   theme: localStorage.getItem(LS.theme) || "aurora",
   gfx: localStorage.getItem(LS.gfx) || "lite",
+  bg: null,
   ws: null,
   wsRetry: 0,
   connected: false,
@@ -527,9 +529,90 @@ $("gfx-btn").addEventListener("click", () => {
   feed("info", "graphics", state.gfx === "full" ? "full effects" : "lite (battery-friendly)", false);
 });
 
+/* ---------- background (video / canvas) ---------- */
+function saveBg() { localStorage.setItem(LS.bg, JSON.stringify(state.bg)); }
+
+function applyBg() {
+  const video = $("bgvideo");
+  const dim = $("bgdim");
+  const canvas = $("bg");
+  const mode = state.bg.mode;
+  if (mode === "aurora") {
+    canvas.style.display = "";
+    dim.style.display = "none";
+    video.pause();
+    video.removeAttribute("src");
+    video.load();
+    return;
+  }
+  canvas.style.display = "none";
+  dim.style.display = "";
+  const src = mode === "url" ? state.bg.url : state.bg.localUrl || "";
+  if (!src) return;
+  if (video.getAttribute("src") !== src) video.src = src;
+  video.play().catch(() => { /* autoplay blocked — user can still use it as a static frame */ });
+}
+
+$("bg-btn").addEventListener("click", () => {
+  $("bg-overlay").classList.remove("hidden");
+  renderBgModal();
+});
+$("bg-done").addEventListener("click", () => $("bg-overlay").classList.add("hidden"));
+
+function renderBgModal() {
+  document.querySelectorAll(".bg-mode").forEach((c) => c.classList.toggle("active", c.dataset.mode === state.bg.mode));
+  const isUrl = state.bg.mode === "url";
+  const isLocal = state.bg.mode === "local";
+  $("bg-url").hidden = !isUrl;
+  $("bg-local").hidden = !isLocal;
+  $("bg-url").value = state.bg.url || "";
+  $("bg-hint").textContent = isUrl
+    ? "Paste any looping video URL (galaxy, anime, nature…). Plays directly from the source."
+    : isLocal
+      ? "Videos found in data/backgrounds/ — drop a looping .mp4 there and refresh."
+      : "The animated aurora canvas — zero extra cost.";
+  if (isLocal) renderBgLocal();
+}
+
+document.querySelectorAll(".bg-mode").forEach((c) => {
+  c.addEventListener("click", () => {
+    state.bg.mode = c.dataset.mode;
+    renderBgModal();
+  });
+});
+
+$("bg-url").addEventListener("change", () => {
+  state.bg.url = $("bg-url").value.trim();
+  state.bg.localUrl = "";
+  saveBg();
+  applyBg();
+});
+
+async function renderBgLocal() {
+  const box = $("bg-local");
+  box.innerHTML = "";
+  let items = [];
+  try { items = await api("/v1/backgrounds"); } catch { box.innerHTML = '<span class="sub">Could not list backgrounds.</span>'; return; }
+  if (!items.length) {
+    box.innerHTML = '<span class="sub">No videos yet — put a .mp4 in <b>data/backgrounds/</b> and click refresh.</span>';
+    return;
+  }
+  items.forEach((it) => {
+    const btn = document.createElement("button");
+    btn.className = "chip" + (state.bg.localUrl === it.url ? " active" : "");
+    btn.textContent = it.name;
+    btn.onclick = () => { state.bg.localUrl = it.url; state.bg.url = ""; saveBg(); applyBg(); renderBgModal(); };
+    box.appendChild(btn);
+  });
+}
+
 /* ---------- boot ---------- */
 function boot() {
   applyTheme();
+  try { state.bg = JSON.parse(localStorage.getItem(LS.bg)) || { mode: "aurora", url: "" }; }
+  catch { state.bg = { mode: "aurora", url: "" }; }
+  if (!state.bg.mode) state.bg = { mode: "aurora", url: "" };
+  applyBg();
   initBg();
   requestAnimationFrame(drawBg);
   setInterval(drawWave, 60);
@@ -544,6 +627,15 @@ function boot() {
   setInterval(pollSchedules, 10000);
   setInterval(pollVoice, 5000);
   window.addEventListener("resize", initBg);
-  document.addEventListener("visibilitychange", () => { if (document.visibilityState === "visible") { pollResources(); pollApprovals(); } });
+  document.addEventListener("visibilitychange", () => {
+    const v = $("bgvideo");
+    if (document.visibilityState !== "visible") {
+      v.pause();
+    } else {
+      pollResources();
+      pollApprovals();
+      if (state.bg && state.bg.mode !== "aurora") v.play().catch(() => {});
+    }
+  });
 }
 boot();

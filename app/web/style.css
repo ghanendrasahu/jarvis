@@ -63,6 +63,27 @@ body {
 
 #bg { position: fixed; inset: 0; z-index: 0; pointer-events: none; }
 
+#bgvideo {
+  position: fixed;
+  inset: 0;
+  z-index: 0;
+  width: 100%;
+  height: 100%;
+  object-fit: cover;
+  pointer-events: none;
+}
+
+#bgdim {
+  position: fixed;
+  inset: 0;
+  z-index: 0;
+  pointer-events: none;
+  background: radial-gradient(ellipse at center, rgba(2, 6, 23, 0.28), rgba(2, 6, 23, 0.72));
+  backdrop-filter: blur(2px);
+  -webkit-backdrop-filter: blur(2px);
+  display: none;
+}
+
 .glass {
   background: var(--panel);
   border: 1px solid var(--stroke);
@@ -131,6 +152,11 @@ body {
 .chips { display: flex; gap: 8px; flex-wrap: wrap; }
 .chip { background: rgba(255,255,255,0.03); border: 1px solid var(--stroke); color: var(--muted); border-radius: 20px; font-family: var(--font); font-size: 11px; padding: 5px 12px; cursor: pointer; }
 .chip:hover { color: var(--accent); border-color: var(--accent); }
+.chip.active { color: var(--accent); border-color: var(--accent); background: rgba(34,211,238,0.12); }
+
+.bg-modal { width: 480px; }
+.bg-opts { display: flex; gap: 8px; flex-wrap: wrap; justify-content: center; }
+.bg-local { display: flex; flex-wrap: wrap; gap: 8px; justify-content: center; max-height: 150px; overflow-y: auto; }
 
 /* ---------- feed ---------- */
 .feed { flex: 1; overflow-y: auto; padding: 12px 14px; min-height: 0; display: flex; flex-direction: column; gap: 6px; }
