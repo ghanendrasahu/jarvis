@@ -6,6 +6,7 @@ from app.agents.job_agent import JobAgent, get_job_agent
 from app.config import Settings, get_settings
 from app.core.agent import AutonomousAgent
 from app.core.approvals import ApprovalManager
+from app.core.events import EventHub
 from app.core.executor import ActionExecutor
 from app.core.memory import MemoryStore
 from app.core.orchestrator import JarvisOrchestrator
@@ -33,7 +34,7 @@ class Runtime:
     scheduler: Scheduler
 
 
-def build_runtime() -> Runtime:
+def build_runtime(events: EventHub | None = None) -> Runtime:
     settings = get_settings()
     memory = MemoryStore(settings.database_path)
     memory.prune(settings.db_retention_days)
@@ -61,6 +62,7 @@ def build_runtime() -> Runtime:
         approvals=approvals,
         memory=memory,
         agent=agent,
+        events=events,
     )
     voice = VoiceController(settings=settings, orchestrator=orchestrator)
     job_agent = get_job_agent(settings=settings, memory=memory)

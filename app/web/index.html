@@ -1,0 +1,144 @@
+<!DOCTYPE html>
+<html lang="en" data-theme="aurora">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>JARVIS — Command Deck</title>
+<link rel="icon" href="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 32 32'><circle cx='16' cy='16' r='14' fill='none' stroke='%2322d3ee' stroke-width='2'/><circle cx='16' cy='16' r='5' fill='%23818cf8'/></svg>">
+<link rel="stylesheet" href="/app/style.css">
+</head>
+<body>
+  <canvas id="bg"></canvas>
+
+  <div class="shell">
+    <!-- STATUS BAR -->
+    <header class="statusbar glass">
+      <div class="brand">
+        <div class="brand-mark"></div>
+        <div class="brand-text">
+          <span class="brand-name">JARVIS</span>
+          <span class="brand-sub" id="brand-sub">connecting…</span>
+        </div>
+      </div>
+      <div class="status-meters">
+        <div class="meter" id="m-cpu"><div class="meter-ring"></div><div class="meter-info"><b id="cpu-val">–</b><span>CPU</span></div></div>
+        <div class="meter" id="m-gpu"><div class="meter-ring"></div><div class="meter-info"><b id="gpu-val">–</b><span>GPU</span></div></div>
+        <div class="meter" id="m-ram"><div class="meter-ring"></div><div class="meter-info"><b id="ram-val">–</b><span>RAM</span></div></div>
+        <div class="meter" id="m-disk"><div class="meter-ring"></div><div class="meter-info"><b id="disk-val">–</b><span>DISK</span></div></div>
+        <div class="spark-box"><canvas id="spark-cpu" width="120" height="34"></canvas><canvas id="spark-ram" width="120" height="34"></canvas></div>
+      </div>
+      <div class="status-right">
+        <span class="pill" id="voice-pill">VOICE IDLE</span>
+        <span class="pill" id="conn-pill">OFFLINE</span>
+        <div class="icon-row">
+          <button class="icon-btn" id="theme-btn" title="Cycle theme">◆</button>
+          <button class="icon-btn" id="gfx-btn" title="Graphics mode">◐</button>
+        </div>
+      </div>
+    </header>
+
+    <!-- BODY -->
+    <div class="body">
+      <nav class="rail glass">
+        <button class="nav-btn active" data-panel="live"><span class="nb-ico">▸</span>Live</button>
+        <button class="nav-btn" data-panel="voice"><span class="nb-ico">◍</span>Voice</button>
+        <button class="nav-btn" data-panel="approvals"><span class="nb-ico">◈</span>Approvals <b class="badge" id="approval-badge" hidden>0</b></button>
+        <button class="nav-btn" data-panel="jobs"><span class="nb-ico">◉</span>Jobs</button>
+        <button class="nav-btn" data-panel="scheduler"><span class="nb-ico">◷</span>Scheduler</button>
+        <div class="rail-spacer"></div>
+        <button class="nav-btn" id="logout-btn" title="Change token">↺</button>
+      </nav>
+
+      <main class="main">
+
+        <!-- LIVE -->
+        <section class="panel" id="panel-live">
+          <div class="cmdbar glass">
+            <span class="cmd-prompt">❯</span>
+            <input id="cmd-input" type="text" autocomplete="off" spellcheck="false" placeholder="type a command — 'play lofi on youtube', 'apply for data engineer', 'schedule system status daily at 09:00'…">
+            <button id="cmd-run" class="btn btn-primary">EXECUTE</button>
+          </div>
+          <div class="chips">
+            <button class="chip" data-cmd="system status">system status</button>
+            <button class="chip" data-cmd="metrics">metrics</button>
+            <button class="chip" data-cmd="list apps">list apps</button>
+            <button class="chip" data-cmd="list schedules">list schedules</button>
+            <button class="chip" data-cmd="job status">job status</button>
+            <button class="chip" data-cmd="get current time">time</button>
+          </div>
+          <div class="feed glass" id="feed"></div>
+        </section>
+
+        <!-- VOICE -->
+        <section class="panel" id="panel-voice" hidden>
+          <div class="panel-head">
+            <h2>Voice Engine</h2>
+            <span class="sub" id="voice-state">IDLE</span>
+          </div>
+          <div class="voice-stage glass">
+            <canvas id="wave" width="900" height="180"></canvas>
+            <button id="voice-toggle" class="btn btn-big">START VOICE</button>
+            <p class="sub" id="voice-note">Speak commands directly. JARVIS listens, plans, and executes.</p>
+          </div>
+        </section>
+
+        <!-- APPROVALS -->
+        <section class="panel" id="panel-approvals" hidden>
+          <div class="panel-head"><h2>Approvals</h2><span class="sub" id="approval-sub">no pending approvals</span></div>
+          <div class="card-grid" id="approval-list"></div>
+        </section>
+
+        <!-- JOBS -->
+        <section class="panel" id="panel-jobs" hidden>
+          <div class="panel-head"><h2>Job Pipeline</h2></div>
+          <div class="job-apply glass">
+            <input id="job-query" type="text" placeholder="e.g. data engineer remote">
+            <button class="btn btn-primary" id="job-apply-btn">APPLY</button>
+          </div>
+          <div class="job-stats">
+            <div class="stat"><b id="stat-applied">0</b><span>APPLIED</span></div>
+            <div class="stat"><b id="stat-interview">0</b><span>INTERVIEW</span></div>
+            <div class="stat"><b id="stat-offer">0</b><span>OFFER</span></div>
+            <div class="stat"><b id="stat-rejected">0</b><span>REJECTED</span></div>
+          </div>
+          <div class="job-task glass" id="job-task">
+            <div class="task-row"><span class="sub">No active job task</span></div>
+            <div class="task-actions">
+              <button class="btn" id="job-resume-btn" hidden>RESUME</button>
+              <button class="btn btn-danger" id="job-cancel-btn" hidden>CANCEL</button>
+            </div>
+          </div>
+          <div class="panel-head" style="margin-top:18px"><h3 style="font-size:13px">Recent applications</h3></div>
+          <div class="feed glass" id="job-feed" style="max-height:260px"></div>
+        </section>
+
+        <!-- SCHEDULER -->
+        <section class="panel" id="panel-scheduler" hidden>
+          <div class="panel-head"><h2>Scheduler</h2></div>
+          <div class="job-apply glass">
+            <input id="sched-cmd" type="text" placeholder="command — e.g. system status">
+            <input id="sched-rec" type="text" placeholder="recurrence — daily at 09:00 / hourly / every 30 minutes / weekly on monday at 10:00">
+            <button class="btn btn-primary" id="sched-add-btn">SCHEDULE</button>
+          </div>
+          <div class="feed glass" id="sched-feed" style="max-height:420px"></div>
+        </section>
+
+      </main>
+    </div>
+  </div>
+
+  <!-- CONNECT OVERLAY -->
+  <div class="overlay" id="overlay">
+    <div class="connect glass">
+      <div class="brand-mark lg"></div>
+      <h1>JARVIS</h1>
+      <p class="sub">Enter your API token to connect to the local engine.</p>
+      <input id="token-input" type="password" placeholder="API token (leave blank if auth is off)" autocomplete="off">
+      <button class="btn btn-primary" id="connect-btn">CONNECT</button>
+      <p class="sub err" id="connect-err"></p>
+    </div>
+  </div>
+
+<script src="/app/app.js"></script>
+</body>
+</html>

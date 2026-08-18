@@ -110,6 +110,21 @@ Disabled = the HUD does not auto-start until you re-enable it (manual `start_jar
 - **Job resume + pipeline** — after the job agent pauses on a login/CAPTCHA wall, click **RESUME** on the HUD to continue from the exact page it stopped on. Track your pipeline with `job status`/`job update status <url> <status>` — statuses roll up into APPLIED / INTERVIEW / OFFER / REJECTED counters on the HUD.
 - **Scheduler** — say or type `schedule <command> daily at 09:00` (also `hourly`, `every N minutes`, `weekly on <day> at HH:MM`). `list_schedules` shows the queue, `cancel_schedule <id>` removes one. Each run appears in the HUD feed.
 
+## Web Dashboard
+
+A polished, animated browser dashboard served by the same FastAPI engine — `scripts/web_ui.ps1` (or `web_ui.cmd`) starts the server and opens `http://127.0.0.1:8000`.
+
+- **Live feed** — run commands from the glowing command bar; agent steps, approvals, job updates, and scheduler runs stream in over a WebSocket.
+- **Voice panel** — start/stop the voice engine with an animated waveform.
+- **Approvals** — approve/reject risky agent steps from cards.
+- **Jobs** — apply form, live task status with progress, APPLIED/INTERVIEW/OFFER/REJECTED pipeline counters, RESUME/CANCEL.
+- **Scheduler** — create/list/cancel recurring commands with the same syntax as the CLI/voice tools.
+- **Always-on status bar** — CPU / GPU / RAM / disk ring meters + sparkline history (GPU read in-process via Windows PDH counters, works on Intel UHD).
+- **Themes & perf** — cycle three themes (Aurora / Cyber / Light); **Lite graphics mode is the default** (battery-friendly, static aurora + few particles) with a Full mode toggle. Animations run at ~30 fps and fully pause when the tab is hidden.
+- **Security** — first launch asks for your `API_TOKEN` (saved in `localStorage`); auto-connects if auth is disabled.
+
+The existing Tkinter HUD (`run_gui.ps1`), mini-window, tray, and hotkey are unchanged and work alongside the web UI.
+
 ## Architecture
 
 ```mermaid
@@ -224,6 +239,9 @@ Voice diagnostics in CLI:
 - `GET /v1/job/applied`
 - `POST /v1/reject/{approval_id}`
 - `GET /v1/schedules` · `POST /v1/schedules` · `DELETE /v1/schedules/{id}`
+- `GET /v1/resources`
+- `POST /v1/job/resume`
+- `WS /ws/events` — live event stream (`?token=` for auth) with topics: `command_start`, `command_done`, `agent_step`, `scheduler_run`, `approval`
 
 All endpoints except `/v1/health` require `Authorization: Bearer <API_TOKEN>` and are rate limited.
 

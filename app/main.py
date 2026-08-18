@@ -1,12 +1,18 @@
 from __future__ import annotations
 
+import asyncio
 from contextlib import asynccontextmanager
+from pathlib import Path
 
-from fastapi import Depends, FastAPI, HTTPException
+from fastapi import Depends, FastAPI, HTTPException, WebSocket, WebSocketDisconnect
 from fastapi.middleware.cors import CORSMiddleware
+from fastapi.responses import FileResponse
+from fastapi.staticfiles import StaticFiles
 
 from app.api.security import enforce_rate_limit, verify_api_token
 from app.bootstrap import Runtime, build_runtime
+from app.core.events import EventHub
+from app.core.resources import collect_resources
 from app.models.schemas import (
     ExecuteApprovalResponse,
     ExecuteCommandRequest,
@@ -15,18 +21,31 @@ from app.models.schemas import (
     ScheduleCreateRequest,
 )
 
+_hub = EventHub()
+_web_dir = Path(__file__).resolve().parent / "web"
+
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     runtime = get_runtime()
     app.state.runtime = runtime
+
+    def _on_scheduler_run(job: dict, status: str, text: str) -> None:
+        _hub.publish(
+            "scheduler_run",
+            {"command": job.get("command"), "status": status, "result": text, "job_id": job.get("id")},
+        )
+
+    runtime.scheduler.on_run = _on_scheduler_run
+    runtime.scheduler.start()
     yield
+    runtime.scheduler.stop()
     runtime.voice.stop()
 
 
 app = FastAPI(
     title="JARVIS",
-    version="1.1.0",
+    version="1.2.0",
     description="Advanced JARVIS API for voice-first system, desktop, and autonomous agent automation.",
     lifespan=lifespan,
 )
@@ -37,7 +56,7 @@ _runtime: Runtime | None = None
 def get_runtime() -> Runtime:
     global _runtime
     if _runtime is None:
-        _runtime = build_runtime()
+        _runtime = build_runtime(events=_hub)
     return _runtime
 
 
@@ -177,9 +196,70 @@ def job_cancel() -> dict:
     return app.state.runtime.job_agent.cancel()
 
 
+@app.post("/v1/job/resume", dependencies=[_AUTH, _RATELIMIT])
+def job_resume() -> dict:
+    return app.state.runtime.job_agent.resume()
+
+
 @app.get("/v1/job/applied", dependencies=[_AUTH, _RATELIMIT])
 def job_applied(limit: int = 50) -> dict:
     if limit < 1 or limit > 200:
         raise HTTPException(status_code=400, detail="limit must be between 1 and 200")
     agent = app.state.runtime.job_agent
     return {"items": agent.applied(limit=limit), "totals": agent.applied_totals()}
+
+
+@app.get("/v1/resources", dependencies=[_AUTH, _RATELIMIT])
+def resources() -> dict:
+    return collect_resources()
+
+
+@app.websocket("/ws/events")
+async def ws_events(websocket: WebSocket) -> None:
+    runtime = app.state.runtime
+    expected = (runtime.settings.api_token or "").strip()
+    token = websocket.query_params.get("token", "")
+    if expected and token != expected:
+        await websocket.close(code=4401)
+        return
+    await websocket.accept()
+    outbox: asyncio.Queue[dict] = asyncio.Queue(maxsize=500)
+    loop = asyncio.get_running_loop()
+
+    def _publish(topic: str, payload: dict) -> None:
+        def _put() -> None:
+            try:
+                outbox.put_nowait({"topic": topic, "payload": payload})
+            except asyncio.QueueFull:
+                pass
+
+        loop.call_soon_threadsafe(_put)
+
+    unsubscribe = _hub.subscribe(_publish)
+
+    async def _reader() -> None:
+        try:
+            while True:
+                await websocket.receive_text()
+        except (WebSocketDisconnect, RuntimeError):
+            pass
+
+    reader = asyncio.create_task(_reader())
+    try:
+        while True:
+            msg = await outbox.get()
+            await websocket.send_json(msg)
+    except (WebSocketDisconnect, RuntimeError):
+        pass
+    finally:
+        reader.cancel()
+        unsubscribe()
+
+
+@app.get("/")
+def index() -> FileResponse:
+    return FileResponse(_web_dir / "index.html")
+
+
+if (Path(__file__).resolve().parent / "web").is_dir():
+    app.mount("/app", StaticFiles(directory=_web_dir), name="web")

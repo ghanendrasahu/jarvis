@@ -9,6 +9,7 @@ from typing import Any
 from app.config import Settings
 from app.core.agent import AgentRunResult, AutonomousAgent
 from app.core.approvals import ApprovalManager
+from app.core.events import EventHub
 from app.core.executor import ActionExecutor
 from app.core.logging import get_logger
 from app.core.memory import MemoryStore
@@ -62,6 +63,7 @@ class JarvisOrchestrator:
         approvals: ApprovalManager,
         memory: MemoryStore,
         agent: AutonomousAgent | None = None,
+        events: EventHub | None = None,
     ) -> None:
         self.settings = settings
         self.registry = registry
@@ -71,6 +73,36 @@ class JarvisOrchestrator:
         self.approvals = approvals
         self.memory = memory
         self.agent = agent
+        self.events = events
+
+    def _emit(self, topic: str, payload: dict[str, Any]) -> None:
+        if self.events is not None:
+            self.events.publish(topic, payload)
+
+    def _wrap_step(self, on_step: Callable[[dict[str, Any]], None] | None) -> Callable[[dict[str, Any]], None] | None:
+        if on_step is None:
+            return None
+
+        def wrapped(step: dict[str, Any]) -> None:
+            try:
+                on_step(step)
+            finally:
+                self._emit("agent_step", step)
+
+        return wrapped
+
+    def _emit_done(self, payload: ExecuteCommandResponse) -> ExecuteCommandResponse:
+        self._emit(
+            "command_done",
+            {
+                "command": payload.command,
+                "source": payload.source,
+                "status": payload.status,
+                "response_text": payload.response_text,
+                "created_at": payload.created_at,
+            },
+        )
+        return payload
 
     @staticmethod
     def _status_from_results(results: Iterable[ToolExecutionResult]) -> str:
@@ -244,6 +276,8 @@ class JarvisOrchestrator:
     ) -> ExecuteCommandResponse:
         started = time.perf_counter()
         cleaned = command.strip()
+        self._emit("command_start", {"command": cleaned, "source": source, "started_at": datetime.now(UTC).isoformat()})
+        on_step = self._wrap_step(on_step)
         if not cleaned:
             return ExecuteCommandResponse(
                 command=command,
@@ -279,7 +313,7 @@ class JarvisOrchestrator:
                 actions_failed=0,
                 actions_pending=0,
             )
-            return payload
+            return self._emit_done(payload)
 
         context = self._load_runtime_context()
         direct_actions = self.router.route(cleaned, context=context)
@@ -291,7 +325,7 @@ class JarvisOrchestrator:
             except Exception as exc:
                 logger.exception("autonomous agent run failed")
                 return self._failed_response(cleaned, source, f"The autonomous agent failed: {exc}")
-            return self._response_from_agent(cleaned, source, agent_result)
+            return self._emit_done(self._response_from_agent(cleaned, source, agent_result))
         else:
             history = self.memory.recent_conversation(limit=self.settings.max_history_items)
             tool_history = self.memory.recent_tool_history(limit=self.settings.max_history_items)
@@ -307,7 +341,6 @@ class JarvisOrchestrator:
             except Exception as exc:
                 logger.warning("planner failed for command: %s", cleaned)
                 return self._failed_response(cleaned, source, f"Planning failed: {exc}")
-
         valid_tools = {item["name"] for item in self.registry.catalog()}
         filtered_actions = [action for action in plan.actions if action.tool in valid_tools]
         if len(filtered_actions) != len(plan.actions):
@@ -365,7 +398,7 @@ class JarvisOrchestrator:
         )
         self.memory.log_command(source=source, command=cleaned, response_text=response_text)
         logger.info("command from=%s status=%s duration=%dms actions=%d", source, status, duration_ms, len(results))
-        return payload
+        return self._emit_done(payload)
 
     def _failed_response(self, command: str, source: str, message: str) -> ExecuteCommandResponse:
         self.memory.log_command(source=source, command=command, response_text=message)
@@ -379,14 +412,16 @@ class JarvisOrchestrator:
             actions_failed=0,
             actions_pending=0,
         )
-        return ExecuteCommandResponse(
-            command=command,
-            source=source,
-            status="failed",
-            response_text=message,
-            plan_summary="",
-            results=[],
-            created_at=datetime.now(UTC).isoformat(),
+        return self._emit_done(
+            ExecuteCommandResponse(
+                command=command,
+                source=source,
+                status="failed",
+                response_text=message,
+                plan_summary="",
+                results=[],
+                created_at=datetime.now(UTC).isoformat(),
+            )
         )
 
     def _response_from_agent(self, command: str, source: str, result: AgentRunResult) -> ExecuteCommandResponse:
@@ -484,6 +519,7 @@ class JarvisOrchestrator:
             actions_failed=1 if outcome.status == "failed" else 0,
             actions_pending=0,
         )
+        self._emit("approval", {"action": "approved", "approval_id": approval_id, "command": pending.command, "status": status})
         return ExecuteApprovalResponse(status="approved", message="Approval executed.", execution=execution)
 
     def reject(self, approval_id: str) -> ExecuteApprovalResponse:
@@ -499,6 +535,7 @@ class JarvisOrchestrator:
             return ExecuteApprovalResponse(status="not_found", message="Approval ID is invalid or expired.")
         self.memory.log_command(source="approval", command=command or "(rejected)", response_text=f"Rejected approval {approval_id}")
         logger.info("approval rejected: %s", approval_id)
+        self._emit("approval", {"action": "rejected", "approval_id": approval_id, "command": command})
         return ExecuteApprovalResponse(status="rejected", message="Approval rejected.")
 
     def _response_from_resumed_approval(
