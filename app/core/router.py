@@ -3,8 +3,8 @@ from __future__ import annotations
 import re
 from typing import Any
 
+from app.core.utils import parse_duration_to_seconds
 from app.models.schemas import Action
-
 
 _WORD_ALIASES = {
     "youutube": "youtube",
@@ -34,35 +34,6 @@ def _normalize_command(text: str) -> str:
         pattern = r"\b" + re.escape(source) + r"\b"
         normalized = re.sub(pattern, target, normalized)
     return re.sub(r"\s+", " ", normalized).strip()
-
-
-def _parse_time_seconds(raw_value: str) -> int | None:
-    text = raw_value.strip().lower()
-    if not text:
-        return None
-
-    match = re.fullmatch(r"(\d+):(\d{1,2})(?::(\d{1,2}))?", text)
-    if match:
-        first = int(match.group(1))
-        second = int(match.group(2))
-        third = match.group(3)
-        if third is None:
-            return (first * 60) + second
-        return (first * 3600) + (second * 60) + int(third)
-
-    unit_match = re.fullmatch(
-        r"(?:(\d+)\s*h(?:ours?)?)?\s*(?:(\d+)\s*m(?:in(?:ute)?s?)?)?\s*(?:(\d+)\s*s(?:ec(?:ond)?s?)?)?",
-        text,
-    )
-    if unit_match and any(unit_match.groups()):
-        hours = int(unit_match.group(1) or 0)
-        minutes = int(unit_match.group(2) or 0)
-        seconds = int(unit_match.group(3) or 0)
-        return (hours * 3600) + (minutes * 60) + seconds
-
-    if text.isdigit():
-        return int(text)
-    return None
 
 
 def _is_youtube_followup(text: str) -> bool:
@@ -157,7 +128,10 @@ class DirectCommandRouter:
             flags=re.IGNORECASE,
         )
         if match:
-            seconds = _parse_time_seconds(match.group(1))
+            try:
+                seconds = parse_duration_to_seconds(match.group(1))
+            except ValueError:
+                seconds = 0
             if seconds and seconds > 0:
                 return [
                     Action(
@@ -174,7 +148,10 @@ class DirectCommandRouter:
             flags=re.IGNORECASE,
         )
         if match:
-            seconds = _parse_time_seconds(match.group(1))
+            try:
+                seconds = parse_duration_to_seconds(match.group(1))
+            except ValueError:
+                seconds = 0
             if seconds and seconds > 0:
                 return [
                     Action(
@@ -365,6 +342,17 @@ class DirectCommandRouter:
         if normalized.startswith("find files "):
             pattern = text[11:].strip()
             return [Action(tool="find_files", args={"pattern": pattern, "limit": 50}, risk="low", reason="Search files")]
+
+        match = re.match(r"^apply\s+for\s+(.+)$", normalized)
+        if match:
+            query = match.group(1).strip()
+            return [Action(tool="job_apply", args={"query": query}, risk="high", reason="Apply for jobs matching the query")]
+
+        if normalized in {"job status", "job progress", "application status", "application progress"}:
+            return [Action(tool="job_status", args={}, risk="low", reason="Report job-application task status")]
+
+        if normalized in {"job applied", "jobs applied", "applications", "applied jobs", "list applications"}:
+            return [Action(tool="job_applied", args={"limit": 50}, risk="low", reason="List recent job applications")]
 
         if normalized.startswith("read file "):
             path = text[10:].strip()

@@ -1,0 +1,73 @@
+# JARVIS job-application profile.
+# Used by the autonomous job agent to (a) score opportunities and (b) fill application forms.
+# Edit values below to match your own details.
+
+identity:
+  full_name: "Your Full Name"
+  email: "you@example.com"
+  phone: "+1 555 000 0000"
+  location: "City, Country"
+  linkedin: "https://www.linkedin.com/in/yourhandle"
+  github: "https://github.com/yourhandle"
+  website: ""
+  title: "Your Target Job Title"
+
+summary: >-
+  One-to-two sentence professional summary used as a fallback for "tell me about yourself".
+
+skills:
+  - python
+  - fastapi
+  - docker
+  - sql
+  - automation
+
+years_experience: 3
+open_to_relocation: false
+remote_ok: true
+preferred_seniority: ["junior", "mid", "senior"]
+
+# Experience blocks used to answer experience/employment questions.
+work_history:
+  - company: "Acme Corp"
+    title: "Software Engineer"
+    start: "2023"
+    end: "present"
+    summary: "Built automation tooling and internal APIs."
+
+education:
+  - school: "Example University"
+    degree: "B.S. Computer Science"
+    year: "2022"
+
+# Standard answers used when forms ask for these values.
+preferences:
+  salary_expectation: "$90,000"
+  work_authorization: "Authorized to work"
+  notice_period: "Immediate"
+  years_of_experience: 3
+  current_company: ""
+  current_title: ""
+  cover_letter: >-
+    I am an automation-focused engineer with experience building data pipelines
+    and tooling in Python. I'm excited to bring my skills to your team.
+
+# Form-fill mapping: keys are candidate fields, values are regex patterns (case-insensitive)
+# matched against input placeholders, labels, and names on application forms.
+form_field_patterns:
+  full_name: ["full name", "your name", "first.*last", "name"]
+  first_name: ["first name"]
+  last_name: ["last name"]
+  email: ["email", "e-?mail"]
+  phone: ["phone", "telephone", "mobile", "contact number"]
+  linkedin: ["linkedin"]
+  github: ["github"]
+  website: ["website", "portfolio", "personal site"]
+  location: ["location", "city", "current city"]
+  current_company: ["current company", "employer"]
+  current_title: ["current title", "current role", "job title"]
+  years_experience: ["years of experience", "experience"]
+  cover_letter: ["cover letter", "why should we hire you", "anything else"]
+  salary_expectation: ["salary expectation", "expected salary"]
+  work_authorization: ["work authorization", "authorized to work"]
+  notice_period: ["notice period"]

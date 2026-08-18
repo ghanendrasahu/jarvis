@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from datetime import datetime, timezone
+from datetime import UTC, datetime
 from typing import Any, Literal
 
 from pydantic import BaseModel, Field
@@ -45,7 +45,7 @@ class ExecuteCommandResponse(BaseModel):
     response_text: str
     plan_summary: str = ""
     results: list[ToolExecutionResult] = Field(default_factory=list)
-    created_at: str = Field(default_factory=lambda: datetime.now(timezone.utc).isoformat())
+    created_at: str = Field(default_factory=lambda: datetime.now(UTC).isoformat())
 
 
 class ApprovalItem(BaseModel):
@@ -62,4 +62,21 @@ class ExecuteApprovalResponse(BaseModel):
     status: str
     message: str
     execution: ExecuteCommandResponse | None = None
+
+
+class JobApplyRequest(BaseModel):
+    query: str = Field(min_length=1, max_length=200)
+    sites: list[str] | None = Field(default=None)
+    max_applications: int | None = Field(default=None, ge=1, le=100)
+
+
+class JobApplication(BaseModel):
+    created_at: str
+    site: str
+    title: str
+    company: str | None = None
+    location: str | None = None
+    url: str
+    status: str
+    notes: str | None = None
 

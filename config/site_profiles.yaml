@@ -1,0 +1,228 @@
+# JARVIS job-board selector profiles.
+# Each site defines how to search, how to locate result cards, and how to begin an application.
+# DOM changes on a site are a config edit here, not a code change.
+# Default (no profile match) is the `generic` entry.
+
+search_defaults:
+  location: ""            # leave empty to use profile.location
+  sort_by: relevance
+
+sites:
+  linkedin:
+    name: LinkedIn
+    base_url: "https://www.linkedin.com/jobs"
+    search_path: "/search"
+    search_params:
+      keywords: "{query}"
+      location: "{location}"
+    results_selector: "li[data-occludable-job-id]"
+    card:
+      title: "a[data-tracking-control-name*='result_job-title']"
+      company: "a[data-tracking-control-name*='result_job-company-name']"
+      location: "span[class*='job-card-container__metadata-wrapper']"
+      link: "a[data-tracking-control-name*='result_job-title']"
+    apply_button: "button[aria-label*='Easy Apply']"
+    easy_apply: true
+    login_check:
+      - "a[href*='/checkpoint/lg/login']"
+      - "input[name='session_key']"
+    captcha_selectors:
+      - "iframe[title*='captcha']"
+      - ".g-recaptcha"
+    submit_buttons: ["button[aria-label*='submit application']", "button[aria-label*='Submit application']"]
+
+  indeed:
+    name: Indeed
+    base_url: "https://www.indeed.com"
+    search_path: "/jobs"
+    search_params:
+      q: "{query}"
+      l: "{location}"
+    results_selector: ".job_seen_beacon, .resultContent"
+    card:
+      title: "h2.jobTitle span"
+      company: "[data-testid='company-name'], .companyName"
+      location: "[data-testid='text-location'], .companyLocation"
+      link: "h2.jobTitle a"
+    apply_button: "[data-testid*='apply' i], button#applyButton"
+    easy_apply: false
+    login_check: []
+    captcha_selectors:
+      - "iframe[title*='captcha']"
+      - ".g-recaptcha"
+      - "input#captcha-form"
+    submit_buttons: ["button[type='submit']", "button[data-testid*='apply']"]
+
+  glassdoor:
+    name: Glassdoor
+    base_url: "https://www.glassdoor.com"
+    search_path: "/Job"
+    search_params:
+      keyword: "{query}"
+      loc: "{location}"
+    results_selector: "li[data-job-id]"
+    card:
+      title: "a[data-test='job-title']"
+      company: "span[data-test='employer-name']"
+      location: "div[data-test='job-location']"
+      link: "a[data-test='job-title']"
+    apply_button: "button[data-test='apply-button']"
+    easy_apply: false
+    login_check: []
+    captcha_selectors:
+      - "iframe[title*='captcha']"
+      - ".g-recaptcha"
+    submit_buttons: ["button[data-test='submit']", "button[type='submit']"]
+
+  ziprecruiter:
+    name: ZipRecruiter
+    base_url: "https://www.ziprecruiter.com"
+    search_path: "/jobs/search"
+    search_params:
+      q: "{query}"
+      l: "{location}"
+    results_selector: "article.job_result"
+    card:
+      title: "h2.job_title a"
+      company: "a.t_org_link"
+      location: "div.t_location"
+      link: "h2.job_title a"
+    apply_button: "button[data-testid='apply-button']"
+    easy_apply: false
+    login_check: []
+    captcha_selectors:
+      - "iframe[title*='captcha']"
+      - ".g-recaptcha"
+    submit_buttons: ["button[type='submit']"]
+
+  monster:
+    name: Monster
+    base_url: "https://www.monster.com"
+    search_path: "/jobs/search"
+    search_params:
+      q: "{query}"
+      where: "{location}"
+    results_selector: "section[data-testid='srp-job-card']"
+    card:
+      title: "a[data-testid='job-card-title']"
+      company: "div[data-testid='job-card-company']"
+      location: "div[data-testid='job-card-location']"
+      link: "a[data-testid='job-card-title']"
+    apply_button: "button[data-testid='apply']"
+    easy_apply: false
+    login_check: []
+    captcha_selectors: []
+    submit_buttons: ["button[type='submit']"]
+
+  careerbuilder:
+    name: CareerBuilder
+    base_url: "https://www.careerbuilder.com"
+    search_path: "/jobs"
+    search_params:
+      keywords: "{query}"
+      location: "{location}"
+    results_selector: "div[data-jobid]"
+    card:
+      title: "a.data-results-content"
+      company: "span[data-bind*='Company']"
+      location: "div[data-bind*='Location']"
+      link: "a.data-results-content"
+    apply_button: "button[data-action='apply']"
+    easy_apply: false
+    login_check: []
+    captcha_selectors: []
+    submit_buttons: ["button[type='submit']"]
+
+  simplyhired:
+    name: SimplyHired
+    base_url: "https://www.simplyhired.com"
+    search_path: "/search"
+    search_params:
+      q: "{query}"
+      l: "{location}"
+    results_selector: "article[data-job]"
+    card:
+      title: "a.card-link"
+      company: "span[data-job-company]"
+      location: "span[data-job-location]"
+      link: "a.card-link"
+    apply_button: "button[data-testid='applyButton']"
+    easy_apply: false
+    login_check: []
+    captcha_selectors: []
+    submit_buttons: ["button[type='submit']"]
+
+  dice:
+    name: Dice
+    base_url: "https://www.dice.com"
+    search_path: "/jobs"
+    search_params:
+      q: "{query}"
+      location: "{location}"
+    results_selector: "dhi-search-card"
+    card:
+      title: "a[data-cy='card-title-link']"
+      company: "span[data-cy='card-company']"
+      location: "span[data-cy='card-location']"
+      link: "a[data-cy='card-title-link']"
+    apply_button: "button[data-cy='apply-button']"
+    easy_apply: false
+    login_check: []
+    captcha_selectors: []
+    submit_buttons: ["button[type='submit']"]
+
+  wellfound:
+    name: Wellfound
+    base_url: "https://wellfound.com"
+    search_path: "/role"
+    search_params:
+      q: "{query}"
+      location: "{location}"
+    results_selector: "div[class*='jobs_by_company'] li"
+    card:
+      title: "h3 a"
+      company: "div[class*='company']"
+      location: "div[class*='location']"
+      link: "h3 a"
+    apply_button: "button[data-test='apply']"
+    easy_apply: false
+    login_check: []
+    captcha_selectors: []
+    submit_buttons: ["button[type='submit']"]
+
+  remote_co:
+    name: Remote.co
+    base_url: "https://remote.co"
+    search_path: "/remote-jobs"
+    search_params: {}
+    results_selector: "div.card"
+    card:
+      title: "h4 a"
+      company: "span.company"
+      location: "span[class*='location']"
+      link: "h4 a"
+    apply_button: "a[class*='btn']"
+    easy_apply: false
+    login_check: []
+    captcha_selectors: []
+    submit_buttons: ["button[type='submit']"]
+
+  generic:
+    name: Generic
+    base_url: ""
+    search_path: ""
+    search_params: {}
+    results_selector: ""
+    card:
+      title: ""
+      company: ""
+      location: ""
+      link: ""
+    apply_button: ""
+    easy_apply: false
+    login_check: []
+    captcha_selectors:
+      - "iframe[title*='captcha']"
+      - ".g-recaptcha"
+      - "input#captcha-form"
+    submit_buttons: ["button[type='submit']"]

@@ -2,12 +2,14 @@ from __future__ import annotations
 
 import time
 import urllib.parse
-from datetime import datetime, timezone
-from typing import Iterable
+from collections.abc import Iterable
+from datetime import UTC, datetime
 
 from app.config import Settings
+from app.core.agent import AgentRunResult, AutonomousAgent
 from app.core.approvals import ApprovalManager
 from app.core.executor import ActionExecutor
+from app.core.logging import get_logger
 from app.core.memory import MemoryStore
 from app.core.router import DirectCommandRouter
 from app.llm.planner import BasePlanner
@@ -18,6 +20,34 @@ from app.models.schemas import (
     ToolExecutionResult,
 )
 from app.tools.registry import ToolRegistry
+
+logger = get_logger("orchestrator")
+
+_AGENT_INTENT_PREFIXES = (
+    "research",
+    "investigate",
+    "figure out",
+    "find out why",
+    "troubleshoot",
+    "diagnose",
+    "set up a",
+    "set up an",
+    "set up the",
+    "automate",
+    "build me",
+    "create a script",
+    "scan",
+    "audit",
+    "monitor",
+    "summarize",
+    "analyze",
+    "check if",
+)
+
+
+def _is_agent_worthy(command: str) -> bool:
+    lowered = command.lower().strip()
+    return lowered.startswith(_AGENT_INTENT_PREFIXES)
 
 
 class JarvisOrchestrator:
@@ -30,6 +60,7 @@ class JarvisOrchestrator:
         executor: ActionExecutor,
         approvals: ApprovalManager,
         memory: MemoryStore,
+        agent: AutonomousAgent | None = None,
     ) -> None:
         self.settings = settings
         self.registry = registry
@@ -38,6 +69,7 @@ class JarvisOrchestrator:
         self.executor = executor
         self.approvals = approvals
         self.memory = memory
+        self.agent = agent
 
     @staticmethod
     def _status_from_results(results: Iterable[ToolExecutionResult]) -> str:
@@ -90,7 +122,15 @@ class JarvisOrchestrator:
                     include_completed_line = False
 
         if completed and include_completed_line:
-            lines.append(f"Completed: {', '.join(item.tool for item in completed)}.")
+            spoken = [
+                str(item.output.get("result_text"))
+                for item in completed
+                if item.output.get("result_text")
+            ]
+            if spoken:
+                lines.append(" ".join(spoken).strip())
+            else:
+                lines.append(f"Completed: {', '.join(item.tool for item in completed)}.")
         if pending:
             approvals = ", ".join(
                 f"{item.tool} (id: {item.pending_approval_id})" for item in pending if item.pending_approval_id
@@ -157,7 +197,7 @@ class JarvisOrchestrator:
             **prior,
             "last_command": command,
             "last_status": response_status,
-            "last_updated_at": datetime.now(timezone.utc).isoformat(),
+            "last_updated_at": datetime.now(UTC).isoformat(),
         }
         if surface:
             updated["active_surface"] = surface
@@ -186,7 +226,7 @@ class JarvisOrchestrator:
                 response_text="Command is empty.",
                 plan_summary="",
                 results=[],
-                created_at=datetime.now(timezone.utc).isoformat(),
+                created_at=datetime.now(UTC).isoformat(),
             )
 
         quick_reply = self._instant_reply(cleaned)
@@ -199,7 +239,7 @@ class JarvisOrchestrator:
                 response_text=quick_reply,
                 plan_summary="Instant response",
                 results=[],
-                created_at=datetime.now(timezone.utc).isoformat(),
+                created_at=datetime.now(UTC).isoformat(),
             )
             self.memory.log_command(source=source, command=cleaned, response_text=quick_reply)
             duration_ms = int((time.perf_counter() - started) * 1000)
@@ -219,9 +259,20 @@ class JarvisOrchestrator:
         direct_actions = self.router.route(cleaned, context=context)
         if direct_actions:
             plan = Plan(summary="Direct command route", actions=direct_actions, final_response="")
+        elif self.agent is not None and _is_agent_worthy(cleaned):
+            try:
+                agent_result = self.agent.run(cleaned, source=source, auto_approve=auto_approve)
+            except Exception as exc:
+                logger.exception("autonomous agent run failed")
+                return self._failed_response(cleaned, source, f"The autonomous agent failed: {exc}")
+            return self._response_from_agent(cleaned, source, agent_result)
         else:
             history = self.memory.recent_conversation(limit=self.settings.max_history_items)
-            plan = self.planner.plan(cleaned, self.registry.catalog(), history)
+            try:
+                plan = self.planner.plan(cleaned, self.registry.catalog(), history)
+            except Exception as exc:
+                logger.warning("planner failed for command: %s", cleaned)
+                return self._failed_response(cleaned, source, f"Planning failed: {exc}")
 
         valid_tools = {item["name"] for item in self.registry.catalog()}
         filtered_actions = [action for action in plan.actions if action.tool in valid_tools]
@@ -276,10 +327,77 @@ class JarvisOrchestrator:
             response_text=response_text,
             plan_summary=plan.summary,
             results=results,
-            created_at=datetime.now(timezone.utc).isoformat(),
+            created_at=datetime.now(UTC).isoformat(),
         )
         self.memory.log_command(source=source, command=cleaned, response_text=response_text)
+        logger.info("command from=%s status=%s duration=%dms actions=%d", source, status, duration_ms, len(results))
         return payload
+
+    def _failed_response(self, command: str, source: str, message: str) -> ExecuteCommandResponse:
+        self.memory.log_command(source=source, command=command, response_text=message)
+        self.memory.log_execution_metric(
+            source=source,
+            command=command,
+            status="failed",
+            duration_ms=0,
+            actions_total=0,
+            actions_completed=0,
+            actions_failed=0,
+            actions_pending=0,
+        )
+        return ExecuteCommandResponse(
+            command=command,
+            source=source,
+            status="failed",
+            response_text=message,
+            plan_summary="",
+            results=[],
+            created_at=datetime.now(UTC).isoformat(),
+        )
+
+    def _response_from_agent(self, command: str, source: str, result: AgentRunResult) -> ExecuteCommandResponse:
+        status = result.status
+        self.memory.log_command(source=source, command=command, response_text=result.final_response)
+        for item in result.results:
+            self.memory.log_tool_result(
+                command=command,
+                tool=item.tool,
+                status=item.status,
+                risk=item.risk,
+                output=item.output,
+                error=item.error,
+            )
+        self._update_runtime_context(command=command, response_status=status, results=result.results)
+        completed_count = sum(1 for item in result.results if item.status == "completed")
+        failed_count = sum(1 for item in result.results if item.status == "failed")
+        pending_count = sum(1 for item in result.results if item.status == "pending")
+        self.memory.log_execution_metric(
+            source=source,
+            command=command,
+            status=status,
+            duration_ms=0,
+            actions_total=result.actions_total,
+            actions_completed=completed_count,
+            actions_failed=failed_count,
+            actions_pending=pending_count,
+        )
+        logger.info(
+            "agent command=%s status=%s iterations=%d actions=%d reason=%s",
+            command,
+            status,
+            result.iterations,
+            result.actions_total,
+            result.stopped_reason,
+        )
+        return ExecuteCommandResponse(
+            command=command,
+            source=source,
+            status=status,  # type: ignore[arg-type]
+            response_text=result.final_response,
+            plan_summary=f"Agent loop ({result.iterations} iteration{'s' if result.iterations != 1 else ''})",
+            results=result.results,
+            created_at=datetime.now(UTC).isoformat(),
+        )
 
     def approve(self, approval_id: str) -> ExecuteApprovalResponse:
         pending = self.approvals.approve(approval_id)
@@ -307,7 +425,7 @@ class JarvisOrchestrator:
             ),
             plan_summary=f"Approved action: {outcome.tool}",
             results=[outcome],
-            created_at=datetime.now(timezone.utc).isoformat(),
+            created_at=datetime.now(UTC).isoformat(),
         )
         self.memory.log_command(source="approval", command=pending.command, response_text=execution.response_text)
         status = "completed" if outcome.status == "completed" else "failed"
