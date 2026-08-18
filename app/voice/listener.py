@@ -50,7 +50,7 @@ class VoiceListener:
     def __init__(self, settings: Settings) -> None:
         self.settings = settings
         self._recognizer = None
-        self._backend = "openai_whisper_api" if bool(settings.openai_api_key) else "google_web_speech"
+        self._backend = "groq_whisper" if bool(settings.groq_api_key) else "google_web_speech"
         self._device_index: int | None = None
         self._last_ambient_adjust_at: float | None = None
         self._vad = _VadGate()
@@ -155,6 +155,9 @@ class VoiceListener:
             return ListenResult(transcript=None, issue="no_speech")
 
         try:
+            if self.settings.groq_api_key:
+                transcript = self._transcribe_groq(audio)
+                return ListenResult(transcript=transcript.strip(), issue=None)
             if self.settings.openai_api_key and hasattr(recognizer, "recognize_whisper_api"):
                 transcript = recognizer.recognize_whisper_api(audio, api_key=self.settings.openai_api_key)
                 return ListenResult(
@@ -169,3 +172,32 @@ class VoiceListener:
             return ListenResult(transcript=None, issue=f"request_error: {exc}")
         except Exception as exc:
             return ListenResult(transcript=None, issue=f"listener_error: {exc}")
+
+    def _transcribe_groq(self, audio) -> str:
+        """Transcribe via Groq's free-tier Whisper (OpenAI-compatible endpoint)."""
+        import os
+        import tempfile
+
+        from openai import OpenAI
+
+        client = OpenAI(
+            api_key=self.settings.groq_api_key,
+            base_url=self.settings.groq_base_url,
+        )
+        path = None
+        try:
+            with tempfile.NamedTemporaryFile(suffix=".wav", delete=False) as handle:
+                handle.write(audio.get_wav_data())
+                path = handle.name
+            with open(path, "rb") as handle:
+                result = client.audio.transcriptions.create(
+                    model="whisper-large-v3-turbo",
+                    file=handle,
+                )
+            return result.text or ""
+        finally:
+            if path:
+                try:
+                    os.unlink(path)
+                except OSError:
+                    pass

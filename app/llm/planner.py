@@ -22,7 +22,7 @@ class BasePlanner(Protocol):
 
 
 def _extract_json(raw_text: str) -> dict[str, Any]:
-    text = raw_text.strip()
+    text = (raw_text or "").strip()
     if text.startswith("```"):
         text = text.strip("`")
         if text.lower().startswith("json"):
@@ -34,7 +34,20 @@ def _extract_json(raw_text: str) -> dict[str, Any]:
         end = text.rfind("}")
         if start == -1 or end == -1 or end <= start:
             return {}
-        return json.loads(text[start : end + 1])
+        try:
+            return json.loads(text[start : end + 1])
+        except json.JSONDecodeError:
+            # Reasoning models may wrap the answer in extra prose after the JSON.
+            for candidate_start in (text.find("[", start), text.find("{", start)):
+                if candidate_start == -1:
+                    continue
+                candidate_end = text.rfind("}" if text[candidate_start] == "{" else "]")
+                if candidate_end > candidate_start:
+                    try:
+                        return json.loads(text[candidate_start : candidate_end + 1])
+                    except json.JSONDecodeError:
+                        continue
+            return {}
 
 
 def _to_plan(payload: dict[str, Any]) -> Plan:
@@ -78,7 +91,7 @@ class NullPlanner:
             actions=[],
             final_response=(
                 f"Planner unavailable: {self.reason} "
-                "Use a direct command (open, close, run, screenshot, read file) or configure OpenAI/Ollama."
+                "Use a direct command (open, close, run, screenshot, read file) or configure the LLM provider."
             ),
         )
 
@@ -114,6 +127,18 @@ class OpenAIPlanner:
         return _to_plan(payload)
 
 
+def _message_content(message: Any) -> str:
+    """Return the final answer from a chat response, handling reasoning-model layouts."""
+    content = (getattr(message, "content", None) or "").strip()
+    if content:
+        return content
+    for attr in ("reasoning_content", "reasoning"):
+        reasoning = getattr(message, attr, None)
+        if isinstance(reasoning, str) and reasoning.strip():
+            return reasoning.strip()
+    return "{}"
+
+
 class GroqPlanner:
     def __init__(self, settings: Settings) -> None:
         self.settings = settings
@@ -143,7 +168,8 @@ class GroqPlanner:
             response_format={"type": "json_object"},
             temperature=0.1,
         )
-        content = completion.choices[0].message.content or "{}"
+        message = completion.choices[0].message
+        content = _message_content(message)
         payload = _extract_json(content)
         return _to_plan(payload)
 

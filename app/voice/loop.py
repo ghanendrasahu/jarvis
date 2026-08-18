@@ -9,6 +9,7 @@ from typing import Any
 from app.config import Settings
 from app.core.logging import get_logger
 from app.core.orchestrator import JarvisOrchestrator
+from app.models.schemas import ExecuteCommandResponse
 from app.voice.listener import VoiceListener
 from app.voice.speaker import Speaker
 
@@ -117,6 +118,22 @@ class VoiceController:
         )
         thread.start()
 
+    def _run_command(self, command: str) -> ExecuteCommandResponse:
+        """Execute a command without ever letting an exception kill the voice loop."""
+        try:
+            return self.orchestrator.execute_command(command=command, source="voice", auto_approve=False)
+        except Exception as exc:
+            logger.exception("[voice] command failed: %s", command)
+            return ExecuteCommandResponse(
+                command=command,
+                source="voice",
+                status="failed",
+                response_text=f"Command failed: {exc}",
+                plan_summary="",
+                results=[],
+                created_at=datetime.now(UTC).isoformat(),
+            )
+
     def _extract_command(self, transcript: str) -> tuple[str, bool]:
         wake = self.settings.wake_word.lower().strip()
         lowered = transcript.lower()
@@ -173,10 +190,15 @@ class VoiceController:
             lowered = transcript.lower().strip()
             if lowered.startswith("approve "):
                 approval_id = lowered.split("approve ", 1)[1].strip()
-                approval_response = self.orchestrator.approve(approval_id)
+                try:
+                    approval_response = self.orchestrator.approve(approval_id)
+                    message = approval_response.message
+                except Exception as exc:
+                    logger.exception("[voice] approval failed: %s", approval_id)
+                    message = f"Approval failed: {exc}"
                 logger.info("[voice] approval: %s", approval_id)
-                logger.info("[voice] response: %s", approval_response.message)
-                self._speak_async(approval_response.message[: self.settings.max_voice_response_chars])
+                logger.info("[voice] response: %s", message)
+                self._speak_async(message[: self.settings.max_voice_response_chars])
                 continue
 
             normalized = transcript.lower().strip()
@@ -197,7 +219,7 @@ class VoiceController:
             if normalized in {"confirm send", "send now", "yes send it"} and self._pending_whatsapp_confirmation:
                 pending = self._pending_whatsapp_confirmation
                 command = f"send whatsapp to {pending['phone']}: {pending['message']}"
-                execution = self.orchestrator.execute_command(command=command, source="voice", auto_approve=False)
+                execution = self._run_command(command)
                 self._pending_whatsapp_confirmation = None
                 logger.info("[voice] command: %s", command)
                 logger.info("[voice] response: %s", execution.response_text)
@@ -238,7 +260,7 @@ class VoiceController:
                     self._speak_async(response[: self.settings.max_voice_response_chars])
                     continue
 
-            execution = self.orchestrator.execute_command(command=command, source="voice", auto_approve=False)
+            execution = self._run_command(command)
             logger.info("[voice] command: %s", command)
             logger.info("[voice] response: %s", execution.response_text)
             self._speak_async(execution.response_text[: self.settings.max_voice_response_chars])
