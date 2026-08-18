@@ -9,12 +9,53 @@ from app.tools.registry import ToolRegistry
 
 DANGEROUS_PATTERNS = [
     r"\brm\s+-rf\b",
+    r"\brmdir\s+/s\b",
     r"\bdel\s+/f\b",
+    r"\bdel\s+/q\b",
+    r"\brd\s+/s\b",
     r"\bshutdown\b",
+    r"\brestart-computer\b",
     r"\bformat\b",
     r"\breg\s+delete\b",
     r"\bremove-item\b",
+    r"\bclear-content\b",
+    r"\bformat-volume\b",
+    r"\bdiskpart\b",
+    r"\bwevtutil\b",
 ]
+
+ENCODED_COMMAND_PATTERNS = [
+    r"-enc(?:odedcommand)?\s+",
+    r"Invoke-Expression",
+    r"\biex\b",
+    r"Start-Process",
+    r"DownloadString",
+    r"Invoke-WebRequest\s+",
+    r"New-Object\s+System\.Net\.WebClient",
+    r"Bypass",
+    r"-ExecutionPolicy\s+Bypass",
+]
+
+COMPOUND_SEPARATORS = [";", "&&", "||", "|", "`n"]
+
+
+def _rejected_by_policy(command: str) -> str | None:
+    lowered = command.lower()
+
+    for pattern in DANGEROUS_PATTERNS:
+        if re.search(pattern, lowered):
+            return "Command rejected by safety policy (dangerous pattern)."
+
+    for pattern in ENCODED_COMMAND_PATTERNS:
+        if re.search(pattern, lowered, flags=re.IGNORECASE):
+            return "Command rejected by safety policy (obfuscated/remote execution pattern)."
+
+    shell_safe = command.replace("`;", "")
+    for separator in COMPOUND_SEPARATORS:
+        if separator in shell_safe:
+            return "Command rejected: compound/pipe operators are not allowed for shell tool."
+
+    return None
 
 
 def register_shell_tools(registry: ToolRegistry, settings: Settings) -> None:
@@ -32,10 +73,9 @@ def register_shell_tools(registry: ToolRegistry, settings: Settings) -> None:
                 f"Command prefix '{first_token}' is not allowed. Allowed prefixes: {sorted(allowed)}"
             )
 
-        lowered = command.lower()
-        for pattern in DANGEROUS_PATTERNS:
-            if re.search(pattern, lowered):
-                raise PermissionError("Command rejected by safety policy.")
+        rejected_reason = _rejected_by_policy(command)
+        if rejected_reason:
+            raise PermissionError(rejected_reason)
 
         completed = subprocess.run(
             ["powershell", "-NoProfile", "-Command", command],
@@ -58,4 +98,3 @@ def register_shell_tools(registry: ToolRegistry, settings: Settings) -> None:
         parameters={"command": "string", "timeout_seconds": "integer"},
         handler=run_shell_command,
     )
-
