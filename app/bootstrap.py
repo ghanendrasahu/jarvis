@@ -10,9 +10,11 @@ from app.core.executor import ActionExecutor
 from app.core.memory import MemoryStore
 from app.core.orchestrator import JarvisOrchestrator
 from app.core.router import DirectCommandRouter
+from app.core.scheduler import Scheduler
 from app.llm.planner import BasePlanner, create_planner
 from app.tools import register_all_tools
 from app.tools.registry import ToolRegistry
+from app.tools.scheduler_tools import register_scheduler_tools
 from app.voice.loop import VoiceController
 
 
@@ -28,6 +30,7 @@ class Runtime:
     orchestrator: JarvisOrchestrator
     voice: VoiceController
     job_agent: JobAgent
+    scheduler: Scheduler
 
 
 def build_runtime() -> Runtime:
@@ -61,6 +64,8 @@ def build_runtime() -> Runtime:
     )
     voice = VoiceController(settings=settings, orchestrator=orchestrator)
     job_agent = get_job_agent(settings=settings, memory=memory)
+    scheduler = Scheduler(settings=settings, memory=memory, orchestrator=orchestrator)
+    register_scheduler_tools(registry, scheduler)
 
     return Runtime(
         settings=settings,
@@ -73,4 +78,5 @@ def build_runtime() -> Runtime:
         orchestrator=orchestrator,
         voice=voice,
         job_agent=job_agent,
+        scheduler=scheduler,
     )

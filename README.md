@@ -99,6 +99,16 @@ Disabled = the HUD does not auto-start until you re-enable it (manual `start_jar
 - **HELP panel** — click the **HELP** chip for an in-app list of every command and tool (built from the live tool registry).
 - **Minimize to tray** — click the **TRAY** chip to hide the HUD into the system tray (JARVIS icon). Right-click the icon for *Show HUD / Mini window / Exit*.
 - **Summon hotkey** — press `Ctrl+Shift+J` anywhere in Windows to pop up the floating mini HUD on demand.
+- **RECAP** — click the **RECAP** chip (or just start JARVIS after being away) for a "while you were away" catch-up review: commands run, tool activity, job pipeline moves, and scheduled runs since your last session.
+
+## Autonomous agent upgrades
+
+- **Live agent feed** — the HUD feed streams each agent step (planning, tool selection, tool results) in real time while the agent works, so you can watch what it is doing.
+- **`read_webpage`** — the agent can open any URL and read the page text, so it can browse a site and reason about what it finds instead of only acting on it.
+- **Learned memory** — JARVIS remembers what it learns about you across runs (frequently opened apps, last WhatsApp contact) and injects it into the planner prompt as *known facts* plus a *tool history* recap so it stops repeating itself.
+- **Approve-and-continue** — when a risky step needs your sign-off, JARVIS now *waits* for you instead of giving up: click **APPROVE** or **REJECT** on the HUD (or use the CLI/API) and the agent resumes the exact step where it stopped.
+- **Job resume + pipeline** — after the job agent pauses on a login/CAPTCHA wall, click **RESUME** on the HUD to continue from the exact page it stopped on. Track your pipeline with `job status`/`job update status <url> <status>` — statuses roll up into APPLIED / INTERVIEW / OFFER / REJECTED counters on the HUD.
+- **Scheduler** — say or type `schedule <command> daily at 09:00` (also `hourly`, `every N minutes`, `weekly on <day> at HH:MM`). `list_schedules` shows the queue, `cancel_schedule <id>` removes one. Each run appears in the HUD feed.
 
 ## Architecture
 
@@ -140,10 +150,12 @@ Commands that start with research/investigate/figure out/troubleshoot/diagnose/s
 scan/audit/monitor/analyze/check if run through the multi-iteration agent loop instead of a single plan.
 
 ### Job Automation
-- `apply for <query>` — search configured job boards and apply automatically (pauses on login/CAPTCHA).
+- `apply for <query>` — search configured job boards and apply automatically (pauses on login/CAPTCHA; RESUME on the HUD continues from the paused page).
 - `job status` — current task status, phase, progress, and counters.
 - `job applied` — audit trail of applications (dedupe across runs).
 - `job cancel` — stop the running task.
+- `job resume` — continue a paused task from where it stopped.
+- `job update status <url> <status>` — mark an application as e.g. `interview` / `offer` / `rejected` (rolls up into the HUD pipeline counters).
 
 ### Discovery / Desktop
 - `list shortcuts`
@@ -210,6 +222,8 @@ Voice diagnostics in CLI:
 - `GET /v1/job/task`
 - `POST /v1/job/cancel`
 - `GET /v1/job/applied`
+- `POST /v1/reject/{approval_id}`
+- `GET /v1/schedules` · `POST /v1/schedules` · `DELETE /v1/schedules/{id}`
 
 All endpoints except `/v1/health` require `Authorization: Bearer <API_TOKEN>` and are rate limited.
 
@@ -226,6 +240,7 @@ curl -X POST http://localhost:8000/v1/execute \
 - `/help`
 - `/pending`
 - `/approve <id>`
+- `/reject <id>`
 - `/metrics [limit]`
 - `/quit`
 
@@ -233,11 +248,11 @@ curl -X POST http://localhost:8000/v1/execute \
 
 `run_gui.ps1` (or `start_jarvis.ps1`) opens the JARVIS command HUD (`app/gui.py`):
 
-- **Command bar** with ↑/↓ history + `EXECUTE` button, plus quick preset chips (Play/Pause, Next, Apps, MINI)
-- **Live terminal + activity feed** — responses, tool statuses, and a scrolling ✓/⏳/✗ command feed
+- **Command bar** with ↑/↓ history + `EXECUTE` button, plus quick preset chips (Play/Pause, Next, Apps, MINI, TRAY, RECAP)
+- **Live terminal + activity feed** — responses, tool statuses, and a scrolling ✓/⏳/✗ command feed (agent steps stream in live)
 - **Voice engine** with a state-aware wave (LISTENING / PROCESSING / ATTENTION / IDLE) and start/stop toggle
-- **Job agent panel** — live status (phase, applied/skipped/failed, pause reason) with APPLY / STATUS / CANCEL
-- **Approvals panel**, **AI Bot chat**, **app launcher** (Alt+1..9), **resource meters** (CPU/RAM/network), scene viewer
+- **Job agent panel** — live status (phase, applied/skipped/failed, pause reason) with APPLY / STATUS / CANCEL / RESUME and APPLIED / INTERVIEW / OFFER / REJECTED pipeline counters
+- **Approvals panel** with APPROVE / REJECT**, **AI Bot chat**, **app launcher** (Alt+1..9), **resource meters** (CPU/RAM/network), scene viewer
 
 **Mini floating window** (`app/minihud.py`):
 - While you work elsewhere, a small always-on-top window shows live activity (current/last command, result status, voice state, CPU/RAM bars) and a quick-command box.

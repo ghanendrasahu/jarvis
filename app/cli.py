@@ -29,7 +29,7 @@ def run_console(enable_voice: bool = False) -> None:
             break
         if normalized == "/help":
             print(
-                "/voice start | /voice stop | /voice status | /voice ping | /voice test | /voice probe | /voice devices | /voice use <index> | /voice use default | /voice outputs | /voice output <index> | /voice output default | /voice mode <pyttsx3|sapi> | /pending | /approve <id> | /metrics [limit] | /quit"
+                "/voice start | /voice stop | /voice status | /voice ping | /voice test | /voice probe | /voice devices | /voice use <index> | /voice use default | /voice outputs | /voice output <index> | /voice output default | /voice mode <pyttsx3|sapi> | /pending | /approve <id> | /reject <id> | /metrics [limit] | /quit"
             )
             continue
         if normalized == "/pending":
@@ -47,6 +47,11 @@ def run_console(enable_voice: bool = False) -> None:
         if normalized.startswith("/approve "):
             approval_id = user_input.split(maxsplit=1)[1].strip()
             approval = runtime.orchestrator.approve(approval_id)
+            print(json.dumps(approval.model_dump(), indent=2))
+            continue
+        if normalized.startswith("/reject "):
+            approval_id = user_input.split(maxsplit=1)[1].strip()
+            approval = runtime.orchestrator.reject(approval_id)
             print(json.dumps(approval.model_dump(), indent=2))
             continue
         if normalized.startswith("/metrics"):

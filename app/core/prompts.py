@@ -115,6 +115,8 @@ def build_planner_prompt(
     tool_catalog: list[dict],
     history: list[dict],
     agent_context: str = "",
+    tool_history: list[dict] | None = None,
+    known_facts: dict | None = None,
 ) -> str:
     schema = {
         "summary": "one-line plan summary",
@@ -145,11 +147,31 @@ def build_planner_prompt(
         f"{json.dumps(_trim_catalog(tool_catalog), indent=2)}\n\n"
         "RECENT_HISTORY:\n"
         f"{json.dumps(history, indent=2)}\n\n"
+        f"{_tool_history_section(tool_history)}"
+        f"{_known_facts_section(known_facts)}"
         f"{agent_section}"
         f"USER_COMMAND:\n{command}\n\n"
         "Return JSON with this exact shape:\n"
         f"{json.dumps(schema, indent=2)}"
     )
+
+
+def _tool_history_section(tool_history: list[dict] | None) -> str:
+    trimmed = [
+        {"tool": item.get("tool"), "status": item.get("status"), "error": item.get("error")}
+        for item in (tool_history or [])[:20]
+        if item.get("tool")
+    ]
+    if not trimmed:
+        return ""
+    return "RECENT_TOOL_RESULTS (past sessions):\n" + json.dumps(trimmed, indent=2) + "\n\n"
+
+
+def _known_facts_section(known_facts: dict | None) -> str:
+    facts = known_facts or {}
+    if not facts:
+        return ""
+    return "KNOWN_FACTS (durable facts about the user and runtime):\n" + json.dumps(facts, indent=2) + "\n\n"
 
 
 def build_agent_observation(results: list[dict]) -> str:

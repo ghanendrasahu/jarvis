@@ -122,6 +122,30 @@ class JobAgent:
         logger.info("job agent run canceled by request")
         return self._snapshot()
 
+    def resume(self) -> dict[str, Any]:
+        with self._lock:
+            if self._thread is not None and self._thread.is_alive():
+                return self._snapshot()
+            task = self.memory.get_state("active_job_task", default={})
+            if not task or task.get("status") != "paused":
+                return self._snapshot()
+            if not task.get("resume_skip_url"):
+                task["resume_skip_url"] = task.get("paused_url")
+            task["status"] = "running"
+            task["phase"] = "resuming"
+            task["paused_reason"] = None
+            self.memory.set_state("active_job_task", task)
+            query = str(task.get("query", "")).strip()
+            self._thread = threading.Thread(
+                target=self._run,
+                args=(query, task),
+                daemon=True,
+                name="jarvis-job-agent",
+            )
+            self._thread.start()
+        logger.info("job agent run resumed")
+        return self._snapshot()
+
     def applied(self, limit: int = 50) -> list[dict[str, Any]]:
         return self.memory.recent_job_applications(limit=limit)
 
@@ -150,6 +174,7 @@ class JobAgent:
         targets = [site for site in task["sites"] if self._site_profiles.get(site)]
         if not targets:
             targets = ["linkedin", "indeed"]
+        resume_skip_url = task.get("resume_skip_url")
 
         try:
             for site in targets:
@@ -165,6 +190,9 @@ class JobAgent:
                     if task["applied"] >= task["max_applications"]:
                         self._update(task, phase="done")
                         return
+                    if resume_skip_url and job.url == resume_skip_url:
+                        resume_skip_url = None
+                        continue
                     if self.memory.is_job_applied(job.url):
                         task["skipped"] += 1
                         continue
@@ -278,6 +306,7 @@ class JobAgent:
         if self._detect_captcha(page):
             task["paused_reason"] = f"CAPTCHA detected on {job.site} ({job.title})"
             task["paused"] += 1
+            task["paused_url"] = job.url
             self._update(task, active_job=job.to_dict())
             return "paused", "captcha"
 
@@ -285,6 +314,7 @@ class JobAgent:
         if login_selector:
             task["paused_reason"] = f"Login required on {job.site} - sign in and resume"
             task["paused"] += 1
+            task["paused_url"] = job.url
             self._update(task, active_job=job.to_dict())
             return "paused", "login"
 

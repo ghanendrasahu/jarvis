@@ -8,7 +8,7 @@ import random
 import threading
 import time
 import tkinter as tk
-from datetime import datetime
+from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any
 
@@ -125,6 +125,9 @@ class JarvisHudApp:
 
         self.root.protocol("WM_DELETE_WINDOW", self._on_close)
         self._restore_ui_config()
+        self.runtime.scheduler.on_run = lambda job, status, text: self._events.put(("sched_run", (job, status, text)))
+        self.runtime.scheduler.start()
+        self._maybe_show_recap()
         self.root.after(5000, self._job_tick)
 
     def _make_panel(self, parent: tk.Misc, bg_color: str = PANEL) -> tk.Frame:
@@ -184,6 +187,9 @@ class JarvisHudApp:
         self.tray_button = self._chip(dock, "TRAY", self._toggle_tray)
         self.tray_button.grid(row=0, column=6, padx=(0, 8))
         self._tooltips.append(Tooltip(self.tray_button, "Minimize to system tray  /  Ctrl+Shift+J summons the mini HUD"))
+        recap_btn = self._chip(dock, "RECAP", self._recap)
+        recap_btn.grid(row=0, column=7, padx=(0, 8))
+        self._tooltips.append(Tooltip(recap_btn, "What happened while you were away"))
 
         self.online_label = tk.Label(
             top, text="STATUS: OPERATIONAL", bg="#0d2332", fg=GREEN, font=("JetBrains Mono", 10, "bold"), padx=10, pady=5
@@ -293,6 +299,16 @@ class JarvisHudApp:
         self.voice_switch_button.grid(row=1, column=0, sticky="e", padx=20, pady=(0, 6))
 
         tk.Label(mid, text="AGENTIVE STATUS", bg=PANEL, fg=MUTED, font=("JetBrains Mono", 10, "bold")).grid(row=2, column=0, sticky="w", padx=12)
+        approval_actions = tk.Frame(mid, bg=PANEL)
+        approval_actions.grid(row=2, column=0, sticky="e", padx=12)
+        tk.Button(
+            approval_actions, text="APPROVE", command=self._approve_selected, bg="#173f2e", fg=GREEN,
+            relief=tk.FLAT, bd=0, padx=8, pady=3, font=("JetBrains Mono", 8, "bold"), cursor="hand2",
+        ).grid(row=0, column=0, padx=(0, 6))
+        tk.Button(
+            approval_actions, text="REJECT", command=self._reject_selected, bg="#3a1a24", fg=RED,
+            relief=tk.FLAT, bd=0, padx=8, pady=3, font=("JetBrains Mono", 8, "bold"), cursor="hand2",
+        ).grid(row=0, column=1)
         self.approval_box = tk.Listbox(mid, bg="#081022", fg=TEXT, relief=tk.FLAT, bd=0, font=("Consolas", 10), height=10)
         self.approval_box.grid(row=3, column=0, sticky="nsew", padx=12, pady=(6, 10))
         self.approval_box.bind("<Double-Button-1>", lambda _: self._approve_selected())
@@ -352,6 +368,10 @@ class JarvisHudApp:
             lbl = tk.Label(job_stats, text=f"{name} 0", bg="#0b152b", fg=col, font=("JetBrains Mono", 8, "bold"))
             lbl.grid(row=0, column=i, padx=(0, 12), sticky="w")
             self.job_stat_labels[name] = lbl
+        for i, (name, col) in enumerate([("INTERVIEW", CYAN), ("OFFER", GREEN), ("REJECTED", RED)]):
+            lbl = tk.Label(job_stats, text=f"{name} 0", bg="#0b152b", fg=col, font=("JetBrains Mono", 8, "bold"))
+            lbl.grid(row=1, column=i, padx=(0, 12), sticky="w")
+            self.job_stat_labels[name] = lbl
         job_ctrl = tk.Frame(job_panel, bg="#0b152b")
         job_ctrl.grid(row=2, column=0, sticky="ew", padx=8, pady=(4, 6))
         job_ctrl.columnconfigure(0, weight=1)
@@ -372,6 +392,10 @@ class JarvisHudApp:
             job_ctrl, text="CANCEL", command=self._cancel_job, bg="#3a1a24", fg=RED, relief=tk.FLAT, bd=0,
             padx=8, pady=4, font=("JetBrains Mono", 8, "bold"), cursor="hand2",
         ).grid(row=0, column=3, padx=(6, 0))
+        tk.Button(
+            job_ctrl, text="RESUME", command=self._resume_job, bg="#173f2e", fg=GREEN, relief=tk.FLAT, bd=0,
+            padx=8, pady=4, font=("JetBrains Mono", 8, "bold"), cursor="hand2",
+        ).grid(row=0, column=4, padx=(6, 0))
         tk.Label(right, text="AVAILABLE APPS  (ALT+1..ALT+9)", bg=PANEL, fg=MUTED, font=("JetBrains Mono", 9, "bold")).grid(row=2, column=0, sticky="w", padx=12, pady=(4, 6))
         self.app_filter_var = tk.StringVar()
         self.app_filter_var.trace_add("write", lambda *_: self._apply_app_filter())
@@ -494,7 +518,12 @@ class JarvisHudApp:
 
         def worker() -> None:
             try:
-                result = self.runtime.orchestrator.execute_command(command=command, source="gui", auto_approve=False)
+                result = self.runtime.orchestrator.execute_command(
+                    command=command,
+                    source="gui",
+                    auto_approve=False,
+                    on_step=lambda step: self._events.put(("agent_step", step)),
+                )
                 self._events.put(("command_result", result.model_dump()))
             except Exception as exc:
                 self._events.put(("error", str(exc)))
@@ -548,6 +577,19 @@ class JarvisHudApp:
 
         threading.Thread(target=worker, daemon=True).start()
 
+    def _resume_job(self) -> None:
+        self._set_busy(True)
+
+        def worker() -> None:
+            try:
+                payload = self.runtime.registry.execute("job_resume", {})
+                self._events.put(("job_status", payload))
+                self._events.put(("job_msg", payload.get("result_text", "Job task resumed.")))
+            except Exception as exc:
+                self._events.put(("error", str(exc)))
+
+        threading.Thread(target=worker, daemon=True).start()
+
     def _job_tick(self) -> None:
         try:
             if not self.root.winfo_exists():
@@ -579,6 +621,89 @@ class JarvisHudApp:
             self._ui_config_path.write_text(json.dumps(cfg), encoding="utf-8")
         except Exception:
             pass
+
+    def _maybe_show_recap(self) -> None:
+        state = self.runtime.memory.get_state("session_review", default={})
+        last_seen = state.get("last_seen_at")
+        self.runtime.memory.set_state("session_review", {"last_seen_at": datetime.now(UTC).isoformat()})
+        if not last_seen:
+            return
+        try:
+            review = self.runtime.memory.session_review(since=last_seen)
+        except Exception as exc:
+            self._append_terminal("ERR", f"Recap failed: {exc}")
+            return
+        if not review["command_count"] and not review["job_applications"] and not review["scheduled_runs"]:
+            return
+        self._open_recap(review, auto=True)
+
+    def _recap(self) -> None:
+        state = self.runtime.memory.get_state("session_review", default={})
+        since = state.get("last_seen_at")
+        try:
+            review = self.runtime.memory.session_review(since=since)
+        except Exception as exc:
+            self._toaster.notify("Recap error", str(exc), RED)
+            return
+        self._open_recap(review)
+
+    def _open_recap(self, review: dict[str, Any], auto: bool = False) -> None:
+        win = tk.Toplevel(self.root)
+        win.title("JARVIS \u2014 While you were away")
+        win.configure(bg=BG)
+        win.geometry("760x600")
+        win.transient(self.root)
+        text = tk.Text(win, bg="#030915", fg=TEXT, relief=tk.FLAT, bd=0, wrap="word", font=("JetBrains Mono", 9), padx=16, pady=10)
+        scroll = tk.Scrollbar(win, command=text.yview)
+        text.configure(yscrollcommand=scroll.set)
+        scroll.pack(side="right", fill="y")
+        text.pack(fill="both", expand=True)
+        text.tag_configure("h", foreground=CYAN, font=("JetBrains Mono", 11, "bold"))
+        text.tag_configure("d", foreground=TEXT)
+        text.tag_configure("m", foreground=MUTED)
+
+        lines: list[tuple[str, str]] = [
+            ("h", "WHILE YOU WERE AWAY\n"),
+            ("h", "\nCOMMANDS\n"),
+        ]
+        counts = review.get("sources") or {}
+        if counts:
+            lines.append(("m", "  " + "  \u00b7  ".join(f"{src}: {n}" for src, n in counts.items()) + "\n"))
+        for row in (review.get("commands") or [])[-12:]:
+            snippet = str(row.get("response_text") or "")[:120].replace("\n", " ")
+            lines.append(("d", f"  {row.get('created_at', '')[:16]} {row.get('source')}: {row.get('command')}\n"))
+            lines.append(("m", f"      {snippet}\n"))
+
+        lines.append(("h", "\nTOOL ACTIVITY\n"))
+        tool_counts = review.get("tool_counts") or {}
+        if tool_counts:
+            lines.append(("m", "  " + "  \u00b7  ".join(f"{k}: {v}" for k, v in tool_counts.items()) + "\n"))
+        top_tools = review.get("top_tools") or {}
+        if top_tools:
+            lines.append(("d", "  Most used: " + ", ".join(top_tools) + "\n"))
+
+        lines.append(("h", "\nJOB PIPELINE\n"))
+        job_status = review.get("job_status") or {}
+        if job_status:
+            lines.append(("m", "  " + "  \u00b7  ".join(f"{k}: {v}" for k, v in job_status.items()) + "\n"))
+        for row in (review.get("job_applications") or [])[-10:]:
+            lines.append(("d", f"  [{row.get('status')}] {row.get('title')} @ {row.get('company') or row.get('site')}\n"))
+
+        lines.append(("h", "\nSCHEDULED RUNS\n"))
+        runs = review.get("scheduled_runs") or []
+        for run in runs[-10:]:
+            lines.append(("d", f"  [{run.get('status')}] {run.get('result', '')[:100]}\n"))
+
+        if not lines:
+            lines = [("m", "Nothing to report.")]
+
+        text.configure(state=tk.NORMAL)
+        for tag, chunk in lines:
+            text.insert(tk.END, chunk, (tag,))
+        text.configure(state=tk.DISABLED)
+
+        if auto:
+            self._toaster.notify("While you were away", "Click to open the catch-up recap.", CYAN, on_click=lambda: (win.destroy(), self._raise_main_window()))
 
     def _auto_start_path(self) -> Path:
         return Path(__file__).resolve().parent.parent / "data" / "auto_start.json"
@@ -753,6 +878,25 @@ class JarvisHudApp:
         def worker() -> None:
             try:
                 res = self.runtime.orchestrator.approve(approval_id)
+                self._events.put(("approval_result", res.model_dump()))
+            except Exception as exc:
+                self._events.put(("error", str(exc)))
+
+        threading.Thread(target=worker, daemon=True).start()
+
+    def _reject_selected(self) -> None:
+        sel = self.approval_box.curselection()
+        if not sel:
+            return
+        idx = sel[0]
+        if idx >= len(self._pending_ids):
+            return
+        approval_id = self._pending_ids[idx]
+        self._set_busy(True)
+
+        def worker() -> None:
+            try:
+                res = self.runtime.orchestrator.reject(approval_id)
                 self._events.put(("approval_result", res.model_dump()))
             except Exception as exc:
                 self._events.put(("error", str(exc)))
@@ -969,6 +1113,24 @@ class JarvisHudApp:
             self._append_feed("feed_ok", f"\u2713 {command} done")
         self._refresh_approvals()
 
+    def _handle_agent_step(self, step: dict[str, Any]) -> None:
+        tool = str(step.get("tool", "?"))
+        status = str(step.get("status", "?"))
+        iteration = int(step.get("iteration", 1))
+        snippet = str(step.get("output_snippet", "") or "").strip()
+        line = f"[agent i{iteration}] \u25b8 {tool} [{status}]"
+        if snippet:
+            line += f" \u2014 {snippet}"
+        if status == "failed":
+            self._append_terminal("ERR", line)
+            self._append_feed("feed_err", f"\u2717 agent: {tool} failed")
+        elif status == "pending":
+            self._append_terminal("WARN", line)
+            self._append_feed("feed_pending", f"\u23f3 agent: {tool} pending approval")
+        else:
+            self._append_terminal("OK", line)
+            self._append_feed("feed_cmd", f"\u25b8 agent: {tool} done")
+
     def _poll_events(self) -> None:
         while True:
             try:
@@ -977,6 +1139,8 @@ class JarvisHudApp:
                 break
             if event == "command_result":
                 self._handle_command_result(payload)
+            elif event == "agent_step":
+                self._handle_agent_step(payload)
             elif event == "voice":
                 self._set_busy(False)
                 self._wave_active = bool(payload.get("running"))
@@ -1022,6 +1186,11 @@ class JarvisHudApp:
                 self._set_busy(False)
                 self._append_terminal("OK", str(payload))
                 self._append_feed("feed_sys", str(payload))
+            elif event == "sched_run":
+                job, status, text = payload
+                tag = "OK" if str(status) != "failed" else "ERR"
+                self._append_terminal(tag, f"[scheduler] {job.get('command')} \u2192 {status}: {text}")
+                self._append_feed("feed_sys", f"\u23f1 scheduled: {job.get('command')} [{status}]")
             elif event == "error":
                 self._set_busy(False)
                 self._append_terminal("ERR", str(payload))
@@ -1045,6 +1214,9 @@ class JarvisHudApp:
         self.job_stat_labels["APPLIED"].configure(text=f"APPLIED {applied}")
         self.job_stat_labels["SKIPPED"].configure(text=f"SKIPPED {skipped}")
         self.job_stat_labels["FAILED"].configure(text=f"FAILED {failed}")
+        totals = payload.get("totals") or (task.get("totals") if isinstance(task, dict) else None) or {}
+        for name in ("INTERVIEW", "OFFER", "REJECTED"):
+            self.job_stat_labels[name].configure(text=f"{name} {int(totals.get(name.lower(), 0))}")
         if status == "paused" and self._job_prev_status != "paused":
             self.root.bell()
             self._toaster.notify("Job paused", reason or "Task paused, waiting on you.", AMBER, on_click=self._raise_main_window)
@@ -1053,6 +1225,10 @@ class JarvisHudApp:
     def _on_close(self) -> None:
         try:
             self.runtime.voice.stop()
+        except Exception:
+            pass
+        try:
+            self.runtime.scheduler.stop()
         except Exception:
             pass
         try:

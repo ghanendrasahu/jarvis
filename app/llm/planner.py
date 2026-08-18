@@ -17,6 +17,8 @@ class BasePlanner(Protocol):
         tool_catalog: list[dict],
         history: list[dict],
         agent_context: str = "",
+        tool_history: list[dict] | None = None,
+        known_facts: dict | None = None,
     ) -> Plan:
         ...
 
@@ -85,6 +87,8 @@ class NullPlanner:
         tool_catalog: list[dict],
         history: list[dict],
         agent_context: str = "",
+        tool_history: list[dict] | None = None,
+        known_facts: dict | None = None,
     ) -> Plan:
         return Plan(
             summary="No planner available",
@@ -109,9 +113,16 @@ class OpenAIPlanner:
         tool_catalog: list[dict],
         history: list[dict],
         agent_context: str = "",
+        tool_history: list[dict] | None = None,
+        known_facts: dict | None = None,
     ) -> Plan:
         user_prompt = build_planner_prompt(
-            command=command, tool_catalog=tool_catalog, history=history, agent_context=agent_context
+            command=command,
+            tool_catalog=tool_catalog,
+            history=history,
+            agent_context=agent_context,
+            tool_history=tool_history,
+            known_facts=known_facts,
         )
         completion = self.client.chat.completions.create(
             model=self.settings.openai_model,
@@ -155,9 +166,16 @@ class GroqPlanner:
         tool_catalog: list[dict],
         history: list[dict],
         agent_context: str = "",
+        tool_history: list[dict] | None = None,
+        known_facts: dict | None = None,
     ) -> Plan:
         user_prompt = build_planner_prompt(
-            command=command, tool_catalog=tool_catalog, history=history, agent_context=agent_context
+            command=command,
+            tool_catalog=tool_catalog,
+            history=history,
+            agent_context=agent_context,
+            tool_history=tool_history,
+            known_facts=known_facts,
         )
         completion = self.client.chat.completions.create(
             model=self.settings.groq_model,
@@ -184,9 +202,16 @@ class OllamaPlanner:
         tool_catalog: list[dict],
         history: list[dict],
         agent_context: str = "",
+        tool_history: list[dict] | None = None,
+        known_facts: dict | None = None,
     ) -> Plan:
         user_prompt = build_planner_prompt(
-            command=command, tool_catalog=tool_catalog, history=history, agent_context=agent_context
+            command=command,
+            tool_catalog=tool_catalog,
+            history=history,
+            agent_context=agent_context,
+            tool_history=tool_history,
+            known_facts=known_facts,
         )
         response = requests.post(
             f"{self.settings.ollama_base_url.rstrip('/')}/api/chat",

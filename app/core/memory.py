@@ -331,6 +331,21 @@ class MemoryStore:
             ).fetchone()
         return row is not None
 
+    def update_job_status(self, url: str, status: str, notes: str | None = None) -> bool:
+        with self._lock:
+            row = self._conn.execute(
+                "SELECT id FROM jobs_applied WHERE url = ? ORDER BY id DESC LIMIT 1",
+                (url,),
+            ).fetchone()
+            if not row:
+                return False
+            self._conn.execute(
+                "UPDATE jobs_applied SET status = ?, notes = ? WHERE id = ?",
+                (status, notes, row["id"]),
+            )
+            self._conn.commit()
+        return True
+
     def log_job_application(
         self,
         site: str,
@@ -372,3 +387,57 @@ class MemoryStore:
                 "SELECT status, COUNT(*) AS count FROM jobs_applied GROUP BY status"
             ).fetchall()
         return {str(row["status"]): int(row["count"]) for row in rows}
+
+    def session_review(self, since: str | None = None) -> dict[str, Any]:
+        """Summarize everything that happened since an ISO timestamp (or everything if None)."""
+        where = ""
+        params: list[Any] = []
+        if since:
+            where = "WHERE created_at > ?"
+            params = [since]
+        with self._lock:
+            cmd_rows = self._conn.execute(
+                f"SELECT source, command, response_text, created_at FROM command_history {where} ORDER BY id",
+                params,
+            ).fetchall()
+            tool_rows = self._conn.execute(
+                f"SELECT tool, status FROM tool_history {where} ORDER BY id",
+                params,
+            ).fetchall()
+            job_rows = self._conn.execute(
+                f"SELECT site, title, company, status, created_at FROM jobs_applied {where} ORDER BY id",
+                params,
+            ).fetchall()
+
+        commands = [dict(row) for row in cmd_rows]
+        tool_rows = [dict(row) for row in tool_rows]
+        job_rows = [dict(row) for row in job_rows]
+        source_counts: dict[str, int] = {}
+        for row in commands:
+            source = str(row.get("source") or "unknown")
+            source_counts[source] = source_counts.get(source, 0) + 1
+
+        tool_counts: dict[str, int] = {}
+        top_tools: dict[str, int] = {}
+        for row in tool_rows:
+            status = str(row.get("status") or "unknown")
+            tool_counts[status] = tool_counts.get(status, 0) + 1
+            tool = str(row.get("tool") or "?")
+            top_tools[tool] = top_tools.get(tool, 0) + 1
+
+        jobs = [dict(row) for row in job_rows]
+        job_status: dict[str, int] = {}
+        for row in jobs:
+            status = str(row.get("status") or "unknown")
+            job_status[status] = job_status.get(status, 0) + 1
+
+        return {
+            "commands": commands,
+            "command_count": len(commands),
+            "sources": source_counts,
+            "tool_counts": tool_counts,
+            "top_tools": dict(sorted(top_tools.items(), key=lambda kv: kv[1], reverse=True)[:8]),
+            "job_applications": jobs,
+            "job_status": job_status,
+            "scheduled_runs": list(self.get_state("scheduled_runs", default=[]) or []),
+        }

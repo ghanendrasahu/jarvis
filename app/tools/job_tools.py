@@ -46,10 +46,32 @@ def register_job_tools(registry: ToolRegistry, settings: Settings, memory: Memor
         task = agent.cancel()
         return {"result_text": _status_text(task), "task": task}
 
+    def job_resume(_: dict[str, Any]) -> dict[str, Any]:
+        task = agent.resume()
+        return {"result_text": _status_text(task), "task": task}
+
     def job_applied(args: dict[str, Any]) -> dict[str, Any]:
         limit = max(1, min(200, int(args.get("limit", 50))))
         items = agent.applied(limit=limit)
         return {"count": len(items), "items": items, "totals": memory.job_applications_summary()}
+
+    def job_update_status(args: dict[str, Any]) -> dict[str, Any]:
+        url = str(args.get("url", "")).strip()
+        status = str(args.get("status", "")).strip().lower()
+        if not url:
+            raise ValueError("Missing job URL.")
+        allowed = {"applied", "interview", "offer", "rejected", "withdrawn"}
+        if status not in allowed:
+            raise ValueError(f"status must be one of: {', '.join(sorted(allowed))}.")
+        notes = str(args.get("notes", "")).strip() or None
+        if not memory.update_job_status(url, status, notes):
+            raise ValueError("No applied job found with that URL.")
+        return {"result_text": f"Marked job as {status}.", "url": url, "status": status}
+
+    def job_pipeline(_: dict[str, Any]) -> dict[str, Any]:
+        totals = memory.job_applications_summary()
+        items = memory.recent_job_applications(limit=100)
+        return {"totals": totals, "count": len(items), "items": items}
 
     registry.register(
         name="job_apply",
@@ -71,6 +93,27 @@ def register_job_tools(registry: ToolRegistry, settings: Settings, memory: Memor
         risk="medium",
         parameters={},
         handler=job_cancel,
+    )
+    registry.register(
+        name="job_resume",
+        description="Resume a paused job-application task after the user signs in or solves a CAPTCHA.",
+        risk="medium",
+        parameters={},
+        handler=job_resume,
+    )
+    registry.register(
+        name="job_update_status",
+        description="Update the pipeline status (applied, interview, offer, rejected, withdrawn) of an applied job by URL.",
+        risk="medium",
+        parameters={"url": "string", "status": "string", "notes": "string"},
+        handler=job_update_status,
+    )
+    registry.register(
+        name="job_pipeline",
+        description="Return the job pipeline: grouped counts by status and the latest applied jobs.",
+        risk="low",
+        parameters={},
+        handler=job_pipeline,
     )
     registry.register(
         name="job_applied",

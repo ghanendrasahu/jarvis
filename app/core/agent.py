@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+from collections.abc import Callable
 from dataclasses import dataclass, field
 from typing import Any
 
@@ -27,6 +28,15 @@ class AgentRunResult:
     stopped_reason: str | None = None
 
 
+@dataclass
+class _LoopState:
+    all_results: list[ToolExecutionResult]
+    observation_rows: list[dict[str, Any]]
+    failed_counts: dict[str, int]
+    iterations: int
+    action_total: int
+
+
 class AutonomousAgent:
     """Plan -> execute -> observe -> re-plan loop with guardrails."""
 
@@ -45,6 +55,7 @@ class AutonomousAgent:
         self.executor = executor
         self.approvals = approvals
         self.memory = memory
+        self._resume_tokens: dict[str, dict[str, Any]] = {}
 
     def run(
         self,
@@ -53,30 +64,107 @@ class AutonomousAgent:
         auto_approve: bool = False,
         max_iterations: int | None = None,
         action_cap: int | None = None,
+        on_step: Callable[[dict[str, Any]], None] | None = None,
     ) -> AgentRunResult:
         max_iterations = max(1, int(max_iterations or self.settings.agent_max_iterations))
         action_cap = max(1, int(action_cap or self.settings.agent_action_cap))
+        return self._loop(
+            command=command,
+            source=source,
+            auto_approve=auto_approve,
+            max_iterations=max_iterations,
+            action_cap=action_cap,
+            on_step=on_step,
+            state=_LoopState(all_results=[], observation_rows=[], failed_counts={}, iterations=0, action_total=0),
+        )
+
+    def resume(
+        self,
+        approval_id: str,
+        executed_outcome: ToolExecutionResult,
+        on_step: Callable[[dict[str, Any]], None] | None = None,
+    ) -> AgentRunResult | None:
+        """Continue a run that paused for approval, using the stored resume token."""
+        token = self._resume_tokens.pop(approval_id, None)
+        if not token:
+            return None
+        state = _LoopState(
+            all_results=[ToolExecutionResult(**item) for item in token.get("all_results") or []],
+            observation_rows=list(token.get("observation_rows") or []),
+            failed_counts=dict(token.get("failed_counts") or {}),
+            iterations=int(token.get("iterations", 0)),
+            action_total=int(token.get("action_total", 0)),
+        )
+        if state.all_results and state.all_results[-1].pending_approval_id == approval_id:
+            state.all_results[-1] = executed_outcome
+        else:
+            state.all_results.append(executed_outcome)
+        if state.observation_rows and state.observation_rows[-1].get("status") == "pending":
+            state.observation_rows[-1] = {
+                "tool": executed_outcome.tool,
+                "status": executed_outcome.status,
+                "output": executed_outcome.output,
+                "error": executed_outcome.error,
+            }
+        else:
+            state.observation_rows.append(
+                {
+                    "tool": executed_outcome.tool,
+                    "status": executed_outcome.status,
+                    "output": executed_outcome.output,
+                    "error": executed_outcome.error,
+                }
+            )
+        state.action_total += 1
+        return self._loop(
+            command=str(token.get("command") or ""),
+            source=str(token.get("source") or "agent"),
+            auto_approve=bool(token.get("auto_approve")),
+            max_iterations=max(1, int(token.get("max_iterations") or self.settings.agent_max_iterations)),
+            action_cap=max(1, int(token.get("action_cap") or self.settings.agent_action_cap)),
+            on_step=on_step,
+            state=state,
+        )
+
+    def forget(self, approval_id: str) -> None:
+        self._resume_tokens.pop(approval_id, None)
+
+    def _loop(
+        self,
+        command: str,
+        source: str,
+        auto_approve: bool,
+        max_iterations: int,
+        action_cap: int,
+        on_step: Callable[[dict[str, Any]], None] | None,
+        state: _LoopState,
+    ) -> AgentRunResult:
         catalog = self.registry.catalog()
         history = self.memory.recent_conversation(limit=self.settings.max_history_items)
+        tool_history = self.memory.recent_tool_history(limit=self.settings.max_history_items)
+        known_facts = self.memory.get_state("runtime_context", default={}).get("learned_facts") or {}
 
-        all_results: list[ToolExecutionResult] = []
-        observation_rows: list[dict[str, Any]] = []
-        failed_counts: dict[str, int] = {}
         stopped_reason: str | None = None
-        iterations = 0
-        action_total = 0
         final_response = ""
+        iterations = state.iterations
 
-        for iteration in range(1, max_iterations + 1):
+        for iteration in range(state.iterations + 1, max_iterations + 1):
             iterations = iteration
-            remaining = action_cap - action_total
+            remaining = action_cap - state.action_total
             if remaining <= 0:
                 stopped_reason = "reached action cap"
                 break
 
-            agent_context = build_agent_observation(observation_rows)
+            agent_context = build_agent_observation(state.observation_rows)
             try:
-                plan = self.planner.plan(command, catalog, history, agent_context=agent_context)
+                plan = self.planner.plan(
+                    command,
+                    catalog,
+                    history,
+                    agent_context=agent_context,
+                    tool_history=tool_history,
+                    known_facts=known_facts,
+                )
             except Exception as exc:
                 logger.warning("planner call failed on iteration %d: %s", iteration, exc)
                 stopped_reason = "planner_error"
@@ -95,14 +183,14 @@ class AutonomousAgent:
                     final_response = str(action.args.get("summary") or plan.final_response or "Task complete.")
                     break
 
-                if action_total >= action_cap:
+                if state.action_total >= action_cap:
                     stopped_reason = "reached action cap"
                     break
 
-                action_total += 1
+                state.action_total += 1
                 allow_auto = auto_approve or (self.settings.auto_approve_low_risk and action.risk == "low")
                 outcome = self.executor.execute(command=command, action=action, auto_approve=allow_auto)
-                all_results.append(outcome)
+                state.all_results.append(outcome)
                 self.memory.log_tool_result(
                     command=command,
                     tool=outcome.tool,
@@ -111,7 +199,7 @@ class AutonomousAgent:
                     output=outcome.output,
                     error=outcome.error,
                 )
-                observation_rows.append(
+                state.observation_rows.append(
                     {
                         "tool": outcome.tool,
                         "status": outcome.status,
@@ -120,12 +208,37 @@ class AutonomousAgent:
                     }
                 )
 
+                if on_step is not None:
+                    on_step(
+                        {
+                            "tool": outcome.tool,
+                            "status": outcome.status,
+                            "error": outcome.error,
+                            "output_snippet": self._snippet(outcome),
+                            "iteration": iteration,
+                            "actions_total": state.action_total,
+                        }
+                    )
+
                 if outcome.status == "failed":
-                    failed_counts[outcome.tool] = failed_counts.get(outcome.tool, 0) + 1
-                    if failed_counts[outcome.tool] >= 2:
+                    state.failed_counts[outcome.tool] = state.failed_counts.get(outcome.tool, 0) + 1
+                    if state.failed_counts[outcome.tool] >= 2:
                         stopped_reason = f"tool '{outcome.tool}' failed twice; stopping"
                         break
                 elif outcome.status == "pending":
+                    if outcome.pending_approval_id:
+                        self._resume_tokens[outcome.pending_approval_id] = {
+                            "command": command,
+                            "source": source,
+                            "auto_approve": auto_approve,
+                            "max_iterations": max_iterations,
+                            "action_cap": action_cap,
+                            "all_results": [item.model_dump() for item in state.all_results],
+                            "observation_rows": state.observation_rows,
+                            "failed_counts": state.failed_counts,
+                            "action_total": state.action_total,
+                            "iterations": iterations,
+                        }
                     stopped_reason = "approval_required"
                     break
                 elif outcome.status == "completed":
@@ -140,18 +253,18 @@ class AutonomousAgent:
                     final_response = "No progress could be made; stopping early."
                 break
 
-            logger.info("agent iteration=%d actions=%d", iteration, action_total)
+            logger.info("agent iteration=%d actions=%d", iteration, state.action_total)
 
-        results_summary = self._status(all_results)
+        results_summary = self._status(state.all_results)
         status = "completed"
         if stopped_reason == "approval_required":
             status = "needs_approval"
         elif stopped_reason == "planner_error":
             status = "failed"
         elif stopped_reason in {"tool '...' failed twice; stopping", "no progress in iteration"} or any(
-            item.status == "failed" for item in all_results
+            item.status == "failed" for item in state.all_results
         ):
-            status = "failed" if all(item.status == "failed" for item in all_results) and all_results else "partial"
+            status = "failed" if all(item.status == "failed" for item in state.all_results) and state.all_results else "partial"
         elif stopped_reason == "task_complete":
             status = "completed"
         elif stopped_reason in {"reached action cap", "planner returned no actions"}:
@@ -165,10 +278,23 @@ class AutonomousAgent:
             status=status,
             final_response=final_response,
             iterations=iterations,
-            actions_total=action_total,
-            results=all_results,
+            actions_total=state.action_total,
+            results=state.all_results,
             stopped_reason=stopped_reason,
         )
+
+    @staticmethod
+    def _snippet(outcome: ToolExecutionResult) -> str:
+        if outcome.status == "failed":
+            return str(outcome.error or "failed")[:200]
+        if outcome.status == "pending":
+            return "awaiting approval"
+        output = outcome.output or {}
+        for key in ("result_text", "message", "opened", "count", "url", "summary", "extracted", "text"):
+            value = output.get(key)
+            if value is not None:
+                return str(value)[:200]
+        return "ok"
 
     @staticmethod
     def _status(results: list[ToolExecutionResult]) -> str:

@@ -70,6 +70,11 @@ class JobApplyRequest(BaseModel):
     max_applications: int | None = Field(default=None, ge=1, le=100)
 
 
+class ScheduleCreateRequest(BaseModel):
+    command: str = Field(min_length=1, max_length=500)
+    recurrence: str = Field(min_length=1, max_length=100)
+
+
 class JobApplication(BaseModel):
     created_at: str
     site: str

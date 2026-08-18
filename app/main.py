@@ -12,6 +12,7 @@ from app.models.schemas import (
     ExecuteCommandRequest,
     ExecuteCommandResponse,
     JobApplyRequest,
+    ScheduleCreateRequest,
 )
 
 
@@ -97,6 +98,28 @@ def pending_approvals() -> list[dict]:
 @app.post("/v1/approve/{approval_id}", response_model=ExecuteApprovalResponse, dependencies=[_AUTH, _RATELIMIT])
 def approve(approval_id: str) -> ExecuteApprovalResponse:
     return app.state.runtime.orchestrator.approve(approval_id)
+
+
+@app.post("/v1/reject/{approval_id}", response_model=ExecuteApprovalResponse, dependencies=[_AUTH, _RATELIMIT])
+def reject(approval_id: str) -> ExecuteApprovalResponse:
+    return app.state.runtime.orchestrator.reject(approval_id)
+
+
+@app.get("/v1/schedules", dependencies=[_AUTH, _RATELIMIT])
+def schedules_list() -> list[dict]:
+    return app.state.runtime.scheduler.list()
+
+
+@app.post("/v1/schedules", dependencies=[_AUTH, _RATELIMIT])
+def schedules_create(request: ScheduleCreateRequest) -> dict:
+    return app.state.runtime.scheduler.add(request.command, request.recurrence)
+
+
+@app.delete("/v1/schedules/{job_id}", dependencies=[_AUTH, _RATELIMIT])
+def schedules_delete(job_id: str) -> dict:
+    if not app.state.runtime.scheduler.remove(job_id):
+        raise HTTPException(status_code=404, detail=f"No schedule with id '{job_id}'.")
+    return {"ok": True}
 
 
 @app.get("/v1/history", dependencies=[_AUTH, _RATELIMIT])

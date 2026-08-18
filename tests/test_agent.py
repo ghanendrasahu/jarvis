@@ -12,7 +12,15 @@ class FakePlanner:
     def __init__(self, plans: list[Plan]) -> None:
         self._queue = list(plans)
 
-    def plan(self, command: str, catalog: Any, history: Any, agent_context: Any = None) -> Plan:
+    def plan(
+        self,
+        command: str,
+        catalog: Any,
+        history: Any,
+        agent_context: Any = None,
+        tool_history: Any = None,
+        known_facts: Any = None,
+    ) -> Plan:
         return self._queue.pop(0) if self._queue else Plan(summary="done", actions=[])
 
 
@@ -37,6 +45,12 @@ class FakeRegistryAndMemory:
 
     def recent_conversation(self, limit: int = 10) -> list[dict[str, Any]]:
         return []
+
+    def recent_tool_history(self, limit: int = 30) -> list[dict[str, Any]]:
+        return []
+
+    def get_state(self, key: str, default: dict[str, Any] | None = None) -> dict[str, Any]:
+        return dict(default or {})
 
     def log_tool_result(self, **_: Any) -> None:
         pass
@@ -73,7 +87,15 @@ def test_agent_hits_action_cap():
     agent = _agent(planner, executor, agent_action_cap=3, agent_max_iterations=10)
 
     class AlwaysPlan:
-        def plan(self, command: str, catalog: Any, history: Any, agent_context: Any = None) -> Plan:
+        def plan(
+        self,
+        command: str,
+        catalog: Any,
+        history: Any,
+        agent_context: Any = None,
+        tool_history: Any = None,
+        known_facts: Any = None,
+    ) -> Plan:
             return Plan(
                 summary="next",
                 actions=[
@@ -99,7 +121,15 @@ def test_agent_stops_after_tool_fails_twice():
     agent = _agent(planner, executor)
 
     class AlwaysFail:
-        def plan(self, command: str, catalog: Any, history: Any, agent_context: Any = None) -> Plan:
+        def plan(
+        self,
+        command: str,
+        catalog: Any,
+        history: Any,
+        agent_context: Any = None,
+        tool_history: Any = None,
+        known_facts: Any = None,
+    ) -> Plan:
             return Plan(
                 summary="retry",
                 actions=[
@@ -116,7 +146,15 @@ def test_agent_stops_after_tool_fails_twice():
 
 def test_agent_returns_failed_on_planner_error():
     class BrokenPlanner:
-        def plan(self, command: str, catalog: Any, history: Any, agent_context: Any = None) -> Plan:
+        def plan(
+        self,
+        command: str,
+        catalog: Any,
+        history: Any,
+        agent_context: Any = None,
+        tool_history: Any = None,
+        known_facts: Any = None,
+    ) -> Plan:
             raise RuntimeError("LLM provider unreachable")
 
     executor = FakeExecutor([])
@@ -141,7 +179,15 @@ def test_agent_stops_when_approval_required():
     agent = _agent(planner, executor)
 
     class AlwaysPlan:
-        def plan(self, command: str, catalog: Any, history: Any, agent_context: Any = None) -> Plan:
+        def plan(
+            self,
+            command: str,
+            catalog: Any,
+            history: Any,
+            agent_context: Any = None,
+            tool_history: Any = None,
+            known_facts: Any = None,
+        ) -> Plan:
             return Plan(
                 summary="run shell",
                 actions=[Action(tool="run_shell_command", args={"command": "Get-Date"}, risk="high")],
@@ -151,3 +197,60 @@ def test_agent_stops_when_approval_required():
     result = agent.run("run a command")
     assert result.status == "needs_approval"
     assert result.stopped_reason == "approval_required"
+
+
+def test_agent_resumes_after_approval_continues_loop():
+    planner = FakePlanner([])
+    pending = ToolExecutionResult(
+        tool="run_shell_command",
+        status="pending",
+        risk="high",
+        output={"message": "needs approval"},
+        pending_approval_id="abc",
+    )
+    executor = FakeExecutor([pending])
+    agent = _agent(planner, executor)
+
+    class TwoPhasePlan:
+        def __init__(self) -> None:
+            self.calls = 0
+
+        def plan(
+            self,
+            command: str,
+            catalog: Any,
+            history: Any,
+            agent_context: Any = None,
+            tool_history: Any = None,
+            known_facts: Any = None,
+        ) -> Plan:
+            self.calls += 1
+            if self.calls == 1:
+                return Plan(
+                    summary="run shell",
+                    actions=[Action(tool="run_shell_command", args={"command": "Get-Date"}, risk="high")],
+                )
+            return Plan(
+                summary="wrap up",
+                actions=[Action(tool="agent_done", args={"summary": "Finished after approval"}, risk="low")],
+            )
+
+    agent.planner = TwoPhasePlan()
+    first = agent.run("run a command")
+    assert first.status == "needs_approval"
+    assert first.stopped_reason == "approval_required"
+
+    executed = ToolExecutionResult(tool="run_shell_command", status="completed", risk="high", output={"result_text": "done"})
+    resumed = agent.resume("abc", executed)
+    assert resumed is not None
+    assert resumed.status == "completed"
+    assert resumed.stopped_reason == "task_complete"
+    assert "Finished after approval" in resumed.final_response
+    assert resumed.results[0].status == "completed"
+    assert resumed.actions_total == 2
+
+
+def test_agent_resume_returns_none_without_token():
+    executor = FakeExecutor([])
+    agent = _agent(FakePlanner([]), executor)
+    assert agent.resume("nope", ToolExecutionResult(tool="x", status="completed")) is None

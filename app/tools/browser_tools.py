@@ -380,6 +380,30 @@ def register_browser_tools(registry: ToolRegistry, settings: Settings) -> None:
         webbrowser.open(url, new=2)
         return {"query": query, "opened": url}
 
+    def read_webpage(args: dict[str, Any]) -> dict[str, Any]:
+        url = str(args.get("url", "")).strip()
+        if not url:
+            raise ValueError("Missing URL.")
+        if not (url.startswith("http://") or url.startswith("https://")):
+            url = "https://" + url
+        max_chars = max(500, min(20000, safe_int(args.get("max_chars", 6000), 6000)))
+        host = ""
+        try:
+            host = urllib.parse.urlparse(url).netloc or ""
+        except Exception:
+            pass
+        try:
+            page = automation._ensure_page(url, [host] if host else ["http"])
+            page.goto(url, wait_until="domcontentloaded", timeout=automation._timeout_ms)
+            title = page.title()
+            body_text = page.locator("body").inner_text(timeout=5000) or ""
+        except Exception as exc:
+            raise ValueError(f"Could not read page: {exc}") from exc
+        text = " ".join(line.strip() for line in body_text.splitlines() if line.strip())
+        if len(text) > max_chars:
+            text = text[:max_chars] + "..."
+        return {"url": url, "title": (title or "").strip(), "text": text, "chars": len(text)}
+
     def open_youtube_video(args: dict[str, Any]) -> dict[str, Any]:
         try:
             return automation.open_youtube_video(args)
@@ -571,6 +595,13 @@ def register_browser_tools(registry: ToolRegistry, settings: Settings) -> None:
         risk="low",
         parameters={"query": "string"},
         handler=search_web,
+    )
+    registry.register(
+        name="read_webpage",
+        description="Read and return the text content of a webpage. Use for research and information gathering.",
+        risk="low",
+        parameters={"url": "string", "max_chars": "integer"},
+        handler=read_webpage,
     )
     registry.register(
         name="open_youtube_video",
