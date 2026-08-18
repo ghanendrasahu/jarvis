@@ -104,6 +104,7 @@ class JarvisHudApp:
 
         self._build_ui()
         self._refresh_voice_button()
+        self._refresh_auto_start_button()
         self._poll_events()
         self._animate_wave()
         self._animate_scene()
@@ -164,6 +165,9 @@ class JarvisHudApp:
         mini_btn = self._chip(dock, "MINI", self.mini.toggle)
         mini_btn.grid(row=0, column=3, padx=(0, 8))
         self._tooltips.append(Tooltip(mini_btn, "Show/hide the floating mini HUD"))
+        self.auto_start_button = self._chip(dock, "AUTOSTART", self._toggle_auto_start)
+        self.auto_start_button.grid(row=0, column=4, padx=(0, 8))
+        self._tooltips.append(Tooltip(self.auto_start_button, "Toggle auto-start when this project opens / Windows login"))
 
         self.online_label = tk.Label(
             top, text="STATUS: OPERATIONAL", bg="#0d2332", fg=GREEN, font=("JetBrains Mono", 10, "bold"), padx=10, pady=5
@@ -559,6 +563,36 @@ class JarvisHudApp:
             self._ui_config_path.write_text(json.dumps(cfg), encoding="utf-8")
         except Exception:
             pass
+
+    def _auto_start_path(self) -> Path:
+        return Path(__file__).resolve().parent.parent / "data" / "auto_start.json"
+
+    def _auto_start_enabled(self) -> bool:
+        try:
+            cfg = json.loads(self._auto_start_path().read_text(encoding="utf-8"))
+            return bool(cfg.get("enabled", True))
+        except Exception:
+            return True
+
+    def _write_auto_start(self, enabled: bool) -> None:
+        try:
+            path = self._auto_start_path()
+            path.parent.mkdir(parents=True, exist_ok=True)
+            path.write_text(json.dumps({"enabled": enabled}), encoding="utf-8")
+        except Exception:
+            pass
+
+    def _toggle_auto_start(self) -> None:
+        self._write_auto_start(not self._auto_start_enabled())
+        self._refresh_auto_start_button()
+
+    def _refresh_auto_start_button(self) -> None:
+        on = self._auto_start_enabled()
+        self.auto_start_button.configure(
+            text="AUTOSTART ON" if on else "AUTOSTART OFF",
+            bg="#0f1f3c" if on else "#3a1a24",
+            fg=GREEN if on else AMBER,
+        )
 
     def _toggle_voice(self) -> None:
         self._set_busy(True)

@@ -79,6 +79,20 @@ scripts\start_jarvis.cmd
 scripts\start_jarvis.cmd voice
 ```
 
+## Auto-Start
+
+The HUD can start itself automatically in two places:
+
+- **VS Code**: opening this folder runs a `folderOpen` task (`.vscode/tasks.json`) that launches the HUD.
+- **Windows login**: a `JARVIS Auto Start` shortcut in the Startup folder launches the HUD.
+
+Turn it off/on anytime:
+
+- Click the **AUTOSTART ON / AUTOSTART OFF** chip in the HUD top bar, or
+- `.\scripts\auto_start.ps1 off` / `on` / `status`
+
+Disabled = the HUD does not auto-start until you re-enable it (manual `start_jarvis.ps1` always works).
+
 ## Architecture
 
 ```mermaid
