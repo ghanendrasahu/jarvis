@@ -113,6 +113,24 @@ class MemoryStore:
             conn.execute("CREATE INDEX IF NOT EXISTS idx_execution_metrics_created ON execution_metrics(created_at)")
             conn.execute("CREATE INDEX IF NOT EXISTS idx_command_history_created ON command_history(created_at)")
             conn.execute("CREATE INDEX IF NOT EXISTS idx_planner_cache_updated ON planner_cache(updated_at)")
+            # Episodic memory table (Phase E)
+            conn.execute(
+                """
+                CREATE TABLE IF NOT EXISTS episodic_memory (
+                    id INTEGER PRIMARY KEY AUTOINCREMENT,
+                    created_at TEXT NOT NULL,
+                    command TEXT NOT NULL,
+                    status TEXT NOT NULL,
+                    summary TEXT NOT NULL DEFAULT '',
+                    tools_json TEXT NOT NULL DEFAULT '[]',
+                    importance REAL NOT NULL DEFAULT 1.0,
+                    recall_count INTEGER NOT NULL DEFAULT 0,
+                    last_recalled_at TEXT
+                )
+                """
+            )
+            conn.execute("CREATE INDEX IF NOT EXISTS idx_episodic_created ON episodic_memory(created_at)")
+            conn.execute("CREATE INDEX IF NOT EXISTS idx_episodic_command ON episodic_memory(command)")
             conn.commit()
 
     def prune(self, days: int = 60) -> dict[str, int]:

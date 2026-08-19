@@ -100,6 +100,11 @@ TOOL_META: dict[str, ToolMeta] = {
     "task_resume": ToolMeta("tasks", "execute", timeout_seconds=3600),
     "task_list": ToolMeta("tasks", "read"),
     "task_status": ToolMeta("tasks", "read"),
+    # ---- memory -------------------------------------------------------------------------------
+    "memory_recall": ToolMeta("memory", "read"),
+    "memory_list": ToolMeta("memory", "read"),
+    "memory_forget": ToolMeta("memory", "write"),
+    "memory_clear": ToolMeta("memory", "write"),
     # ---- agent / metrics / proactive -----------------------------------------------
     "agent_done": ToolMeta("agent", "write"),
     "get_runtime_metrics": ToolMeta("metrics", "read"),

@@ -77,7 +77,7 @@ def test_tool_meta_enriches_every_registered_tool():
     for item in registry.catalog():
         assert item["category"] in {
             "app_launch", "desktop", "system", "files", "browser", "code",
-            "knowledge", "vision", "jobs", "productivity", "scheduler", "tasks", "agent",
+            "knowledge", "vision", "jobs", "productivity", "scheduler", "tasks", "memory", "agent",
             "metrics", "proactive", "general",
         }
         assert item["read_write"] in {"read", "write", "execute"}

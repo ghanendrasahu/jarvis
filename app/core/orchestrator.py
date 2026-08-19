@@ -12,6 +12,7 @@ from app.config import Settings
 from app.core.agent import AgentRunResult, AutonomousAgent
 from app.core.approvals import ApprovalManager
 from app.core.contract import synthesize_result_text
+from app.core.episodic import EpisodicMemory
 from app.core.events import EventHub
 from app.core.executor import ActionExecutor
 from app.core.logging import get_logger
@@ -458,6 +459,7 @@ class JarvisOrchestrator:
             created_at=datetime.now(UTC).isoformat(),
         )
         self.memory.log_command(source=source, command=cleaned, response_text=response_text)
+        EpisodicMemory(self.memory.database_path).consolidate_episodes()
         logger.info("command from=%s status=%s duration=%dms actions=%d", source, status, duration_ms, len(results))
         return self._emit_done(payload)
 
