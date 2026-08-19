@@ -12,6 +12,9 @@ from app.core.orchestrator import JarvisOrchestrator
 from app.models.schemas import ExecuteCommandResponse
 from app.voice.listener import VoiceListener
 from app.voice.speaker import Speaker
+from app.voice.wake_word_detector import (
+    PhraseMatchingDetectorForIntegration,
+)
 
 logger = get_logger("voice")
 
@@ -38,6 +41,11 @@ class VoiceController:
         self._followup_until: float = 0.0
         self._sticky_followup_active: bool = False
         self._pending_whatsapp_confirmation: dict[str, str] | None = None
+        # Wake-word detector — partial phrase-matching fallback;
+        # a real hotword model should replace PhraseMatchingDetectorForIntegration.
+        self._wake_word = PhraseMatchingDetectorForIntegration(
+            self.listener.settings.wake_word
+        )
 
     def is_running(self) -> bool:
         return self._thread is not None and self._thread.is_alive()
@@ -135,14 +143,19 @@ class VoiceController:
             )
 
     def _extract_command(self, transcript: str) -> tuple[str, bool]:
-        wake = self.settings.wake_word.lower().strip()
-        lowered = transcript.lower()
-        if wake not in lowered:
+        # Use the partial phrase-matching detector as a convenience
+        # during integration.  This is NOT a real hotword model; the
+        # master prompt warns against claiming full wake-word support
+        # without actual detection.
+        used_wake_word = self._wake_word.detect_transcript(transcript)
+        lowered = transcript.lower().strip()
+        if not used_wake_word:
             if self._sticky_followup_active or time.time() <= self._followup_until:
-                return transcript.strip(" ,.:"), False
+                return transcript.strip(" ,."), False
             return "", False
-        index = lowered.find(wake)
-        command = transcript[index + len(wake) :].strip(" ,.:")
+        # Strip the wake word and surrounding whitespace/punctuation.
+        index = lowered.find(self._wake_word.wake_phrase)
+        command = transcript[index + len(self._wake_word.wake_phrase) :].strip(" ,.:")
         return command, True
 
     def _run_loop(self) -> None:

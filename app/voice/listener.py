@@ -6,6 +6,13 @@ from dataclasses import dataclass
 from typing import Any
 
 from app.config import Settings
+from app.core.logging import get_logger
+from app.voice.wake_word_detector import (
+    PhraseMatchingDetectorForIntegration,
+    VadAwareDetector,
+)
+
+logger = get_logger("voice")
 
 
 @dataclass
@@ -55,6 +62,13 @@ class VoiceListener:
         self._device_index: int | None = None
         self._last_ambient_adjust_at: float | None = None
         self._vad = _VadGate()
+        # Wake-word detector: real model not available, use phrase-matching
+        # as a partial fallback, wrapped in VadAwareDetector so silence
+        # suppresses detection.
+        self._wake_word_detector = VadAwareDetector(
+            PhraseMatchingDetectorForIntegration(settings.wake_word),
+            self._vad,
+        )
 
     def _get_recognizer(self) -> Any:
         if self._recognizer is None:
