@@ -286,6 +286,21 @@ class DirectCommandRouter:
         if normalized.startswith("search web "):
             query = normalized[11:].strip()
             return [Action(tool="search_web", args={"query": query}, risk="low", reason="Open web search")]
+        if normalized in {"research", "do research", "research this", "research that"}:
+            return [Action(tool="research_agent_start", args={"question": normalized}, risk="low", reason="Start research agent workflow")]
+        if normalized.startswith("recall "):
+            return [Action(tool="memory_recall", args={"query": normalized[7:].strip()}, risk="low", reason="Recall relevant episodic memory")]
+        if normalized.startswith("what did we do"):
+            return [Action(tool="memory_list", args={"limit": 10}, risk="low", reason="List recent episodic memories")]
+        if normalized in {"suggestions", "what can i do", "what can you do", "what should i do next"}:
+            return [
+                Action(
+                    tool="suggest_next",
+                    args={},
+                    risk="low",
+                    reason="Suggest next commands",
+                )
+            ]
 
         if normalized.startswith("search "):
             query = normalized[7:].strip()
