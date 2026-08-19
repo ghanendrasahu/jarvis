@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+from typing import Any
+
 from app.config import Settings
 from app.core.calendar import CalendarStore
 from app.core.memory import MemoryStore
@@ -21,6 +23,7 @@ from app.tools.registry import ToolRegistry
 from app.tools.scheduler_tools import register_scheduler_tools
 from app.tools.shell_tools import register_shell_tools
 from app.tools.system_tools import register_system_tools
+from app.tools.task_tools import register_task_tools
 from app.tools.vision_tools import register_vision_tools
 
 
@@ -31,6 +34,7 @@ def register_all_tools(
     rag: RagIndex | None = None,
     scheduler: Scheduler | None = None,
     calendar: CalendarStore | None = None,
+    task_engine: Any | None = None,
 ) -> None:
     register_system_tools(registry, settings)
     register_file_tools(registry, settings)
@@ -50,4 +54,6 @@ def register_all_tools(
     register_productivity_tools(registry, settings, scheduler=scheduler, calendar=calendar)
     if scheduler is not None:
         register_scheduler_tools(registry, scheduler)
+    if task_engine is not None:
+        register_task_tools(registry, settings, task_engine)
     apply_tool_meta(registry)

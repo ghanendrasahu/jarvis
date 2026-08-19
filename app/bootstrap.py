@@ -17,6 +17,7 @@ from app.core.rag import RagIndex
 from app.core.retrieval_planner import wrap_planner_with_rag
 from app.core.router import DirectCommandRouter
 from app.core.scheduler import Scheduler
+from app.core.task_engine import TaskEngine
 from app.llm.planner import BasePlanner, create_planner
 from app.tools import register_all_tools
 from app.tools.registry import ToolRegistry
@@ -64,6 +65,7 @@ def build_runtime(events: EventHub | None = None) -> Runtime:
         memory=memory,
     )
     code_agent = CodeAgent(agent=agent, executor=executor, settings=settings, memory=memory)
+    task_engine = TaskEngine(executor=executor, memory=memory, settings=settings, events=events)
     orchestrator = JarvisOrchestrator(
         settings=settings,
         registry=registry,
@@ -75,12 +77,21 @@ def build_runtime(events: EventHub | None = None) -> Runtime:
         agent=agent,
         code_agent=code_agent,
         events=events,
+        task_engine=task_engine,
     )
     voice = VoiceController(settings=settings, orchestrator=orchestrator)
     job_agent = get_job_agent(settings=settings, memory=memory)
     scheduler = Scheduler(settings=settings, memory=memory, orchestrator=orchestrator)
     calendar = CalendarStore(settings.calendar_path)
-    register_all_tools(registry, settings, memory=memory, rag=rag, scheduler=scheduler, calendar=calendar)
+    register_all_tools(
+        registry,
+        settings,
+        memory=memory,
+        rag=rag,
+        scheduler=scheduler,
+        calendar=calendar,
+        task_engine=task_engine,
+    )
     reminder_speaker = Speaker(enabled=settings.tts_enabled)
 
     def _announce_scheduled_run(job: dict, status: str, text: str) -> None:

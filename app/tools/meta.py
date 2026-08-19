@@ -93,6 +93,13 @@ TOOL_META: dict[str, ToolMeta] = {
     "schedule": ToolMeta("scheduler", "write"),
     "list_schedules": ToolMeta("scheduler", "read"),
     "cancel_schedule": ToolMeta("scheduler", "write"),
+    # ---- tasks ----------------------------------------------------------------------
+    "task_create": ToolMeta("tasks", "write"),
+    "task_run": ToolMeta("tasks", "execute", timeout_seconds=3600),
+    "task_cancel": ToolMeta("tasks", "write"),
+    "task_resume": ToolMeta("tasks", "execute", timeout_seconds=3600),
+    "task_list": ToolMeta("tasks", "read"),
+    "task_status": ToolMeta("tasks", "read"),
     # ---- agent / metrics / proactive -----------------------------------------------
     "agent_done": ToolMeta("agent", "write"),
     "get_runtime_metrics": ToolMeta("metrics", "read"),

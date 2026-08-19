@@ -19,6 +19,7 @@ from app.core.memory import MemoryStore
 from app.core.redact import redact_object, redact_text
 from app.core.router import DirectCommandRouter, _normalize_command
 from app.core.suggest import SuggestionEngine
+from app.core.task_engine import TaskEngine
 from app.llm.planner import BasePlanner
 from app.models.schemas import (
     CommandStatus,
@@ -62,6 +63,7 @@ class JarvisOrchestrator:
         agent: AutonomousAgent | None = None,
         code_agent: CodeAgent | None = None,
         events: EventHub | None = None,
+        task_engine: TaskEngine | None = None,
     ) -> None:
         self.settings = settings
         self.registry = registry
@@ -73,6 +75,7 @@ class JarvisOrchestrator:
         self.agent = agent
         self.code_agent = code_agent
         self.events = events
+        self.task_engine = task_engine
         self._suggestions = SuggestionEngine()
 
     def _emit(self, topic: str, payload: dict[str, Any]) -> None:
@@ -423,19 +426,7 @@ class JarvisOrchestrator:
                 }
             )
 
-        results: list[ToolExecutionResult] = []
-        for action in plan.actions:
-            allow_auto = auto_approve or (self.settings.auto_approve_low_risk and action.risk == "low")
-            outcome = self.executor.execute(command=cleaned, action=action, auto_approve=allow_auto)
-            results.append(outcome)
-            self.memory.log_tool_result(
-                command=cleaned,
-                tool=outcome.tool,
-                status=outcome.status,
-                risk=outcome.risk,
-                output=outcome.output,
-                error=outcome.error,
-            )
+        results = self._execute_plan_actions(cleaned, plan, auto_approve=auto_approve)
 
         response_text = redact_text(self._compose_response(plan, results))
         status = self._status_from_results(results)
@@ -469,6 +460,56 @@ class JarvisOrchestrator:
         self.memory.log_command(source=source, command=cleaned, response_text=response_text)
         logger.info("command from=%s status=%s duration=%dms actions=%d", source, status, duration_ms, len(results))
         return self._emit_done(payload)
+
+    def _execute_plan_actions(
+        self, command: str, plan: Plan, auto_approve: bool
+    ) -> list[ToolExecutionResult]:
+        """Run a plan's actions, tracking them as a resumable Task when the engine is wired."""
+        if self.task_engine is not None and plan.actions:
+            task = self.task_engine.create(command, plan.actions, source="planner")
+            finished = self.task_engine.run(task.id, auto_approve=auto_approve)
+            return self._steps_to_results(finished if finished is not None else task)
+        results: list[ToolExecutionResult] = []
+        for action in plan.actions:
+            allow_auto = auto_approve or (self.settings.auto_approve_low_risk and action.risk == "low")
+            outcome = self.executor.execute(command=command, action=action, auto_approve=allow_auto)
+            results.append(outcome)
+            self.memory.log_tool_result(
+                command=command,
+                tool=outcome.tool,
+                status=outcome.status,
+                risk=outcome.risk,
+                output=outcome.output,
+                error=outcome.error,
+            )
+        return results
+
+    @staticmethod
+    def _steps_to_results(task: Any) -> list[ToolExecutionResult]:
+        results: list[ToolExecutionResult] = []
+        for step in task.steps:
+            if step.status == "canceled":
+                status: str = "failed"
+                error = "cancelled"
+            elif step.status == "pending":
+                status = "pending"
+                error = step.error
+            else:
+                status = step.status
+                error = step.error
+            results.append(
+                ToolExecutionResult(
+                    tool=step.tool,
+                    status=status,  # type: ignore[arg-type]
+                    risk=step.risk,  # type: ignore[arg-type]
+                    output=dict(step.output or {}),
+                    error=error,
+                    pending_approval_id=step.pending_approval_id,
+                    category=step.category,
+                    metadata=dict(step.metadata or {}),
+                )
+            )
+        return results
 
     def _failed_response(self, command: str, source: str, message: str) -> ExecuteCommandResponse:
         safe_message = redact_text(message)
@@ -557,6 +598,8 @@ class JarvisOrchestrator:
             error=outcome.error,
         )
         resumed: AgentRunResult | None = None
+        if self.task_engine is not None:
+            self.task_engine.resume_after_approval(approval_id, outcome)
         if self.code_agent is not None:
             try:
                 resumed = self.code_agent.resume(approval_id, outcome)
@@ -674,6 +717,67 @@ class JarvisOrchestrator:
 
     def list_pending_approvals(self):
         return self.approvals.list_pending()
+
+    def list_tasks(self, limit: int = 20) -> list[dict]:
+        if self.task_engine is None:
+            return []
+        return [
+            {
+                "id": task.id,
+                "command": task.command,
+                "source": task.source,
+                "status": task.status,
+                "progress": task.progress,
+                "created_at": task.created_at,
+            }
+            for task in self.task_engine.list(limit=limit)
+        ]
+
+    def get_task(self, task_id: str) -> dict | None:
+        if self.task_engine is None:
+            return None
+        task = self.task_engine.get(task_id)
+        if task is None:
+            return None
+        return {
+            "id": task.id,
+            "command": task.command,
+            "source": task.source,
+            "status": task.status,
+            "progress": task.progress,
+            "error": task.error,
+            "created_at": task.created_at,
+            "started_at": task.started_at,
+            "finished_at": task.finished_at,
+            "steps": [
+                {
+                    "id": step.id,
+                    "tool": step.tool,
+                    "status": step.status,
+                    "error": step.error,
+                    "attempts": step.attempts,
+                }
+                for step in task.steps
+            ],
+        }
+
+    def cancel_task(self, task_id: str) -> bool:
+        if self.task_engine is None:
+            return False
+        return self.task_engine.cancel(task_id)
+
+    def resume_task(self, task_id: str, auto_approve: bool = False) -> dict | None:
+        if self.task_engine is None:
+            return None
+        task = self.task_engine.resume(task_id, auto_approve=auto_approve)
+        if task is None:
+            return None
+        return {
+            "id": task.id,
+            "status": task.status,
+            "progress": task.progress,
+            "error": task.error,
+        }
 
     def get_history(self, limit: int = 30) -> list[dict]:
         return self.memory.recent_conversation(limit=limit)
