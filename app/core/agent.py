@@ -6,6 +6,7 @@ from typing import Any
 
 from app.config import Settings
 from app.core.approvals import ApprovalManager
+from app.core.contract import synthesize_result_text
 from app.core.executor import ActionExecutor
 from app.core.logging import get_logger
 from app.core.memory import MemoryStore
@@ -296,12 +297,7 @@ class AutonomousAgent:
             return str(outcome.error or "failed")[:200]
         if outcome.status == "pending":
             return "awaiting approval"
-        output = outcome.output or {}
-        for key in ("result_text", "message", "opened", "count", "url", "summary", "extracted", "text"):
-            value = output.get(key)
-            if value is not None:
-                return str(value)[:200]
-        return "ok"
+        return synthesize_result_text(outcome.tool, outcome.output)[:200]
 
     @staticmethod
     def _status(results: list[ToolExecutionResult]) -> str:

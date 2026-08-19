@@ -10,6 +10,7 @@ from app.agents.code_agent import CodeAgent
 from app.config import Settings
 from app.core.agent import AgentRunResult, AutonomousAgent
 from app.core.approvals import ApprovalManager
+from app.core.contract import synthesize_result_text
 from app.core.events import EventHub
 from app.core.executor import ActionExecutor
 from app.core.logging import get_logger
@@ -221,11 +222,8 @@ class JarvisOrchestrator:
                     include_completed_line = False
 
         if completed and include_completed_line:
-            spoken = [
-                str(item.output.get("result_text"))
-                for item in completed
-                if item.output.get("result_text")
-            ]
+            spoken = [synthesize_result_text(item.tool, item.output) for item in completed]
+            spoken = [text for text in spoken if text]
             if spoken:
                 lines.append(" ".join(spoken).strip())
             else:

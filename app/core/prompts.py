@@ -2,6 +2,8 @@ from __future__ import annotations
 
 import json
 
+from app.core.contract import synthesize_result_text
+
 JARVIS_IDENTITY_PROMPT = """
 You are JARVIS - an elite-level AI executive assistant designed for high-performance problem solving, automation, and decision support.
 
@@ -194,9 +196,7 @@ def build_agent_observation(results: list[dict]) -> str:
         output = item.get("output") or {}
         summary = ""
         if status == "completed":
-            keys = [k for k in ("opened", "count", "message", "url", "extracted", "done", "summary") if k in output]
-            if keys:
-                summary = f" -> {output[keys[0]]}"
+            summary = f" -> {synthesize_result_text(str(tool), output)}"
         elif status == "failed":
             summary = f" -> error: {item.get('error', 'unknown')}"
         elif status == "pending":

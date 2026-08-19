@@ -20,7 +20,6 @@ from app.core.scheduler import Scheduler
 from app.llm.planner import BasePlanner, create_planner
 from app.tools import register_all_tools
 from app.tools.registry import ToolRegistry
-from app.tools.scheduler_tools import register_scheduler_tools
 from app.voice.loop import VoiceController
 from app.voice.speaker import Speaker
 
@@ -80,7 +79,6 @@ def build_runtime(events: EventHub | None = None) -> Runtime:
     voice = VoiceController(settings=settings, orchestrator=orchestrator)
     job_agent = get_job_agent(settings=settings, memory=memory)
     scheduler = Scheduler(settings=settings, memory=memory, orchestrator=orchestrator)
-    register_scheduler_tools(registry, scheduler)
     calendar = CalendarStore(settings.calendar_path)
     register_all_tools(registry, settings, memory=memory, rag=rag, scheduler=scheduler, calendar=calendar)
     reminder_speaker = Speaker(enabled=settings.tts_enabled)
