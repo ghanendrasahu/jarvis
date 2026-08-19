@@ -7,6 +7,7 @@ from datetime import UTC, datetime
 from typing import Any, cast
 
 from app.agents.code_agent import CodeAgent
+from app.agents.roles import classify_intent, is_code_command, is_general_agent_command
 from app.config import Settings
 from app.core.agent import AgentRunResult, AutonomousAgent
 from app.core.approvals import ApprovalManager
@@ -30,64 +31,10 @@ from app.tools.registry import ToolRegistry
 
 logger = get_logger("orchestrator")
 
-_AGENT_INTENT_PREFIXES = (
-    "research",
-    "investigate",
-    "figure out",
-    "find out why",
-    "troubleshoot",
-    "diagnose",
-    "set up a",
-    "set up an",
-    "set up the",
-    "automate",
-    "build me",
-    "create a script",
-    "scan",
-    "audit",
-    "monitor",
-    "summarize",
-    "analyze",
-    "check if",
-)
-
-
-def _is_agent_worthy(command: str) -> bool:
-    lowered = command.lower().strip()
-    return lowered.startswith(_AGENT_INTENT_PREFIXES)
-
-
-_CODE_INTENT_PREFIXES = (
-    "fix",
-    "bug",
-    "debug",
-    "refactor",
-    "implement",
-    "write a",
-    "write an",
-    "write the",
-    "add a",
-    "add an",
-    "add the",
-    "add tests",
-    "add test",
-    "create a function",
-    "create a class",
-    "create a script",
-    "optimize the code",
-    "clean up the code",
-    "make the code",
-    "make the script",
-    "build a python",
-    "code",
-)
-
 
 def _is_code_worthy(command: str) -> bool:
-    lowered = command.lower().strip()
-    if lowered.startswith(_CODE_INTENT_PREFIXES):
-        return True
-    return any(token in lowered for token in ("fix the bug", "fix a bug", "failing test", "red test", "lint error"))
+    """Backward-compatible alias for the intent classifier's code check."""
+    return is_code_command(command)
 
 
 def _redact_result(item: ToolExecutionResult) -> ToolExecutionResult:
@@ -430,20 +377,33 @@ class JarvisOrchestrator:
         direct_actions = self.router.route(cleaned, context=context)
         if direct_actions:
             plan = Plan(summary="Direct command route", actions=direct_actions, final_response="")
-        elif self.code_agent is not None and _is_code_worthy(cleaned):
+        elif self.code_agent is not None and is_code_command(cleaned):
             try:
                 code_result = self.code_agent.run(cleaned, source=source, auto_approve=auto_approve, on_step=on_step)
             except Exception as exc:
                 logger.exception("coding agent run failed")
                 return self._failed_response(cleaned, source, f"The coding agent failed: {exc}")
             return self._emit_done(self._response_from_agent(cleaned, source, code_result))
-        elif self.agent is not None and _is_agent_worthy(cleaned):
+        elif self.agent is not None:
+            role = classify_intent(cleaned, context)
+            if role is not None or is_general_agent_command(cleaned):
+                try:
+                    agent_result = self.agent.run(
+                        cleaned,
+                        source=source,
+                        auto_approve=auto_approve,
+                        on_step=on_step,
+                        role=role.role_prompt if role is not None else "",
+                    )
+                except Exception as exc:
+                    logger.exception("autonomous agent run failed")
+                    return self._failed_response(cleaned, source, f"The autonomous agent failed: {exc}")
+                return self._emit_done(self._response_from_agent(cleaned, source, agent_result))
             try:
-                agent_result = self.agent.run(cleaned, source=source, auto_approve=auto_approve, on_step=on_step)
+                plan = self._plan_or_cached(cleaned, context)
             except Exception as exc:
-                logger.exception("autonomous agent run failed")
-                return self._failed_response(cleaned, source, f"The autonomous agent failed: {exc}")
-            return self._emit_done(self._response_from_agent(cleaned, source, agent_result))
+                logger.warning("planner failed for command: %s", cleaned)
+                return self._failed_response(cleaned, source, f"Planning failed: {exc}")
         else:
             try:
                 plan = self._plan_or_cached(cleaned, context)
@@ -727,3 +687,15 @@ class JarvisOrchestrator:
             "recent": self.memory.recent_execution_metrics(limit=min(limit, 500)),
             "context": self.memory.get_state("runtime_context", default={}),
         }
+
+    def list_agents(self) -> list[dict]:
+        from app.agents.roles import AGENT_ROLES
+
+        return [
+            {
+                "id": role.id,
+                "name": role.name,
+                "description": role.description,
+            }
+            for role in AGENT_ROLES
+        ]
