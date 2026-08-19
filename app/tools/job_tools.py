@@ -33,9 +33,12 @@ def register_job_tools(registry: ToolRegistry, settings: Settings, memory: Memor
         sites = args.get("sites") or None
         max_applications = args.get("max_applications")
         task = agent.start_apply_run(query=query, sites=sites, max_applications=max_applications)
+        # Return task info so the user can check status/resume
         return {
             "result_text": f"Started applying for '{query}' across {len(task.get('sites') or [])} job sites.",
-            "task": task,
+            "task_id": task.get("task_id"),
+            "status": task.get("status"),
+            "phase": task.get("phase"),
         }
 
     def job_status(_: dict[str, Any]) -> dict[str, Any]:
@@ -64,14 +67,29 @@ def register_job_tools(registry: ToolRegistry, settings: Settings, memory: Memor
         if status not in allowed:
             raise ValueError(f"status must be one of: {', '.join(sorted(allowed))}.")
         notes = str(args.get("notes", "")).strip() or None
+        interview_stage = args.get("interview_stage")
+        next_action = args.get("next_action")
+        deadline = args.get("deadline")
         if not memory.update_job_status(url, status, notes):
             raise ValueError("No applied job found with that URL.")
-        return {"result_text": f"Marked job as {status}.", "url": url, "status": status}
+        result = {"result_text": f"Marked job as {status}.", "url": url, "status": status}
+        if interview_stage is not None:
+            result["interview_stage"] = interview_stage
+        if next_action is not None:
+            result["next_action"] = next_action
+        if deadline is not None:
+            result["deadline"] = deadline
+        return result
 
     def job_pipeline(_: dict[str, Any]) -> dict[str, Any]:
         totals = memory.job_applications_summary()
         items = memory.recent_job_applications(limit=100)
-        return {"totals": totals, "count": len(items), "items": items}
+        # Group items by status for a quick pipeline view
+        grouped: dict[str, int] = {}
+        for item in items:
+            s = item.get("status", "unknown")
+            grouped[s] = grouped.get(s, 0) + 1
+        return {"totals": totals, "count": len(items), "items": items, "grouped": grouped}
 
     registry.register(
         name="job_apply",

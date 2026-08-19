@@ -168,6 +168,15 @@ class JobAgent:
     def _update(self, task: dict[str, Any], **fields: Any) -> None:
         task.update(fields)
         task["updated_at"] = datetime.now(UTC).isoformat()
+        # Track interview stage and next action if provided
+        if "interview_stage" in fields:
+            task["interview_stage"] = fields["interview_stage"]
+        if "next_action" in fields:
+            task["next_action"] = fields["next_action"]
+        if "deadline" in fields:
+            task["deadline"] = fields["deadline"]
+        if "notes" in fields:
+            task["notes"] = fields["notes"]
         self.memory.set_state("active_job_task", task)
 
     def _run(self, query: str, task: dict[str, Any]) -> None:
@@ -217,7 +226,9 @@ class JobAgent:
                     else:
                         task["skipped"] += 1
                     self._update(task, active_job=job.to_dict())
-            self._update(task, phase="done", status="completed", finished_at=datetime.now(UTC).isoformat())
+            self._update(task, phase="done", status="completed", finished_at=datetime.now(UTC).isoformat(),
+            interview_stage=task.get("interview_stage"), next_action=task.get("next_action"),
+            deadline=task.get("deadline"), notes=task.get("notes"))
         except Exception as exc:
             logger.exception("job agent run failed")
             self._update(task, phase="failed", status="failed", paused_reason=str(exc), finished_at=datetime.now(UTC).isoformat())
