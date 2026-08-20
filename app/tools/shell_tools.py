@@ -17,11 +17,19 @@ DANGEROUS_PATTERNS = [
     r"\brestart-computer\b",
     r"\bformat\b",
     r"\breg\s+delete\b",
+    r"\breg\s+add\b",
     r"\bremove-item\b",
     r"\bclear-content\b",
     r"\bformat-volume\b",
     r"\bdiskpart\b",
     r"\bwevtutil\b",
+    r"\bwmic\b",
+    r"\bschtasks\b",
+    r"\battrib\s+\+s",
+    r"\bcertutil\s+-urlcache\b",
+    r"\bnet\s+(?:user|localgroup)\b",
+    r"\bvssadmin\b",
+    r"\bntdsutil\b",
 ]
 
 ENCODED_COMMAND_PATTERNS = [

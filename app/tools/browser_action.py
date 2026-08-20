@@ -25,6 +25,18 @@ _ALLOWED_ACTIONS = {
 }
 
 
+class BrowserActionError(RuntimeError):
+    """Raised when a browser_action run fails mid-way.
+
+    Carries a structured ``payload`` (steps_completed, page snapshot, screenshot)
+    so callers can surface diagnostics instead of a bare message.
+    """
+
+    def __init__(self, message: str, payload: dict[str, Any]) -> None:
+        super().__init__(message)
+        self.payload = payload
+
+
 def _normalize_steps(raw_steps: Any) -> list[dict[str, Any]]:
     if not isinstance(raw_steps, list) or not raw_steps:
         raise ValueError("browser_action requires a non-empty 'steps' list.")
@@ -115,8 +127,11 @@ class BrowserActionTool:
                     path = str(step.get("path", "")).strip()
                     if not selector or not path:
                         raise ValueError("upload requires 'selector' and 'path'.")
-                    self.session.upload(page, selector, path)
-                    step_result["uploaded"] = path
+                    from app.core.safe_paths import resolve_safe_path
+
+                    resolved_path = resolve_safe_path(path, self.settings, must_exist=True)
+                    self.session.upload(page, selector, str(resolved_path))
+                    step_result["uploaded"] = str(resolved_path)
 
                 elif action == "press":
                     self._require_page(page)
@@ -174,7 +189,7 @@ class BrowserActionTool:
                     error_payload["screenshot"] = screenshot_path
                 except Exception:
                     pass
-            raise RuntimeError(str(exc)) from exc
+            raise BrowserActionError(str(exc), payload=error_payload) from exc
 
     @staticmethod
     def _require_page(page: Any | None) -> None:
