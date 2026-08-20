@@ -1,16 +1,29 @@
 from __future__ import annotations
 
 import json
-import tkinter as tk
 from collections.abc import Callable
 from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any
 
+from PySide6.QtCore import Qt, QTimer, QPoint
+from PySide6.QtGui import QColor, QPainter, QPen
+from PySide6.QtWidgets import (
+    QFrame,
+    QGraphicsDropShadowEffect,
+    QHBoxLayout,
+    QLabel,
+    QLineEdit,
+    QPushButton,
+    QVBoxLayout,
+    QWidget,
+)
+
 from app.core.monitor import ResourceMonitor
 
 BG = "#020617"
-PANEL = "#081225"
+PANEL = "#0a1428"
+PANEL_2 = "#0d1a33"
 STROKE = "#1e2c52"
 CYAN = "#22d3ee"
 TEXT = "#dbeafe"
@@ -18,6 +31,7 @@ MUTED = "#8ea6ca"
 GREEN = "#86efac"
 AMBER = "#fbbf24"
 RED = "#fb7185"
+GLASS = "rgba(10, 20, 40, 0.92)"
 
 
 def voice_phase(status: dict[str, Any]) -> tuple[str, str, float, float]:
@@ -39,17 +53,18 @@ def voice_phase(status: dict[str, Any]) -> tuple[str, str, float, float]:
     return "LISTENING", GREEN, 16.0, 0.24
 
 
-class MiniHud:
+class MiniHud(QWidget):
     """Small frameless, always-on-top, draggable window showing live JARVIS activity."""
 
     def __init__(
         self,
-        root: tk.Tk,
+        root: QWidget,
         runtime: Any,
         monitor: ResourceMonitor,
         on_run_command: Callable[[str], None],
         on_open_main: Callable[[], None],
     ) -> None:
+        super().__init__(None, Qt.WindowType.FramelessWindowHint | Qt.WindowType.WindowStaysOnTopHint | Qt.WindowType.Tool)
         self.root = root
         self.runtime = runtime
         self.monitor = monitor
@@ -57,153 +72,192 @@ class MiniHud:
         self._on_open_main = on_open_main
         self._config_path = Path(__file__).resolve().parent.parent / "data" / "mini_window.json"
         self._pinned = True
-        self._drag_off_x: int | None = None
-        self._drag_off_y: int | None = None
+        self._drag_off: QPoint | None = None
         self._active_command = ""
         self._last_status = ""
+        self._wave_phase = 0.0
 
-        self.win = tk.Toplevel(root)
-        self.win.withdraw()
-        self.win.overrideredirect(True)
-        self.win.attributes("-topmost", True)
-        self.win.attributes("-alpha", 0.92)
-        self.win.configure(bg=BG)
-        self.win.bind("<Button-1>", self._drag_start)
-        self.win.bind("<B1-Motion>", self._drag_move)
+        self.setAttribute(Qt.WidgetAttribute.WA_TranslucentBackground)
+        self.setFixedWidth(340)
 
-        self._build()
+        shell = QFrame(self)
+        shell.setObjectName("MiniShell")
+        shadow = QGraphicsDropShadowEffect(shell)
+        shadow.setBlurRadius(30)
+        shadow.setOffset(0, 8)
+        shadow.setColor("#000000")
+        shell.setGraphicsEffect(shadow)
+        outer = QVBoxLayout(self)
+        outer.setContentsMargins(0, 0, 0, 0)
+        outer.addWidget(shell)
+
+        lay = QVBoxLayout(shell)
+        lay.setContentsMargins(12, 10, 12, 10)
+        lay.setSpacing(6)
+
+        header = QHBoxLayout()
+        header.setSpacing(6)
+        self.dot = QLabel("●")
+        self.dot.setStyleSheet("color: #8ea6ca; font-size: 14px;")
+        header.addWidget(self.dot)
+        brand = QLabel("JARVIS")
+        brand.setObjectName("MiniBrand")
+        header.addWidget(brand, 1)
+
+        self._pin_btn = self._mini_button("PIN", self._toggle_pin)
+        header.addWidget(self._pin_btn)
+        header.addWidget(self._mini_button("MAIN", self._on_open_main))
+        header.addWidget(self._mini_button("✕", self.hide, danger=True))
+        lay.addLayout(header)
+
+        self.cmd_label = QLabel("ready")
+        self.cmd_label.setObjectName("MiniCmd")
+        self.cmd_label.setWordWrap(True)
+        lay.addWidget(self.cmd_label)
+
+        self.res_label = QLabel("")
+        self.res_label.setObjectName("MiniRes")
+        self.res_label.setWordWrap(True)
+        lay.addWidget(self.res_label)
+
+        input_row = QHBoxLayout()
+        input_row.setSpacing(6)
+        self.mic_btn = self._mini_button("🎤", self._toggle_voice, wide=False)
+        self.mic_btn.setToolTip("Voice mode — start/stop listening")
+        input_row.addWidget(self.mic_btn)
+        self.entry = QLineEdit()
+        self.entry.setObjectName("MiniEntry")
+        self.entry.setPlaceholderText("type a command…")
+        self.entry.returnPressed.connect(self._run_quick)
+        input_row.addWidget(self.entry, 1)
+        run_btn = self._mini_button("RUN", self._run_quick, accent=True)
+        input_row.addWidget(run_btn)
+        lay.addLayout(input_row)
+
+        bars = QHBoxLayout()
+        bars.setSpacing(8)
+        self.cpu_label = QLabel("CPU --%")
+        self.cpu_label.setObjectName("MiniStat")
+        bars.addWidget(self.cpu_label)
+        self.cpu_bar = _MiniBar(90, 8, CYAN)
+        bars.addWidget(self.cpu_bar, 1)
+        self.ram_label = QLabel("RAM --%")
+        self.ram_label.setObjectName("MiniStat")
+        bars.addWidget(self.ram_label)
+        self.ram_bar = _MiniBar(90, 8, AMBER)
+        bars.addWidget(self.ram_bar, 1)
+        lay.addLayout(bars)
+
         self._restore_position()
-        self.win.after(300, self._tick)
+        self.hide()
+        self._tick_timer = QTimer(self)
+        self._tick_timer.timeout.connect(self._tick)
+        self._tick_timer.start(300)
+        self._wave_timer = QTimer(self)
+        self._wave_timer.timeout.connect(self._animate_dot)
+        self._wave_timer.start(120)
 
-    def _build(self) -> None:
-        shell = tk.Frame(self.win, bg=BG, highlightbackground=STROKE, highlightthickness=1, bd=0)
-        shell.pack(fill="both", expand=True)
+    def _mini_button(self, text: str, callback, wide: bool = True, accent: bool = False, danger: bool = False) -> QPushButton:
+        btn = QPushButton(text)
+        btn.setCursor(Qt.CursorShape.PointingHandCursor)
+        if not wide and not accent:
+            btn.setFixedWidth(44)
+        if accent:
+            btn.setObjectName("MiniAccent")
+        elif danger:
+            btn.setObjectName("MiniDanger")
+        else:
+            btn.setObjectName("MiniBtn")
+        btn.clicked.connect(callback)
+        return btn
 
-        header = tk.Frame(shell, bg=BG)
-        header.pack(fill="x", padx=10, pady=(8, 4))
-        tk.Label(header, text="JARVIS", bg=BG, fg="#d7e6ff", font=("JetBrains Mono", 11, "bold")).pack(side="left")
-        self.dot = tk.Canvas(header, width=14, height=14, bg=BG, highlightthickness=0, bd=0)
-        self.dot.pack(side="left", padx=(8, 0))
-        self.dot.create_oval(3, 3, 11, 11, fill=MUTED, outline="", tags=("dot",))
-        self._pin_btn = tk.Button(
-            header, text="PIN", command=self._toggle_pin, bg="#0f1f3c", fg=TEXT, relief=tk.FLAT, bd=0,
-            padx=6, pady=2, font=("JetBrains Mono", 8, "bold"), cursor="hand2",
-        )
-        self._pin_btn.pack(side="right")
-        tk.Button(
-            header, text="MAIN", command=self._on_open_main, bg="#0f1f3c", fg=TEXT, relief=tk.FLAT, bd=0,
-            padx=6, pady=2, font=("JetBrains Mono", 8, "bold"), cursor="hand2",
-        ).pack(side="right", padx=(0, 4))
-        tk.Button(
-            header, text="X", command=self.hide, bg="#3a1a24", fg=RED, relief=tk.FLAT, bd=0,
-            padx=6, pady=2, font=("JetBrains Mono", 8, "bold"), cursor="hand2",
-        ).pack(side="right", padx=(0, 6))
-
-        self.cmd_label = tk.Label(
-            shell, text="ready", bg=BG, fg=CYAN, font=("JetBrains Mono", 9), anchor="w",
-            justify="left", wraplength=300,
-        )
-        self.cmd_label.pack(fill="x", padx=10, pady=(2, 1))
-        self.res_label = tk.Label(
-            shell, text="", bg=BG, fg=MUTED, font=("JetBrains Mono", 9), anchor="w",
-            justify="left", wraplength=300,
-        )
-        self.res_label.pack(fill="x", padx=10, pady=(0, 4))
-
-        bars = tk.Frame(shell, bg=BG)
-        bars.pack(fill="x", padx=10, pady=(0, 4))
-        self.cpu_label = tk.Label(bars, text="CPU --%", bg=BG, fg=TEXT, font=("JetBrains Mono", 8, "bold"))
-        self.cpu_label.pack(side="left")
-        self.cpu_bar = tk.Canvas(bars, width=90, height=8, bg="#0a1529", highlightthickness=0, bd=0)
-        self.cpu_bar.pack(side="left", padx=(6, 10))
-        self.ram_label = tk.Label(bars, text="RAM --%", bg=BG, fg=TEXT, font=("JetBrains Mono", 8, "bold"))
-        self.ram_label.pack(side="left")
-        self.ram_bar = tk.Canvas(bars, width=90, height=8, bg="#0a1529", highlightthickness=0, bd=0)
-        self.ram_bar.pack(side="left", padx=(6, 0))
-
-        foot = tk.Frame(shell, bg=BG)
-        foot.pack(fill="x", padx=10, pady=(0, 8))
-        entry_wrap = tk.Frame(foot, bg="#1c3257", padx=1, pady=1)
-        entry_wrap.pack(side="left", fill="x", expand=True)
-        self.entry = tk.Entry(
-            entry_wrap, bg="#040a16", fg=TEXT, insertbackground=CYAN, relief=tk.FLAT, bd=0, font=("JetBrains Mono", 9)
-        )
-        self.entry.pack(fill="x", ipady=4)
-        self.entry.bind("<Return>", lambda _: self._run_quick())
-        tk.Button(
-            foot, text="RUN", command=self._run_quick, bg=CYAN, fg="#021018", relief=tk.FLAT, bd=0,
-            padx=8, pady=4, font=("JetBrains Mono", 8, "bold"), cursor="hand2",
-        ).pack(side="left", padx=(6, 0))
-
-    def _drag_start(self, event: tk.Event) -> None:
-        if isinstance(event.widget, (tk.Button, tk.Entry)):
-            self._drag_off_x = None
-            self._drag_off_y = None
+    def _drag_start(self, event) -> None:
+        if isinstance(event.widget(), (QPushButton, QLineEdit)):
+            self._drag_off = None
             return
-        self._drag_off_x = event.x_root - self.win.winfo_rootx()
-        self._drag_off_y = event.y_root - self.win.winfo_rooty()
+        self._drag_off = event.globalPosition().toPoint() - self.frameGeometry().topLeft()
 
-    def _drag_move(self, event: tk.Event) -> None:
-        if self._drag_off_x is None or self._drag_off_y is None:
-            return
-        x = event.x_root - self._drag_off_x
-        y = event.y_root - self._drag_off_y
-        self.win.geometry(f"+{x}+{y}")
+    def mousePressEvent(self, event) -> None:
+        if event.button() == Qt.MouseButton.LeftButton:
+            self._drag_start(event)
+        super().mousePressEvent(event)
+
+    def mouseMoveEvent(self, event) -> None:
+        if self._drag_off is not None and event.buttons() & Qt.MouseButton.LeftButton:
+            self.move(event.globalPosition().toPoint() - self._drag_off)
+        super().mouseMoveEvent(event)
+
+    def mouseReleaseEvent(self, event) -> None:
+        self._drag_off = None
+        super().mouseReleaseEvent(event)
 
     def _toggle_pin(self) -> None:
         self._pinned = not self._pinned
-        self.win.attributes("-topmost", self._pinned)
-        self._pin_btn.configure(text="PIN" if self._pinned else "UNPIN")
+        flags = self.windowFlags()
+        if self._pinned:
+            self.setWindowFlags(flags | Qt.WindowType.WindowStaysOnTopHint)
+        else:
+            self.setWindowFlags(flags & ~Qt.WindowType.WindowStaysOnTopHint)
+        self._pin_btn.setText("PIN" if self._pinned else "UNPIN")
+        self.show()
+
+    def _toggle_voice(self) -> None:
+        try:
+            if self.runtime.voice.is_running():
+                self.runtime.voice.stop()
+            else:
+                self.runtime.voice.start()
+        except Exception:
+            pass
 
     def _run_quick(self) -> None:
-        text = self.entry.get().strip()
+        text = self.entry.text().strip()
         if not text:
             return
-        self.entry.delete(0, tk.END)
+        self.entry.clear()
         self._on_run_command(text)
 
     def notify_command(self, command: str) -> None:
         self._active_command = command
-        self.cmd_label.configure(text=f"NOW: {command}", fg=CYAN)
-        self.res_label.configure(text="working\u2026", fg=AMBER)
+        self.cmd_label.setText(f"NOW: {command}")
+        self.cmd_label.setStyleSheet("color: #22d3ee; font-weight: bold; font-size: 12px;")
+        self.res_label.setText("working…")
+        self.res_label.setStyleSheet("color: #fbbf24; font-size: 11px;")
 
     def show(self) -> None:
-        self.win.deiconify()
-        self.win.lift()
-
-    def hide(self) -> None:
-        self.win.withdraw()
+        super().show()
+        self.raise_()
+        self.activateWindow()
 
     def toggle(self) -> None:
-        if self.is_visible():
+        if self.isVisible():
             self.hide()
         else:
             self.show()
 
-    def is_visible(self) -> bool:
-        return self.win.state() == "normal"
-
     def close(self) -> None:
         self._save_position()
-        self.win.destroy()
+        self.hide()
 
-    def _draw_bar(self, canvas: tk.Canvas, value: float, color: str) -> None:
-        canvas.delete("all")
-        w = int(canvas.winfo_width())
-        h = int(canvas.winfo_height())
-        fill_w = max(2, int((w * max(0.0, min(100.0, value))) / 100.0))
-        canvas.create_rectangle(0, 0, fill_w, h, fill=color, outline="")
+    def _animate_dot(self) -> None:
+        self._wave_phase += 0.35
+        try:
+            status = self.runtime.voice.status()
+        except Exception:
+            status = {}
+        _, color, _, _ = voice_phase(status)
+        self.dot.setStyleSheet(f"color: {color}; font-size: 14px;")
 
     def _tick(self) -> None:
         try:
-            if not self.win.winfo_exists():
+            if not self.isVisible():
                 return
             try:
                 status = self.runtime.voice.status()
             except Exception:
                 status = {}
             phase, color, _, _ = voice_phase(status)
-            self.dot.itemconfigure("dot", fill=color)
+            self.dot.setStyleSheet(f"color: {color}; font-size: 14px;")
 
             ctx: dict[str, Any] = {}
             try:
@@ -215,16 +269,28 @@ class MiniHud:
             if self._active_command and last_command and last_command == self._active_command:
                 self._active_command = ""
             if self._active_command:
-                self.cmd_label.configure(text=f"NOW: {self._active_command}", fg=CYAN)
-                self.res_label.configure(text="working\u2026", fg=AMBER)
+                self.cmd_label.setText(f"NOW: {self._active_command}")
+                self.cmd_label.setStyleSheet("color: #22d3ee; font-weight: bold; font-size: 12px;")
+                self.res_label.setText("working…")
+                self.res_label.setStyleSheet("color: #fbbf24; font-size: 11px;")
             elif last_command:
                 self._last_status = last_status
-                res_color = GREEN if last_status in ("completed", "ok") else AMBER if last_status == "pending" else RED if last_status == "failed" else MUTED
-                self.cmd_label.configure(text=f"LAST: {last_command}", fg=TEXT)
-                self.res_label.configure(text=last_status.upper(), fg=res_color)
+                color_map = {
+                    "completed": GREEN,
+                    "ok": GREEN,
+                    "pending": AMBER,
+                    "failed": RED,
+                }
+                res_color = color_map.get(last_status, MUTED)
+                self.cmd_label.setText(f"LAST: {last_command}")
+                self.cmd_label.setStyleSheet("color: #dbeafe; font-size: 12px;")
+                self.res_label.setText(last_status.upper())
+                self.res_label.setStyleSheet(f"color: {res_color}; font-weight: bold; font-size: 11px;")
             else:
-                self.cmd_label.configure(text="ready", fg=CYAN)
-                self.res_label.configure(text="", fg=MUTED)
+                self.cmd_label.setText("ready")
+                self.cmd_label.setStyleSheet("color: #22d3ee; font-size: 12px;")
+                self.res_label.setText("")
+                self.res_label.setStyleSheet("color: #8ea6ca; font-size: 11px;")
 
             snap = None
             try:
@@ -232,15 +298,12 @@ class MiniHud:
             except Exception:
                 snap = None
             if snap is not None:
-                self._draw_bar(self.cpu_bar, float(snap.cpu_percent), CYAN)
-                self.cpu_label.configure(text=f"CPU {snap.cpu_percent:.0f}%")
-                self._draw_bar(self.ram_bar, float(snap.memory_percent), AMBER)
-                self.ram_label.configure(text=f"RAM {snap.memory_percent:.0f}%")
-        finally:
-            try:
-                self.win.after(300, self._tick)
-            except Exception:
-                pass
+                self.cpu_bar.set_value(float(snap.cpu_percent))
+                self.cpu_label.setText(f"CPU {snap.cpu_percent:.0f}%")
+                self.ram_bar.set_value(float(snap.memory_percent))
+                self.ram_label.setText(f"RAM {snap.memory_percent:.0f}%")
+        except Exception:
+            pass
 
     def _restore_position(self) -> None:
         x = y = None
@@ -251,19 +314,44 @@ class MiniHud:
             self._pinned = bool(cfg.get("pinned", True))
         except Exception:
             pass
-        sw = self.win.winfo_screenwidth()
-        sh = self.win.winfo_screenheight()
+        screen = self.screen()
+        sw = screen.availableGeometry().width() if screen else 1920
+        sh = screen.availableGeometry().height() if screen else 1080
         if x is None or y is None or x < 0 or y < 0 or x > sw or y > sh:
-            x = sw - 380
+            x = sw - 390
             y = 90
-        self.win.geometry(f"+{x}+{y}")
-        self.win.attributes("-topmost", self._pinned)
-        self._pin_btn.configure(text="PIN" if self._pinned else "UNPIN")
+        self.move(x, y)
+        self._pin_btn.setText("PIN" if self._pinned else "UNPIN")
 
     def _save_position(self) -> None:
         try:
-            cfg = {"x": int(self.win.winfo_x()), "y": int(self.win.winfo_y()), "pinned": self._pinned}
+            cfg = {"x": int(self.x()), "y": int(self.y()), "pinned": self._pinned}
             self._config_path.parent.mkdir(parents=True, exist_ok=True)
             self._config_path.write_text(json.dumps(cfg), encoding="utf-8")
         except Exception:
             pass
+
+
+class _MiniBar(QWidget):
+    def __init__(self, width: int, height: int, color: str) -> None:
+        super().__init__()
+        self._value = 0.0
+        self._color = color
+        self.setFixedSize(width, height)
+
+    def set_value(self, value: float) -> None:
+        self._value = max(0.0, min(100.0, float(value)))
+        self.update()
+
+    def paintEvent(self, event) -> None:
+        p = QPainter(self)
+        p.setRenderHint(QPainter.RenderHint.Antialiasing)
+        p.setPen(QPen(QColor("#0d1a33"), 1))
+        p.setBrush(QColor("#0a1428"))
+        p.drawRoundedRect(self.rect().adjusted(0, 0, -1, -1), 4, 4)
+        fill_w = int((self.width() - 4) * (self._value / 100.0))
+        if fill_w > 2:
+            p.setBrush(QColor(self._color))
+            p.setPen(Qt.PenStyle.NoPen)
+            p.drawRoundedRect(2, 2, fill_w, self.height() - 4, 3, 3)
+        p.end()

@@ -3,16 +3,52 @@
 import ctypes
 import json
 import math
+import os
 import queue
 import random
 import shutil
+import sys
 import threading
-import tkinter as tk
 from collections.abc import Callable
 from datetime import UTC, datetime
 from pathlib import Path
-from tkinter import filedialog, ttk
 from typing import Any
+
+from PySide6.QtCore import QPointF, Qt, QTimer, Signal
+from PySide6.QtGui import (
+    QColor,
+    QFont,
+    QLinearGradient,
+    QPainter,
+    QPainterPath,
+    QPen,
+    QPixmap,
+    QTextCursor,
+)
+from PySide6.QtWidgets import (
+    QApplication,
+    QComboBox,
+    QDialog,
+    QFileDialog,
+    QFrame,
+    QGraphicsDropShadowEffect,
+    QHBoxLayout,
+    QLabel,
+    QLineEdit,
+    QListWidget,
+    QMainWindow,
+    QMenu,
+    QPlainTextEdit,
+    QProgressBar,
+    QPushButton,
+    QScrollArea,
+    QSplitter,
+    QTabWidget,
+    QTextEdit,
+    QVBoxLayout,
+    QWidget,
+)
+from PySide6.QtGui import QKeySequence, QShortcut
 
 from app.bootstrap import build_runtime
 from app.core.events import EventHub
@@ -57,74 +93,344 @@ def _unique_path(directory: Path, filename: str) -> Path:
     return candidate
 
 
-class Tooltip:
-    def __init__(self, widget: tk.Widget, text: str) -> None:
-        self.widget = widget
-        self.text = text
-        self.tip: tk.Toplevel | None = None
-        self.widget.bind("<Enter>", self._show, add="+")
-        self.widget.bind("<Leave>", self._hide, add="+")
-        self.widget.bind("<ButtonPress>", self._hide, add="+")
-
-    def _show(self, _: tk.Event | None = None) -> None:
-        if self.tip is not None or not self.text.strip():
-            return
-        x = self.widget.winfo_rootx() + 12
-        y = self.widget.winfo_rooty() + self.widget.winfo_height() + 8
-        tip = tk.Toplevel(self.widget)
-        tip.wm_overrideredirect(True)
-        tip.wm_geometry(f"+{x}+{y}")
-        tip.configure(bg=TOOLTIP)
-        label = tk.Label(
-            tip,
-            text=self.text,
-            bg=TOOLTIP,
-            fg=TEXT,
-            bd=1,
-            relief="solid",
-            highlightbackground=TOOLTIP_BORDER,
-            highlightthickness=1,
-            padx=8,
-            pady=5,
-            justify="left",
-            font=("JetBrains Mono", 9),
-        )
-        label.pack()
-        self.tip = tip
-
-    def _hide(self, _: tk.Event | None = None) -> None:
-        if self.tip is not None:
-            self.tip.destroy()
-            self.tip = None
+def _rgba(hex_color: str, alpha: int) -> str:
+    c = hex_color.lstrip("#")
+    if len(c) == 6:
+        r, g, b = int(c[0:2], 16), int(c[2:4], 16), int(c[4:6], 16)
+        return f"rgba({r}, {g}, {b}, {alpha})"
+    return f"rgba(0, 0, 0, {alpha})"
 
 
-class JarvisHudApp:
+def _blend(c1: str, c2: str, t: float) -> str:
+    r1, g1, b1 = int(c1[1:3], 16), int(c1[3:5], 16), int(c1[5:7], 16)
+    r2, g2, b2 = int(c2[1:3], 16), int(c2[3:5], 16), int(c2[5:7], 16)
+    return f"#{int(r1 + (r2 - r1) * t):02x}{int(g1 + (g2 - g1) * t):02x}{int(b1 + (b2 - b1) * t):02x}"
+
+
+def _build_qss() -> str:
+    return f"""
+    * {{ font-family: 'Segoe UI'; }}
+    QMainWindow, QWidget {{ background: transparent; }}
+    QLabel {{ color: {TEXT}; font-size: 12px; }}
+    QFrame#Header {{
+        background: {_rgba(BG, 150)};
+        border: 1px solid {_rgba(STROKE, 180)};
+        border-radius: 14px;
+    }}
+    QFrame#Card {{
+        background: {_rgba(PANEL_2, 195)};
+        border: 1px solid {_rgba(STROKE, 180)};
+        border-radius: 14px;
+    }}
+    QFrame#CardTitleBar {{ background: transparent; }}
+    QLabel#CardTitle {{ color: {TEXT}; font-size: 11px; font-weight: 700; letter-spacing: 1px; }}
+    QLabel#CardSubtitle {{ color: {MUTED}; font-size: 10px; }}
+    QPushButton {{
+        color: {TEXT};
+        background: {_rgba(CHIP, 200)};
+        border: 1px solid {_rgba(STROKE, 120)};
+        border-radius: 10px;
+        padding: 6px 12px;
+        font-size: 11px;
+        font-weight: 600;
+    }}
+    QPushButton:hover {{ background: {_rgba(CHIP_HI, 230)}; }}
+    QPushButton:pressed {{ background: {_rgba(SEL, 230)}; }}
+    QPushButton#Primary {{
+        color: {BG};
+        background: qlineargradient(x1:0, y1:0, x2:1, y2:0, stop:0 {CYAN}, stop:1 {INDIGO});
+        border: none;
+        font-weight: 800;
+        padding: 8px 16px;
+    }}
+    QPushButton#Primary:hover {{ background: qlineargradient(x1:0, y1:0, x2:1, y2:0, stop:0 {_blend(CYAN, '#ffffff', 0.15)}, stop:1 {_blend(INDIGO, '#ffffff', 0.15)}); }}
+    QPushButton#Danger {{ background: {_rgba(DANGER, 200)}; color: {RED}; }}
+    QPushButton#Success {{ background: {_rgba(OK, 200)}; color: {GREEN}; }}
+    QLineEdit, QComboBox {{
+        background: {_rgba(BTN2, 235)};
+        border: 1px solid {_rgba(CYAN, 90)};
+        border-radius: 10px;
+        padding: 8px 10px;
+        color: {TEXT};
+        font-size: 12px;
+        selection-background-color: {SEL};
+    }}
+    QLineEdit:hover {{ border: 1px solid {_rgba(CYAN, 160)}; }}
+    QLineEdit:focus {{
+        border: 1px solid {CYAN};
+        background: {_rgba(SEL, 200)};
+    }}
+    QLineEdit::placeholder {{ color: {MUTED}; }}
+    QTextEdit, QPlainTextEdit {{
+        background: {_rgba(TERM, 220)};
+        border: 1px solid {_rgba(STROKE, 160)};
+        border-radius: 10px;
+        color: {TEXT};
+        padding: 6px;
+        font-family: 'Consolas', 'Cascadia Mono', monospace;
+        font-size: 12px;
+        selection-background-color: {SEL};
+    }}
+    QListWidget {{
+        background: {_rgba(LIST, 220)};
+        border: 1px solid {_rgba(STROKE, 160)};
+        border-radius: 10px;
+        color: {TEXT};
+        font-size: 12px;
+        padding: 4px;
+    }}
+    QListWidget::item {{ padding: 5px; border-radius: 6px; }}
+    QListWidget::item:selected {{ background: {SEL}; }}
+    QProgressBar {{
+        background: {_rgba(TERM, 200)};
+        border: 1px solid {_rgba(STROKE, 140)};
+        border-radius: 6px;
+        height: 10px;
+        text-align: center;
+    }}
+    QProgressBar::chunk {{ background: {CYAN}; border-radius: 5px; }}
+    QScrollArea {{ border: none; background: transparent; }}
+    QScrollBar:vertical {{
+        background: transparent; width: 10px; margin: 2px;
+    }}
+    QScrollBar::handle:vertical {{
+        background: {_rgba(CHIP, 200)}; border-radius: 5px; min-height: 30px;
+    }}
+    QScrollBar::handle:vertical:hover {{ background: {_rgba(CHIP_HI, 220)}; }}
+    QScrollBar::add-line:vertical, QScrollBar::sub-line:vertical {{ height: 0; }}
+    QScrollBar:horizontal {{
+        background: transparent; height: 10px; margin: 2px;
+    }}
+    QScrollBar::handle:horizontal {{
+        background: {_rgba(CHIP, 200)}; border-radius: 5px; min-width: 30px;
+    }}
+    QScrollBar::add-line:horizontal, QScrollBar::sub-line:horizontal {{ width: 0; }}
+    QMenu {{ background: {PANEL_2}; color: {TEXT}; border: 1px solid {STROKE}; padding: 4px; }}
+    QMenu::item {{ padding: 6px 18px; border-radius: 6px; }}
+    QMenu::item:selected {{ background: {SEL}; }}
+    QTabWidget::pane {{ border: 1px solid {_rgba(STROKE, 160)}; border-radius: 10px; background: {_rgba(TERM, 180)}; }}
+    QTabBar::tab {{ background: {_rgba(CHIP, 180)}; color: {MUTED}; padding: 7px 16px; border-radius: 8px 8px 0 0; margin-right: 3px; font-weight: 600; }}
+    QTabBar::tab:selected {{ background: {SEL}; color: {TEXT}; }}
+    QSplitter::handle {{ background: {_rgba(STROKE, 120)}; border-radius: 2px; }}
+    QToolTip {{
+        background: {TOOLTIP}; color: {TEXT};
+        border: 1px solid {TOOLTIP_BORDER};
+        padding: 5px; border-radius: 6px;
+    }}
+    """
+
+
+class Backdrop(QWidget):
+    """Paints the animated background: aurora / gradient / image with drifting particles."""
+
+    GRADIENTS: list[tuple[str, str, str]] = [
+        ("aurora", "#0b152b", "#0a1e3d"),
+        ("sunset", "#2b1b3d", "#0f2a3d"),
+        ("mono", "#0a0a12", "#151526"),
+        ("ocean", "#061a2e", "#0e3a4a"),
+    ]
+
     def __init__(self) -> None:
+        super().__init__()
+        self.setAttribute(Qt.WidgetAttribute.WA_StyledBackground, True)
+        self._mode = "aurora"
+        self._value = ""
+        self._image: QPixmap | None = None
+        self._angle = 0.0
+        self._particles: list[dict[str, Any]] = []
+        self._gfx_full = False
+        self._timer = QTimer(self)
+        self._timer.timeout.connect(self._animate)
+        self._timer.start(40)
+
+    def set_bg(self, mode: str, value: str = "") -> None:
+        self._mode = mode
+        self._value = value
+        self._image = None
+        if mode == "image":
+            path = background_image_path(_backgrounds_dir(), value) if value else None
+            if path is not None:
+                try:
+                    self._image = QPixmap(str(path))
+                except Exception:
+                    self._image = None
+        self._particles.clear()
+        self.update()
+
+    def set_gfx(self, full: bool) -> None:
+        self._gfx_full = full
+        self._particles.clear()
+
+    def _animate(self) -> None:
+        self._angle += 0.03
+        if not self._particles and self.width() > 10:
+            w, h = self.width(), self.height()
+            count = 50 if self._gfx_full else 14
+            for _ in range(count):
+                self._particles.append(
+                    {
+                        "x": random.uniform(0, w),
+                        "y": random.uniform(0, h),
+                        "r": random.uniform(1.5, 4.0),
+                        "speed": random.uniform(0.2, 0.9),
+                    }
+                )
+        self.update()
+
+    def paintEvent(self, event) -> None:
+        p = QPainter(self)
+        p.setRenderHint(QPainter.RenderHint.Antialiasing)
+        w = max(1, self.width())
+        h = max(1, self.height())
+
+        if self._mode == "image" and self._image is not None:
+            pix = self._image
+            scaled = pix.scaled(w, h, Qt.AspectRatioMode.KeepAspectRatioByExpanding, Qt.TransformationMode.SmoothTransformation)
+            x = (scaled.width() - w) // 2
+            y = (scaled.height() - h) // 2
+            p.drawPixmap(0, 0, scaled, x, y, w, h)
+            p.fillRect(0, 0, w, h, QColor(4, 8, 20, 170))
+        elif self._mode == "gradient":
+            idx = int(self._value or 0) % len(self.GRADIENTS)
+            _name, top, bottom = self.GRADIENTS[idx]
+            grad = QLinearGradient(0, 0, 0, h)
+            grad.setColorAt(0, QColor(top))
+            grad.setColorAt(1, QColor(bottom))
+            p.fillRect(0, 0, w, h, grad)
+        else:
+            grad = QLinearGradient(0, 0, 0, h)
+            grad.setColorAt(0, QColor("#050a14"))
+            grad.setColorAt(1, QColor("#0e1b33"))
+            p.fillRect(0, 0, w, h, grad)
+            # aurora blobs
+            self._draw_blob(p, w * 0.22, h * 0.35, 320 + 30 * math.sin(self._angle), INDIGO, 26)
+            self._draw_blob(p, w * 0.8, h * 0.7, 380 + 40 * math.cos(self._angle * 0.7), CYAN, 18)
+
+        # particles
+        for part in self._particles:
+            part["y"] += part["speed"]
+            part["x"] += math.sin(self._angle + part["y"] * 0.02) * 0.4
+            if part["y"] > h + 8:
+                part["y"] = -8
+                part["x"] = random.uniform(0, w)
+            r = part["r"]
+            p.setPen(Qt.PenStyle.NoPen)
+            p.setBrush(QColor(129, 140, 248, 150))
+            p.drawEllipse(QPointF(part["x"], part["y"]), r, r)
+
+        # arc-reactor orb
+        cx, cy = int(w * 0.86), int(h * 0.84)
+        r1 = 90 + (3 * math.sin(self._angle))
+        r2 = 120 + (4 * math.cos(self._angle * 0.7))
+        p.setPen(QPen(QColor(INDIGO), 1))
+        p.setBrush(Qt.BrushStyle.NoBrush)
+        p.drawEllipse(QPointF(cx, cy), r1, r1)
+        p.drawEllipse(QPointF(cx, cy), r2, r2)
+        for i in range(12):
+            a = self._angle * 0.8 + i * math.pi / 6
+            tick = QColor(CYAN)
+            tick.setAlpha(160)
+            p.setPen(QPen(tick, 2))
+            x0 = cx + math.cos(a) * r1
+            y0 = cy + math.sin(a) * r1
+            x1 = cx + math.cos(a) * (r1 + 16)
+            y1 = cy + math.sin(a) * (r1 + 16)
+            p.drawLine(int(x0), int(y0), int(x1), int(y1))
+        p.setPen(Qt.PenStyle.NoPen)
+        p.setBrush(QColor(34, 211, 238, 70))
+        p.drawEllipse(QPointF(cx, cy), 40, 40)
+        p.setBrush(QColor(34, 211, 238, 160))
+        p.drawEllipse(QPointF(cx, cy), 18, 18)
+        p.end()
+
+    def _draw_blob(self, p: QPainter, x: float, y: float, radius: float, color: str, alpha: int) -> None:
+        grad = QLinearGradient(x - radius, y, x + radius, y)
+        c = QColor(color)
+        c.setAlpha(alpha)
+        grad.setColorAt(0, c)
+        fade = QColor(color)
+        fade.setAlpha(0)
+        grad.setColorAt(1, fade)
+        p.setPen(Qt.PenStyle.NoPen)
+        p.setBrush(grad)
+        p.drawEllipse(QPointF(x, y), radius, radius)
+
+
+class WaveWidget(QWidget):
+    def __init__(self, on_click: Callable[[], None]) -> None:
+        super().__init__()
+        self._on_click = on_click
+        self._phase = 0.0
+        self._label = "IDLE"
+        self._color = MUTED
+        self._amp = 6.0
+        self._speed = 0.18
+        self.setMinimumHeight(64)
+        self.setCursor(Qt.CursorShape.PointingHandCursor)
+        self._timer = QTimer(self)
+        self._timer.timeout.connect(self._step)
+        self._timer.start(50)
+
+    def _step(self) -> None:
+        self._phase += self._speed
+        self.update()
+
+    def update_status(self, label: str, color: str, amp: float, speed: float) -> None:
+        self._label = label
+        self._color = color
+        self._amp = amp
+        self._speed = speed
+
+    def mouseReleaseEvent(self, event) -> None:
+        if event.button() == Qt.MouseButton.LeftButton:
+            self._on_click()
+
+    def paintEvent(self, event) -> None:
+        p = QPainter(self)
+        p.setRenderHint(QPainter.RenderHint.Antialiasing)
+        w = max(1, self.width())
+        h = max(1, self.height())
+        c = h // 2
+        pen = QPen(QColor(self._color), 2)
+        p.setPen(pen)
+        path = QPainterPath()
+        first = True
+        for x in range(0, w + 1, 5):
+            y = c + math.sin((x * 0.05) + self._phase) * self._amp
+            if first:
+                path.moveTo(x, y)
+                first = False
+            else:
+                path.lineTo(x, y)
+        p.drawPath(path)
+        p.setPen(QColor(self._color))
+        font = QFont("Segoe UI", 9)
+        font.setBold(True)
+        p.setFont(font)
+        p.drawText(10, 16, f"VOICE {self._label}")
+        p.end()
+
+
+class JarvisHudApp(QMainWindow):
+    def __init__(self, app: QApplication) -> None:
+        super().__init__()
+        self._app = app
         self._hub = EventHub()
         self.runtime = build_runtime(events=self._hub)
         self._monitor = self.runtime.monitor
-        self.root = tk.Tk()
-        self.root.title("JARVIS AI Command HUD")
-        self.root.geometry("1500x920")
-        self.root.minsize(1280, 820)
-        self.root.configure(bg=BG)
+        self.setWindowTitle("JARVIS AI Command HUD")
+        self.setMinimumSize(1280, 820)
 
         self._ui_config_path = Path(__file__).resolve().parent.parent / "data" / "jarvis_ui.json"
         self.mini = MiniHud(
-            self.root, self.runtime, self._monitor, on_run_command=self._run_mini_command, on_open_main=self._raise_main_window
+            self, self.runtime, self._monitor, on_run_command=self._run_mini_command, on_open_main=self._raise_main_window
         )
         self.mini.hide()
 
         self._events: queue.Queue[tuple[str, Any]] = queue.Queue()
         self._busy = False
-        self._wave_phase = 0.0
-        self._wave_active = False
         self._scene_angle = 0.0
-        self._scene_particles: list[dict[str, Any]] = []
         self._pending_ids: list[str] = []
-        self._tooltips: list[Tooltip] = []
-        self._app_launch_items: list[dict[str, str]] = []
-        self._all_app_launch_items: list[dict[str, str]] = []
         self._chat_streaming = False
         self._chat_history: list[dict[str, str]] = []
         self._cmd_history: list[str] = []
@@ -134,119 +440,395 @@ class JarvisHudApp:
         self._theme = "aurora"
         self._gfx_full = False
         self._bg: dict[str, str] = {"mode": "aurora", "value": ""}
-        self._approval_badge: tk.Label | None = None
-        self._approval_cards: dict[str, tk.Frame] = {}
-        self._top_frame: tk.Frame | None = None
+        self._approval_cards: dict[str, QWidget] = {}
+        self._app_launch_items: list[dict[str, str]] = []
+        self._all_app_launch_items: list[dict[str, str]] = []
         self._hub.subscribe(self._on_hub_event)
 
         self._build_ui()
         self._post_build()
-        self._toaster = Toaster(self.root)
+        self._toaster = Toaster(self)
         self._tray = TrayIcon(on_show=self._tray_show, on_mini=self._tray_mini, on_exit=self._tray_exit)
         self._hotkey = GlobalHotkey()
         if self._hotkey.start(lambda: self._events.put(("summon_mini", None))):
             self._append_terminal("SYS", "Global hotkey Ctrl+Shift+J registered.")
-        self._poll_events()
-        self._animate_wave()
-        self._animate_scene()
+
+        self._poll_timer = QTimer(self)
+        self._poll_timer.timeout.connect(self._poll_events)
+        self._poll_timer.start(80)
+
+        self._status_timer = QTimer(self)
+        self._status_timer.timeout.connect(self._refresh_voice_button)
+        self._status_timer.start(500)
+
+        self._meter_timer = QTimer(self)
+        self._meter_timer.timeout.connect(self._refresh_status_meters)
+        self._meter_timer.start(1000)
+
+        self._job_timer = QTimer(self)
+        self._job_timer.timeout.connect(self._job_tick)
+        self._job_timer.start(5000)
+
+        self._summon_timer = QTimer(self)
+        self._summon_timer.timeout.connect(self._poll_summon_signal)
+        self._summon_timer.start(1000)
+
         self._append_terminal("SYS", "HUD online.")
 
-        self.root.protocol("WM_DELETE_WINDOW", self._on_close)
         self._restore_ui_config()
         self.runtime.scheduler.on_run = self._scheduler_on_run
         self.runtime.scheduler.start()
         self._maybe_show_recap()
-        self.root.after(5000, self._job_tick)
+        self._job_tick()
 
-    def _make_panel(self, parent: tk.Misc, bg_color: str = PANEL) -> tk.Frame:
-        return tk.Frame(parent, bg=bg_color, highlightbackground=STROKE, highlightthickness=1, bd=0)
+    # ------------------------------------------------------------ UI build
 
-    def _hover_color(self, bg_color: str) -> str:
-        try:
-            return self._blend(bg_color, "#ffffff", 0.14)
-        except Exception:
-            return bg_color
-
-    def _bind_hover(self, btn: tk.Button, base: str, hover: str) -> None:
-        def _enter(_e: tk.Event, b: tk.Button = btn, c: str = hover) -> None:
-            b.configure(bg=c)
-
-        def _leave(_e: tk.Event, b: tk.Button = btn, c: str = base) -> None:
-            b.configure(bg=c)
-
-        btn.bind("<Enter>", _enter)
-        btn.bind("<Leave>", _leave)
-
-    def _header_chip(self, parent: tk.Misc, text: str, command, hover: bool = True) -> tk.Button:
-        btn = tk.Button(
-            parent,
-            text=text,
-            command=command,
-            bg=CHIP,
-            fg=TEXT,
-            activebackground=CHIP_HI,
-            activeforeground=TEXT,
-            bd=0,
-            relief=tk.FLAT,
-            cursor="hand2",
-            font=("JetBrains Mono", 9, "bold"),
-            padx=10,
-            pady=5,
-        )
-        if hover:
-            self._bind_hover(btn, CHIP, CHIP_HI)
-        return btn
-
-    def _primary_button(self, parent: tk.Misc, text: str, command, padx: int = 12, pady: int = 6) -> tk.Button:
-        btn = tk.Button(
-            parent,
-            text=text,
-            command=command,
-            bg=CYAN,
-            fg="#021018",
-            activebackground=self._hover_color(CYAN),
-            activeforeground="#021018",
-            relief=tk.FLAT,
-            bd=0,
-            cursor="hand2",
-            font=("JetBrains Mono", 9, "bold"),
-            padx=padx,
-            pady=pady,
-        )
-        self._bind_hover(btn, CYAN, self._hover_color(CYAN))
-        return btn
-
-    def _card(self, parent: tk.Misc, title: str, subtitle: str = "") -> tuple[tk.Frame, tk.Frame]:
-        card = tk.Frame(parent, bg=PANEL_2, highlightbackground=STROKE, highlightthickness=1, bd=0)
-        head = tk.Frame(card, bg=PANEL_2)
-        head.pack(fill="x", padx=10, pady=(7, 3))
-        tk.Label(head, text=title.upper(), bg=PANEL_2, fg=TEXT, font=("JetBrains Mono", 9, "bold")).pack(side="left")
+    def _make_card(self, title: str, subtitle: str = "") -> tuple[QFrame, QWidget]:
+        card = QFrame()
+        card.setObjectName("Card")
+        lay = QVBoxLayout(card)
+        lay.setContentsMargins(14, 10, 14, 14)
+        lay.setSpacing(8)
+        head = QFrame()
+        head.setObjectName("CardTitleBar")
+        head_lay = QHBoxLayout(head)
+        head_lay.setContentsMargins(0, 0, 0, 0)
+        title_label = QLabel(title.upper())
+        title_label.setObjectName("CardTitle")
+        head_lay.addWidget(title_label, 1)
         if subtitle:
-            tk.Label(head, text=subtitle, bg=PANEL_2, fg=MUTED, font=("JetBrains Mono", 8)).pack(side="right", padx=(8, 0))
-        tk.Frame(card, bg=STROKE, height=1).pack(fill="x", padx=10)
-        body = tk.Frame(card, bg=PANEL_2)
-        body.pack(fill="both", expand=True, padx=10, pady=(8, 10))
+            sub = QLabel(subtitle)
+            sub.setObjectName("CardSubtitle")
+            head_lay.addWidget(sub)
+        lay.addWidget(head)
+        body = QWidget()
+        body.setObjectName("CardBody")
+        lay.addWidget(body, 1)
         return card, body
 
-    def _chip(self, parent: tk.Misc, text: str, command) -> tk.Button:
-        return tk.Button(
-            parent,
-            text=text,
-            command=command,
-            bg=CHIP,
-            fg=TEXT,
-            activebackground=CHIP_HI,
-            activeforeground=TEXT,
-            bd=0,
-            relief=tk.FLAT,
-            cursor="hand2",
-            font=("JetBrains Mono", 10, "bold"),
-            padx=12,
-            pady=8,
-        )
+    def _chip(self, text: str, command, primary: bool = False) -> QPushButton:
+        btn = QPushButton(text)
+        btn.setObjectName("Primary" if primary else "Chip")
+        btn.setCursor(Qt.CursorShape.PointingHandCursor)
+        btn.clicked.connect(lambda: command())
+        return btn
+
+    def _build_ui(self) -> None:
+        self.backdrop = Backdrop()
+        self.backdrop.set_bg(self._bg.get("mode", "aurora"), self._bg.get("value", ""))
+        self.backdrop.set_gfx(self._gfx_full)
+        self.setCentralWidget(self.backdrop)
+        self.setStyleSheet(_build_qss())
+
+        root_lay = QVBoxLayout(self.backdrop)
+        root_lay.setContentsMargins(18, 14, 18, 14)
+        root_lay.setSpacing(12)
+
+        # ------------------------------------------------------- header
+        header = QFrame()
+        header.setObjectName("Header")
+        header_lay = QHBoxLayout(header)
+        header_lay.setContentsMargins(16, 10, 16, 10)
+        header_lay.setSpacing(8)
+
+        brand = QLabel("JARVIS")
+        brand_font = QFont("Segoe UI", 18)
+        brand_font.setBold(True)
+        brand.setFont(brand_font)
+        brand.setStyleSheet(f"color: {CYAN};")
+        header_lay.addWidget(brand)
+
+        self.online_label = QLabel("STATUS: ONLINE")
+        self.online_label.setStyleSheet(f"color: {GREEN}; font-weight: 700; font-size: 11px; padding: 4px 10px; background: {_rgba(STATUS, 200)}; border-radius: 8px;")
+        header_lay.addWidget(self.online_label)
+
+        header_lay.addStretch(1)
+
+        for txt, cmd, tip in [
+            ("▶", lambda: self._run_preset("youtube pause"), "Toggle YouTube play/pause"),
+            ("⏭", lambda: self._run_preset("youtube next"), "Go to next YouTube video"),
+            ("APPS", lambda: self._run_preset("list apps"), "Show apps in the launcher panel"),
+        ]:
+            b = self._chip(txt, cmd)
+            b.setToolTip(tip)
+            header_lay.addWidget(b)
+
+        header_lay.addWidget(self._vsep())
+        b = self._chip("MINI", self.mini.toggle)
+        b.setToolTip("Show/hide the floating mini HUD")
+        header_lay.addWidget(b)
+        b = self._chip("DIAGNOSE", self._diagnose_system)
+        b.setToolTip("Run full system diagnosis (CPU/RAM/GPU + process analysis)")
+        header_lay.addWidget(b)
+        b = self._chip("RECAP", self._recap)
+        b.setToolTip("What happened while you were away")
+        header_lay.addWidget(b)
+
+        header_lay.addWidget(self._vsep())
+        self.auto_start_button = self._chip("AUTOSTART", self._toggle_auto_start)
+        self.auto_start_button.setToolTip("Toggle auto-start when this project opens / Windows login")
+        header_lay.addWidget(self.auto_start_button)
+        self.tray_button = self._chip("TRAY", self._toggle_tray)
+        self.tray_button.setToolTip("Minimize to system tray / Ctrl+Shift+J summons the mini HUD")
+        header_lay.addWidget(self.tray_button)
+        self.gfx_button = self._chip("GFX", self._toggle_gfx)
+        self.gfx_button.setToolTip("Toggle Lite / Full graphics effects")
+        header_lay.addWidget(self.gfx_button)
+        self.theme_button = self._chip(f"THEME {self._theme.upper()}", self._cycle_theme)
+        self.theme_button.setToolTip("Cycle Aurora / Cyber / Light themes")
+        header_lay.addWidget(self.theme_button)
+
+        header_lay.addWidget(self._vsep())
+        more_btn = self._chip("MORE ▾", self._show_more_menu)
+        header_lay.addWidget(more_btn)
+        self._more_menu = QMenu(self)
+        self._more_menu.addAction("HELP  (F1)", self._open_help)
+        self._more_menu.addAction("SCHEDULER", self._open_scheduler)
+        self._more_menu.addAction("HISTORY", self._open_history)
+        self._more_menu.addAction("TASKS", self._open_tasks)
+        self._more_menu.addAction("MEMORY", self._open_memory)
+        self._more_menu.addSeparator()
+        self._more_menu.addAction("BACKGROUNDS", self._open_backgrounds)
+        self._more_btn = more_btn
+
+        root_lay.addWidget(header)
+
+        # ------------------------------------------------------- body
+        splitter = QSplitter(Qt.Orientation.Horizontal)
+        splitter.setChildrenCollapsible(False)
+
+        left = QWidget()
+        left_lay = QVBoxLayout(left)
+        left_lay.setContentsMargins(0, 0, 0, 0)
+        left_lay.setSpacing(12)
+
+        cmd_card, cmd_body = self._make_card("Command Center", "Natural-language control")
+        cmd_lay = QVBoxLayout(cmd_body)
+        cmd_lay.setContentsMargins(0, 0, 0, 0)
+        cmd_lay.setSpacing(8)
+        row = QHBoxLayout()
+        row.setSpacing(8)
+        self.command_entry = QLineEdit()
+        self.command_entry.setPlaceholderText("Type a command, e.g. 'system status'…")
+        self.command_entry.setFont(QFont("Consolas", 12))
+        self.command_entry.returnPressed.connect(self._run_command)
+        row.addWidget(self.command_entry, 1)
+        self.run_button = self._chip("EXECUTE", self._run_command, primary=True)
+        row.addWidget(self.run_button)
+        cmd_lay.addLayout(row)
+        chips = QHBoxLayout()
+        chips.setSpacing(6)
+        for label, cmd_str in [
+            ("system status", "system status"),
+            ("metrics", "metrics"),
+            ("list schedules", "list schedules"),
+            ("job status", "job status"),
+            ("time", "get current time"),
+        ]:
+            chips.addWidget(self._chip(label, lambda c=cmd_str: self._run_preset(c)))
+        chips.addStretch(1)
+        cmd_lay.addLayout(chips)
+        left_lay.addWidget(cmd_card)
+
+        feed_card, feed_body = self._make_card("Activity Feed", "Commands, agents and scheduler events")
+        feed_lay = QVBoxLayout(feed_body)
+        feed_lay.setContentsMargins(0, 0, 0, 0)
+        feed_lay.setSpacing(6)
+        feed_head = QHBoxLayout()
+        feed_head.addStretch(1)
+        clear_feed = self._chip("CLEAR", self._clear_feed)
+        feed_head.addWidget(clear_feed)
+        feed_lay.addLayout(feed_head)
+        self.feed_text = QTextEdit()
+        self.feed_text.setReadOnly(True)
+        self.feed_text.setMaximumHeight(150)
+        feed_lay.addWidget(self.feed_text)
+        left_lay.addWidget(feed_card, 1)
+
+        term_card, term_body = self._make_card("Live Terminal", "Command, agent and scheduler logs")
+        term_lay = QVBoxLayout(term_body)
+        term_lay.setContentsMargins(0, 0, 0, 0)
+        term_lay.setSpacing(6)
+        term_head = QHBoxLayout()
+        label = QLabel("ALL EVENTS STREAM HERE")
+        label.setStyleSheet(f"color: {MUTED}; font-size: 10px;")
+        term_head.addWidget(label, 1)
+        term_head.addWidget(self._chip("CLEAR", self._clear_terminal))
+        term_lay.addLayout(term_head)
+        self.terminal = QTextEdit()
+        self.terminal.setReadOnly(True)
+        term_lay.addWidget(self.terminal, 1)
+        left_lay.addWidget(term_card, 2)
+        splitter.addWidget(left)
+
+        # ------------------------------------------------------- AI assistant
+        ai_card, ai_body = self._make_card("AI Assistant", "Jarvis plans, executes and streams answers")
+        ai_lay = QVBoxLayout(ai_body)
+        ai_lay.setContentsMargins(0, 0, 0, 0)
+        ai_lay.setSpacing(8)
+        self.chat_text = QTextEdit()
+        self.chat_text.setReadOnly(True)
+        self.chat_text.setFont(QFont("Consolas", 11))
+        ai_lay.addWidget(self.chat_text, 1)
+        chat_inp = QHBoxLayout()
+        chat_inp.setSpacing(8)
+        self.chat_entry = QLineEdit()
+        self.chat_entry.setPlaceholderText("Ask JARVIS anything…")
+        self.chat_entry.returnPressed.connect(self._ask_chatbot)
+        chat_inp.addWidget(self.chat_entry, 1)
+        chat_inp.addWidget(self._chip("ASK", self._ask_chatbot, primary=True))
+        ai_lay.addLayout(chat_inp)
+        splitter.addWidget(ai_card)
+
+        # ------------------------------------------------------- right column
+        right_scroll = QScrollArea()
+        right_scroll.setWidgetResizable(True)
+        right_scroll.setFrameShape(QFrame.Shape.NoFrame)
+        right = QWidget()
+        right_lay = QVBoxLayout(right)
+        right_lay.setContentsMargins(0, 0, 0, 0)
+        right_lay.setSpacing(12)
+
+        voice_card, voice_body = self._make_card("Voice Engine", "Click the wave to toggle")
+        voice_lay = QVBoxLayout(voice_body)
+        voice_lay.setContentsMargins(0, 0, 0, 0)
+        voice_lay.setSpacing(8)
+        self.wave_canvas = WaveWidget(self._toggle_voice)
+        voice_lay.addWidget(self.wave_canvas)
+        self.voice_switch_button = self._chip("VOICE OFF", self._toggle_voice)
+        voice_lay.addWidget(self.voice_switch_button)
+        right_lay.addWidget(voice_card)
+
+        job_card, job_body = self._make_card("Job Agent", "Autonomous job-application hunter")
+        job_lay = QVBoxLayout(job_body)
+        job_lay.setContentsMargins(0, 0, 0, 0)
+        job_lay.setSpacing(8)
+        self.job_status_label = QLabel("No job-application task running.")
+        self.job_status_label.setWordWrap(True)
+        self.job_status_label.setStyleSheet(f"color: {MUTED}; font-size: 11px;")
+        job_lay.addWidget(self.job_status_label)
+        job_stats = QHBoxLayout()
+        self.job_stat_labels: dict[str, QLabel] = {}
+        stat_colors = {
+            "APPLIED": GREEN, "SKIPPED": AMBER, "FAILED": RED,
+            "INTERVIEW": CYAN, "OFFER": GREEN, "REJECTED": RED,
+        }
+        for name in ("APPLIED", "SKIPPED", "FAILED", "INTERVIEW", "OFFER", "REJECTED"):
+            lbl = QLabel(f"{name} 0")
+            lbl.setStyleSheet(f"color: {stat_colors[name]}; font-weight: 700; font-size: 11px;")
+            job_stats.addWidget(lbl)
+            self.job_stat_labels[name] = lbl
+        job_lay.addLayout(job_stats)
+        self.job_progress = QProgressBar()
+        self.job_progress.setMaximum(100)
+        self.job_progress.setValue(0)
+        job_lay.addWidget(self.job_progress)
+        qrow = QHBoxLayout()
+        qrow.setSpacing(6)
+        self.job_query_entry = QLineEdit()
+        self.job_query_entry.setPlaceholderText("role query…")
+        self.job_query_entry.returnPressed.connect(self._start_job_apply)
+        qrow.addWidget(self.job_query_entry, 1)
+        qrow.addWidget(self._chip("APPLY", self._start_job_apply, primary=True))
+        job_lay.addLayout(qrow)
+        ctrl = QHBoxLayout()
+        ctrl.addWidget(self._chip("STATUS", self._refresh_job_status))
+        ctrl.addWidget(self._chip("CANCEL", self._cancel_job))
+        ctrl.addWidget(self._chip("RESUME", self._resume_job))
+        ctrl.addStretch(1)
+        job_lay.addLayout(ctrl)
+        recent_label = QLabel("RECENT APPLICATIONS")
+        recent_label.setStyleSheet(f"color: {MUTED}; font-size: 10px; font-weight: 700;")
+        job_lay.addWidget(recent_label)
+        self.recent_list = QListWidget()
+        self.recent_list.setMaximumHeight(110)
+        job_lay.addWidget(self.recent_list)
+        right_lay.addWidget(job_card)
+
+        agent_card, agent_body = self._make_card("Agent Status", "Pending approval requests")
+        agent_lay = QVBoxLayout(agent_body)
+        agent_lay.setContentsMargins(0, 0, 0, 0)
+        agent_lay.setSpacing(8)
+        agent_head = QHBoxLayout()
+        lbl = QLabel("PENDING APPROVALS")
+        lbl.setStyleSheet(f"color: {MUTED}; font-size: 10px; font-weight: 700;")
+        agent_head.addWidget(lbl, 1)
+        self._approval_badge = QLabel("0")
+        self._approval_badge.setStyleSheet(f"color: {TEXT}; background: {_rgba(BTN2, 220)}; padding: 2px 8px; border-radius: 8px; font-weight: 700;")
+        agent_head.addWidget(self._approval_badge)
+        agent_lay.addLayout(agent_head)
+        self.approval_scroll = QScrollArea()
+        self.approval_scroll.setWidgetResizable(True)
+        self.approval_scroll.setMaximumHeight(190)
+        self.approval_inner = QWidget()
+        self.approval_lay = QVBoxLayout(self.approval_inner)
+        self.approval_lay.setContentsMargins(0, 0, 0, 0)
+        self.approval_lay.setSpacing(6)
+        self.approval_lay.addStretch(1)
+        self.approval_scroll.setWidget(self.approval_inner)
+        agent_lay.addWidget(self.approval_scroll)
+        right_lay.addWidget(agent_card)
+
+        apps_card, apps_body = self._make_card("Available Apps", "Alt+1..9 to launch")
+        apps_lay = QVBoxLayout(apps_body)
+        apps_lay.setContentsMargins(0, 0, 0, 0)
+        apps_lay.setSpacing(8)
+        self.app_filter_var = QLineEdit()
+        self.app_filter_var.setPlaceholderText("Filter apps…")
+        self.app_filter_var.textChanged.connect(self._apply_app_filter)
+        apps_lay.addWidget(self.app_filter_var)
+        self.app_listbox = QListWidget()
+        self.app_listbox.itemDoubleClicked.connect(lambda _: self._open_selected_app())
+        apps_lay.addWidget(self.app_listbox)
+        right_lay.addWidget(apps_card)
+
+        right_lay.addStretch(1)
+        right_scroll.setWidget(right)
+        splitter.addWidget(right_scroll)
+
+        splitter.setSizes([560, 420, 380])
+        root_lay.addWidget(splitter, 1)
+
+        # ------------------------------------------------------- status bar
+        status = QFrame()
+        status.setObjectName("Header")
+        status_lay = QHBoxLayout(status)
+        status_lay.setContentsMargins(16, 6, 16, 6)
+        status_lay.setSpacing(12)
+        self.cpu_status = QLabel("CPU --%")
+        self.ram_status = QLabel("RAM --%")
+        self.net_status = QLabel("NET --/--")
+        self.status_hint = QLabel("Say 'jarvis' + your command · Ctrl+Shift+J summons mini HUD")
+        self.status_hint.setStyleSheet(f"color: {MUTED}; font-size: 11px;")
+        for w in (self.cpu_status, self.ram_status, self.net_status):
+            w.setStyleSheet(f"color: {TEXT}; font-size: 11px; font-weight: 600;")
+            status_lay.addWidget(w)
+        status_lay.addStretch(1)
+        status_lay.addWidget(self.status_hint)
+        root_lay.addWidget(status)
+
+        self._refresh_status_meters()
+
+    def _vsep(self) -> QFrame:
+        f = QFrame()
+        f.setFrameShape(QFrame.Shape.VLine)
+        f.setStyleSheet(f"color: {_rgba(STROKE, 160)}; background: {_rgba(STROKE, 160)};")
+        f.setFixedWidth(2)
+        return f
+
+    def _show_more_menu(self) -> None:
+        self._more_menu.exec(self._more_btn.mapToGlobal(self._more_btn.rect().bottomLeft()))
+
+    def _refresh_status_meters(self) -> None:
+        try:
+            snap = self._monitor.snapshot()
+            self.cpu_status.setText(f"CPU {snap.cpu_percent:.0f}%")
+            self.ram_status.setText(f"RAM {snap.memory_percent:.0f}%")
+            self.net_status.setText(f"NET ↓{snap.net_recv_kbps:.0f} ↑{snap.net_sent_kbps:.0f} kbps")
+        except Exception:
+            pass
 
     def _post_build(self) -> None:
-        self._style_ttk()
         self._refresh_voice_button()
         self._refresh_auto_start_button()
         self._refresh_gfx_button()
@@ -255,223 +837,114 @@ class JarvisHudApp:
         self._bind_hotkeys()
         self._refresh_job_status()
 
-    def _style_ttk(self) -> None:
-        try:
-            style = ttk.Style(self.root)
-            style.theme_use("clam")
-            style.configure(
-                "Jarvis.Horizontal.TProgressbar",
-                troughcolor=TERM,
-                background=CYAN,
-                bordercolor=STROKE,
-                lightcolor=CYAN,
-                darkcolor=CYAN,
-            )
-            style.configure(
-                "Jarvis.Vertical.TScrollbar",
-                troughcolor=BG,
-                background=CHIP,
-                bordercolor=STROKE,
-                arrowcolor=TEXT,
-                lightcolor=CHIP,
-                darkcolor=CHIP,
-                gripcount=0,
-                relief="flat",
-            )
-            style.map("Jarvis.Vertical.TScrollbar", background=[("active", CHIP_HI)])
-            style.configure(
-                "Jarvis.Horizontal.TScrollbar",
-                troughcolor=BG,
-                background=CHIP,
-                bordercolor=STROKE,
-                arrowcolor=TEXT,
-                lightcolor=CHIP,
-                darkcolor=CHIP,
-                gripcount=0,
-                relief="flat",
-            )
-            style.map("Jarvis.Horizontal.TScrollbar", background=[("active", CHIP_HI)])
-            if getattr(self, "job_progress", None) is not None:
-                self.job_progress.configure(style="Jarvis.Horizontal.TProgressbar")
-        except Exception:
-            pass
+    # ------------------------------------------------------------ theme / gfx / bg
 
     def _rebuild_ui(self) -> None:
-        try:
-            geo = self.root.geometry()
-        except Exception:
-            geo = None
-        for widget in (getattr(self, "_top_frame", None), getattr(self, "body", None)):
-            if widget is not None:
-                try:
-                    widget.destroy()
-                except Exception:
-                    pass
-        self._build_ui()
-        self._post_build()
-        if geo:
-            try:
-                self.root.geometry(geo)
-            except Exception:
-                pass
+        self.setStyleSheet(_build_qss())
+        self.backdrop.set_bg(self._bg.get("mode", "aurora"), self._bg.get("value", ""))
+        self.backdrop.set_gfx(self._gfx_full)
+        self._refresh_gfx_button()
 
     def _cycle_theme(self) -> None:
         idx = THEME_ORDER.index(_current_theme)
         self._theme = THEME_ORDER[(idx + 1) % len(THEME_ORDER)]
         _apply_palette(self._theme)
+        self.theme_button.setText(f"THEME {self._theme.upper()}")
         self._rebuild_ui()
         self._save_prefs()
 
     def _toggle_gfx(self) -> None:
         self._gfx_full = not self._gfx_full
+        self.backdrop.set_gfx(self._gfx_full)
         self._refresh_gfx_button()
-        self._reset_scene()
         self._save_prefs()
 
     def _refresh_gfx_button(self) -> None:
-        if getattr(self, "gfx_button", None) is not None:
-            self.gfx_button.configure(
-                text="GFX FULL" if self._gfx_full else "GFX LITE",
-                bg=OK if self._gfx_full else CHIP,
-                fg=GREEN if self._gfx_full else TEXT,
-            )
-
-    def _on_hub_event(self, topic: str, payload: dict[str, Any]) -> None:
-        if topic in {"command_start", "command_done", "agent_step", "approval", "scheduler_run"}:
-            self._events.put(("hub_event", (topic, payload)))
-
-    GRADIENTS: list[tuple[str, str, str]] = [
-        ("aurora", "#0b152b", "#0a1e3d"),
-        ("sunset", "#2b1b3d", "#0f2a3d"),
-        ("mono", "#0a0a12", "#151526"),
-        ("ocean", "#061a2e", "#0e3a4a"),
-    ]
-
-    def _blend(self, c1: str, c2: str, t: float) -> str:
-        r1, g1, b1 = int(c1[1:3], 16), int(c1[3:5], 16), int(c1[5:7], 16)
-        r2, g2, b2 = int(c2[1:3], 16), int(c2[3:5], 16), int(c2[5:7], 16)
-        return f"#{int(r1 + (r2 - r1) * t):02x}{int(g1 + (g2 - g1) * t):02x}{int(b1 + (b2 - b1) * t):02x}"
-
-    def _draw_background(self) -> None:
-        mode = self._bg.get("mode", "aurora")
-        w = max(1, self.scene.winfo_width())
-        h = max(1, self.scene.winfo_height())
-        if mode == "gradient":
-            idx = int(self._bg.get("value", 0) or 0)
-            _name, top, bottom = self.GRADIENTS[idx % len(self.GRADIENTS)]
-            steps = max(2, min(80, h // 6))
-            for i in range(steps):
-                t = i / (steps - 1)
-                y0 = int(i * h / steps)
-                y1 = int((i + 1) * h / steps)
-                self.scene.create_rectangle(0, y0, w, y1, fill=self._blend(top, bottom, t), outline="")
-        elif mode == "image":
-            self._bg_photo = None
-            name = str(self._bg.get("value") or "")
-            path = background_image_path(_backgrounds_dir(), name) if name else None
-            if path is not None:
-                try:
-                    photo = tk.PhotoImage(file=str(path))
-                    scale = max(1, photo.width() // max(1, w))
-                    if scale > 1:
-                        photo = photo.subsample(scale, scale)
-                    self._bg_photo = photo
-                    self.scene.create_image(0, 0, anchor="nw", image=photo)
-                    return
-                except Exception:
-                    pass
-            self.scene.create_rectangle(0, 0, w, h, fill=SCENE, outline="")
+        self.gfx_button.setText("GFX FULL" if self._gfx_full else "GFX LITE")
+        if self._gfx_full:
+            self.gfx_button.setStyleSheet(f"color: {GREEN}; background: {_rgba(OK, 220)};")
         else:
-            for i, c in enumerate(["#050a14", "#081020", "#0b1629", "#0e1b33"]):
-                y0 = int((i / 4) * h)
-                y1 = int(((i + 1) / 4) * h)
-                self.scene.create_rectangle(0, y0, w, y1, fill=c, outline="")
+            self.gfx_button.setStyleSheet("")
 
     def _apply_background(self, mode: str, value: str = "") -> None:
         self._bg = {"mode": mode, "value": value}
-        self._reset_scene()
+        self.backdrop.set_bg(mode, value)
         self._save_prefs()
 
     def _open_backgrounds(self) -> None:
-        win = tk.Toplevel(self.root)
-        win.title("JARVIS \u2014 Backgrounds")
-        win.configure(bg=BG)
-        win.geometry("640x420")
-        win.transient(self.root)
+        win = QDialog(self)
+        win.setWindowTitle("JARVIS — Backgrounds")
+        win.resize(640, 420)
+        lay = QVBoxLayout(win)
 
-        head = tk.Frame(win, bg=BG)
-        head.pack(fill="x", padx=14, pady=(14, 6))
-        tk.Label(head, text="BACKGROUND", bg=BG, fg=TEXT, font=("JetBrains Mono", 13, "bold")).pack(side="left")
+        head = QHBoxLayout()
+        title = QLabel("BACKGROUND")
+        title.setStyleSheet(f"color: {TEXT}; font-size: 15px; font-weight: 800;")
+        head.addWidget(title)
+        head.addStretch(1)
+        lay.addLayout(head)
 
-        mode_row = tk.Frame(win, bg=BG)
-        mode_row.pack(fill="x", padx=14)
+        mode_row = QHBoxLayout()
         current_mode = self._bg.get("mode", "aurora")
         for name, label in [("aurora", "Aurora scene"), ("gradient", "Gradient"), ("image", "Static image")]:
-            btn = self._chip(mode_row, label, lambda m=name: self._apply_background(m))
-            btn.configure(bg=OK if current_mode == name else CHIP, fg=GREEN if current_mode == name else TEXT)
-            btn.pack(side="left", padx=(0, 8))
+            btn = self._chip(label, lambda m=name: self._apply_background(m))
+            if current_mode == name:
+                btn.setStyleSheet(f"color: {GREEN}; background: {_rgba(OK, 220)};")
+            mode_row.addWidget(btn)
+        mode_row.addStretch(1)
+        lay.addLayout(mode_row)
 
-        body = tk.Frame(win, bg=BG)
-        body.pack(fill="both", expand=True, padx=14, pady=10)
-        tk.Label(body, text="", bg=BG, fg=MUTED, font=("JetBrains Mono", 8)).pack(anchor="w")
+        body = QWidget()
+        body_lay = QVBoxLayout(body)
+        body_lay.setContentsMargins(0, 0, 0, 0)
+
         if current_mode == "gradient":
-            grid = tk.Frame(body, bg=BG)
-            grid.pack(anchor="w")
-            for i, (_name, top, bottom) in enumerate(self.GRADIENTS):
-                sw = tk.Canvas(grid, width=120, height=60, highlightthickness=1, highlightbackground=STROKE, cursor="hand2")
-                sw.grid(row=i // 3, column=i % 3, padx=6, pady=6)
-                for step in range(24):
-                    sw.create_rectangle(0, int(step * 60 / 24), 120, int((step + 1) * 60 / 24),
-                                        fill=self._blend(top, bottom, step / 23), outline="")
-
-                def _pick_gradient(idx: int) -> None:
-                    self._apply_background("gradient", str(idx))
-
-                def _make_gradient_binding(idx: int) -> Callable[[Any], None]:
-                    return lambda _e: _pick_gradient(idx)
-
-                sw.bind("<Button-1>", _make_gradient_binding(i))
+            grid = QHBoxLayout()
+            for i, (_name, top, bottom) in enumerate(Backdrop.GRADIENTS):
+                sw = QLabel()
+                pix = QPixmap(120, 60)
+                p = QPainter(pix)
+                grad = QLinearGradient(0, 0, 0, 60)
+                grad.setColorAt(0, QColor(top))
+                grad.setColorAt(1, QColor(bottom))
+                p.fillRect(0, 0, 120, 60, grad)
+                p.end()
+                sw.setPixmap(pix)
+                sw.setCursor(Qt.CursorShape.PointingHandCursor)
+                sw.mousePressEvent = lambda _e, idx=i: self._apply_background("gradient", str(idx))
+                grid.addWidget(sw)
+            body_lay.addLayout(grid)
         elif current_mode == "image":
-            tk.Button(
-                body, text="BROWSE\u2026", command=lambda: self._pick_background_image(win),
-                bg=CYAN, fg="#021018", relief=tk.FLAT, bd=0, padx=12, pady=5,
-                font=("JetBrains Mono", 9, "bold"), cursor="hand2",
-            ).pack(anchor="w", pady=(0, 8))
+            browse = self._chip("BROWSE…", lambda: self._pick_background_image(win))
+            body_lay.addWidget(browse)
             files = list_background_images(_backgrounds_dir())
-            grid = tk.Frame(body, bg=BG)
-            grid.pack(anchor="w")
             if not files:
-                tk.Label(body, text="No images yet \u2014 pick one above, or drop a .png/.gif in data/backgrounds/.",
-                         bg=BG, fg=MUTED, font=("JetBrains Mono", 8)).pack(anchor="w", pady=6)
-            for idx, item in enumerate(files):
-                btn = self._chip(grid, item["name"], lambda n=item["name"]: self._apply_background("image", n))
-                btn.configure(bg=OK if self._bg.get("value") == item["name"] else CHIP,
-                              fg=GREEN if self._bg.get("value") == item["name"] else TEXT)
-                btn.grid(row=idx // 2, column=idx % 2, sticky="ew", padx=(0, 8), pady=4)
-            tk.Button(body, text="REFRESH", command=lambda: self._reopen_backgrounds(win), bg=BTN2, fg=TEXT,
-                      relief=tk.FLAT, bd=0, padx=10, pady=5, font=("JetBrains Mono", 9, "bold"), cursor="hand2").pack(anchor="w", pady=8)
+                hint = QLabel("No images yet — pick one above, or drop a .png/.gif in data/backgrounds/.")
+                hint.setStyleSheet(f"color: {MUTED};")
+                body_lay.addWidget(hint)
+            grid = QHBoxLayout()
+            for item in files:
+                btn = self._chip(item["name"], lambda n=item["name"]: self._apply_background("image", n))
+                if self._bg.get("value") == item["name"]:
+                    btn.setStyleSheet(f"color: {GREEN}; background: {_rgba(OK, 220)};")
+                grid.addWidget(btn)
+            body_lay.addLayout(grid)
         else:
-            tk.Label(body, text="Animated aurora scene with drifting particles. Toggle GFX for more/fewer particles.",
-                     bg=BG, fg=MUTED, font=("JetBrains Mono", 8), justify="left", wraplength=560).pack(anchor="w", pady=8)
+            hint = QLabel("Animated aurora scene with drifting particles. Toggle GFX for more/fewer particles.")
+            hint.setStyleSheet(f"color: {MUTED};")
+            body_lay.addWidget(hint)
 
-        actions = tk.Frame(win, bg=BG)
-        actions.pack(fill="x", padx=14, pady=(0, 14))
-        tk.Button(actions, text="DONE", command=win.destroy, bg=CYAN, fg="#021018", relief=tk.FLAT, bd=0,
-                  padx=14, pady=6, font=("JetBrains Mono", 9, "bold"), cursor="hand2").pack(side="right")
+        lay.addWidget(body, 1)
+        done = self._chip("DONE", win.accept, primary=True)
+        lay.addWidget(done, 0, Qt.AlignmentFlag.AlignRight)
+        win.exec()
 
-    def _reopen_backgrounds(self, win: tk.Toplevel) -> None:
-        try:
-            win.destroy()
-        except Exception:
-            pass
-        self._open_backgrounds()
-
-    def _pick_background_image(self, win: tk.Toplevel) -> None:
-        """Open a native file dialog, import the chosen image into data/backgrounds, and apply it."""
-        path = filedialog.askopenfilename(
-            title="Choose a background image",
-            parent=win,
-            filetypes=[("Image files", "*.png *.jpg *.jpeg *.gif *.bmp *.webp"), ("All files", "*.*")],
+    def _pick_background_image(self, win: QDialog) -> None:
+        path, _ = QFileDialog.getOpenFileName(
+            win,
+            "Choose a background image",
+            "",
+            "Image files (*.png *.jpg *.jpeg *.gif *.bmp *.webp);;All files (*.*)",
         )
         if not path:
             return
@@ -490,444 +963,53 @@ class JarvisHudApp:
                 dest = _unique_path(dest_dir, src.stem + ".png")
                 img.convert("RGBA").save(dest, "PNG")
             self._apply_background("image", dest.name)
-            self._reopen_backgrounds(win)
+            win.close()
         except Exception:
             self._toaster.notify("Background import failed", "Could not import that image.", RED)
 
-    def _build_ui(self) -> None:
-        self._scene_hidden = False
-        self.root.columnconfigure(0, weight=1)
-        self.root.rowconfigure(1, weight=1)
-
-        self.root.option_add("*Menu*background", PANEL_2)
-        self.root.option_add("*Menu*foreground", TEXT)
-        self.root.option_add("*Menu*activeBackground", SEL)
-        self.root.option_add("*Menu*activeForeground", "#ffffff")
-        self.root.option_add("*Menu*font", ("JetBrains Mono", 9))
-
-        # ------------------------------------------------------------- header
-        top = tk.Frame(self.root, bg=BG)
-        self._top_frame = top
-        top.grid(row=0, column=0, sticky="ew", padx=16, pady=(12, 10))
-        top.columnconfigure(1, weight=1)
-
-        brand = tk.Frame(top, bg=BG)
-        brand.grid(row=0, column=0, sticky="w")
-        tk.Label(brand, text="JARVIS", bg=BG, fg=TEXT, font=("JetBrains Mono", 20, "bold")).pack(side="left")
-        self.online_label = tk.Label(
-            brand, text="STATUS: ONLINE", bg=STATUS, fg=GREEN, font=("JetBrains Mono", 9, "bold"), padx=10, pady=4
-        )
-        self.online_label.pack(side="left", padx=(12, 0))
-
-        bar = tk.Frame(top, bg=BG)
-        bar.grid(row=0, column=2, sticky="e")
-
-        def _group() -> tk.Frame:
-            g = tk.Frame(bar, bg=BG)
-            g.pack(side="left", padx=(0, 8))
-            return g
-
-        def _divider() -> None:
-            tk.Frame(bar, bg=STROKE, width=1).pack(side="left", padx=2, fill="y")
-
-        transport = _group()
-        for txt, cmd_text, tip in [
-            ("▶", "youtube pause", "Toggle YouTube play/pause"),
-            ("⏭", "youtube next", "Go to next YouTube video"),
-            ("APPS", "list apps", "Show apps in the launcher panel"),
-        ]:
-            b = self._header_chip(transport, txt, lambda c=cmd_text: self._run_preset(c))
-            b.pack(side="left", padx=(0, 4))
-            self._tooltips.append(Tooltip(b, tip))
-
-        _divider()
-        primary = _group()
-        for txt, cmd_fn, tip in [
-            ("MINI", self.mini.toggle, "Show/hide the floating mini HUD"),
-            ("DIAGNOSE", self._diagnose_system, "Run full system diagnosis (CPU/RAM/GPU + process analysis)"),
-            ("RECAP", self._recap, "What happened while you were away"),
-        ]:
-            b = self._header_chip(primary, txt, cmd_fn)
-            b.pack(side="left", padx=(0, 4))
-            self._tooltips.append(Tooltip(b, tip))
-
-        _divider()
-        toggles = _group()
-        self.auto_start_button = self._header_chip(toggles, "AUTOSTART", self._toggle_auto_start, hover=False)
-        self.auto_start_button.pack(side="left", padx=(0, 4))
-        self._tooltips.append(Tooltip(self.auto_start_button, "Toggle auto-start when this project opens / Windows login"))
-        self.tray_button = self._header_chip(toggles, "TRAY", self._toggle_tray, hover=False)
-        self.tray_button.pack(side="left", padx=(0, 4))
-        self._tooltips.append(Tooltip(self.tray_button, "Minimize to system tray  /  Ctrl+Shift+J summons the mini HUD"))
-        self.gfx_button = self._header_chip(toggles, "GFX", self._toggle_gfx, hover=False)
-        self.gfx_button.pack(side="left", padx=(0, 4))
-        self._tooltips.append(Tooltip(self.gfx_button, "Toggle Lite / Full graphics effects"))
-        self.theme_button = self._header_chip(toggles, f"THEME {self._theme.upper()}", self._cycle_theme, hover=False)
-        self.theme_button.pack(side="left", padx=(0, 4))
-        self._tooltips.append(Tooltip(self.theme_button, "Cycle Aurora / Cyber / Light themes"))
-
-        _divider()
-        more_menu = tk.Menu(top, tearoff=0)
-        more_menu.add_command(label="HELP  (F1)", command=self._open_help)
-        more_menu.add_command(label="SCHEDULER", command=self._open_scheduler)
-        more_menu.add_command(label="HISTORY", command=self._open_history)
-        more_menu.add_command(label="TASKS", command=self._open_tasks)
-        more_menu.add_command(label="MEMORY", command=self._open_memory)
-        more_menu.add_separator()
-        more_menu.add_command(label="BACKGROUNDS", command=self._open_backgrounds)
-
-        def _show_more() -> None:
-            try:
-                x = more_btn.winfo_rootx()
-                y = more_btn.winfo_rooty() + more_btn.winfo_height()
-                more_menu.tk_popup(x, y)
-            finally:
-                more_menu.grab_release()
-
-        more_btn = self._header_chip(bar, "MORE ▾", _show_more)
-        more_btn.pack(side="left", padx=(0, 4))
-        self._tooltips.append(Tooltip(more_btn, "Scheduler, history, tasks, memory, backgrounds and help"))
-
-        self.body = tk.Frame(self.root, bg=BG)
-        self.body.grid(row=1, column=0, sticky="nsew", padx=16, pady=(0, 14))
-        self.body.columnconfigure(0, weight=5)
-        self.body.columnconfigure(1, weight=4)
-        self.body.columnconfigure(2, weight=4)
-        self.body.rowconfigure(0, weight=1)
-        self.body.bind("<Configure>", self._on_body_resize)
-
-        left = self._make_panel(self.body, PANEL)
-        left.grid(row=0, column=0, sticky="nsew", padx=(0, 10))
-        left.columnconfigure(0, weight=1)
-        left.rowconfigure(2, weight=1)
-
-        # ------------------------------------------------------- command center
-        cmd_card, cmd_body = self._card(left, "Command Center", "Natural-language control")
-        cmd_body.columnconfigure(0, weight=1)
-        self.entry_wrap = tk.Frame(cmd_body, bg=SEL, padx=1, pady=1)
-        self.entry_wrap.grid(row=0, column=0, sticky="ew")
-        self.command_entry = tk.Entry(
-            self.entry_wrap, bg=ENTRY, fg=TEXT, insertbackground=CYAN, relief=tk.FLAT, bd=0, font=("JetBrains Mono", 12)
-        )
-        self.command_entry.pack(fill="x", ipady=7)
-        self.command_entry.bind("<Return>", lambda _: self._run_command())
-        self.command_entry.bind("<Up>", lambda _: self._history_step(-1))
-        self.command_entry.bind("<Down>", lambda _: self._history_step(1))
-        self.run_button = self._primary_button(cmd_body, "EXECUTE", self._run_command)
-        self.run_button.grid(row=0, column=1, padx=(10, 0))
-        chips_row = tk.Frame(cmd_body, bg=PANEL_2)
-        chips_row.grid(row=1, column=0, columnspan=2, sticky="w", pady=(8, 0))
-        for label, cmd_str in [
-            ("system status", "system status"),
-            ("metrics", "metrics"),
-            ("list schedules", "list schedules"),
-            ("job status", "job status"),
-            ("time", "get current time"),
-        ]:
-            c = self._header_chip(chips_row, label, lambda c=cmd_str: self._run_preset(c))
-            c.pack(side="left", padx=(0, 6))
-        cmd_card.grid(row=0, column=0, sticky="ew", padx=12, pady=(12, 8))
-
-        # ---------------------------------------------------------- activity feed
-        feed_card, feed_body = self._card(left, "Activity Feed", "Commands, agents and scheduler events")
-        feed_head = tk.Frame(feed_body, bg=PANEL_2)
-        feed_head.pack(fill="x", pady=(0, 4))
-        feed_head.columnconfigure(0, weight=1)
-        tk.Button(
-            feed_head, text="CLEAR", command=self._clear_feed, bg=BTN2, fg=TEXT, activebackground=CHIP_HI,
-            relief=tk.FLAT, bd=0, padx=8, pady=3, font=("JetBrains Mono", 8, "bold"), cursor="hand2",
-        ).grid(row=0, column=1, sticky="e")
-        feed_scroll = tk.Frame(feed_body, bg=TERM, highlightbackground=STROKE, highlightthickness=1)
-        feed_scroll.pack(fill="both", expand=True)
-        feed_scroll.columnconfigure(0, weight=1)
-        feed_scroll.rowconfigure(0, weight=1)
-        self.feed_text = tk.Text(
-            feed_scroll, bg=TERM, fg=TEXT, relief=tk.FLAT, bd=0, width=46, height=7, font=("JetBrains Mono", 9),
-            wrap="word", padx=8, pady=6,
-        )
-        self.feed_text.grid(row=0, column=0, sticky="nsew")
-        feed_sb = ttk.Scrollbar(feed_scroll, orient="vertical", command=self.feed_text.yview, style="Jarvis.Vertical.TScrollbar")
-        feed_sb.grid(row=0, column=1, sticky="ns")
-        self.feed_text.configure(yscrollcommand=feed_sb.set)
-        self.feed_text.configure(state=tk.DISABLED)
-        for tag, color in [("feed_cmd", CYAN), ("feed_ok", GREEN), ("feed_pending", AMBER), ("feed_err", RED), ("feed_sys", MUTED)]:
-            self.feed_text.tag_configure(tag, foreground=color)
-        feed_card.grid(row=1, column=0, sticky="ew", padx=12, pady=(0, 8))
-
-        # ----------------------------------------------------------- live terminal
-        term_card, term_body = self._card(left, "Live Terminal", "Command, agent and scheduler logs")
-        term_head = tk.Frame(term_body, bg=PANEL_2)
-        term_head.pack(fill="x", pady=(0, 4))
-        term_head.columnconfigure(0, weight=1)
-        tk.Label(term_head, text="ALL EVENTS STREAM HERE", bg=PANEL_2, fg=MUTED, font=("JetBrains Mono", 8)).grid(
-            row=0, column=0, sticky="w"
-        )
-        tk.Button(
-            term_head, text="CLEAR", command=self._clear_terminal, bg=BTN2, fg=TEXT, activebackground=CHIP_HI,
-            relief=tk.FLAT, bd=0, padx=8, pady=3, font=("JetBrains Mono", 8, "bold"), cursor="hand2",
-        ).grid(row=0, column=1, sticky="e")
-        term_scroll = tk.Frame(term_body, bg=TERM, highlightbackground=STROKE, highlightthickness=1)
-        term_scroll.pack(fill="both", expand=True)
-        term_scroll.columnconfigure(0, weight=1)
-        term_scroll.rowconfigure(0, weight=1)
-        self.terminal = tk.Text(
-            term_scroll, bg=TERM, fg=TEXT, relief=tk.FLAT, bd=0, width=60, wrap="word", font=("JetBrains Mono", 10), padx=10, pady=8
-        )
-        self.terminal.grid(row=0, column=0, sticky="nsew")
-        term_sb = ttk.Scrollbar(term_scroll, orient="vertical", command=self.terminal.yview, style="Jarvis.Vertical.TScrollbar")
-        term_sb.grid(row=0, column=1, sticky="ns")
-        self.terminal.configure(yscrollcommand=term_sb.set)
-        self.terminal.configure(state=tk.DISABLED)
-        for tag, color in [("ts", MUTED), ("cmd", CYAN), ("ok", GREEN), ("pending", AMBER), ("err", RED), ("sys", INDIGO)]:
-            self.terminal.tag_configure(tag, foreground=color)
-        term_card.grid(row=2, column=0, sticky="nsew", padx=12, pady=(0, 12))
-
-        # ------------------------------------------------------------ AI assistant
-        mid = self._make_panel(self.body, PANEL)
-        mid.grid(row=0, column=1, sticky="nsew", padx=(0, 10))
-        mid.columnconfigure(0, weight=1)
-        mid.rowconfigure(0, weight=1)
-
-        ai_card, ai_body = self._card(mid, "AI Assistant", "Jarvis plans, executes and streams answers")
-        ai_card.grid(row=0, column=0, sticky="nsew", padx=12, pady=12)
-        ai_body.columnconfigure(0, weight=1)
-        ai_body.rowconfigure(0, weight=1)
-        chat_scroll = tk.Frame(ai_body, bg=CANVAS, highlightbackground=STROKE, highlightthickness=1)
-        chat_scroll.grid(row=0, column=0, sticky="nsew")
-        chat_scroll.columnconfigure(0, weight=1)
-        chat_scroll.rowconfigure(0, weight=1)
-        self.chat_text = tk.Text(
-            chat_scroll, bg=CANVAS, fg=TEXT, relief=tk.FLAT, bd=0, width=38, wrap="word", font=("Fira Code", 10), padx=12, pady=10
-        )
-        self.chat_text.grid(row=0, column=0, sticky="nsew")
-        chat_sb = ttk.Scrollbar(chat_scroll, orient="vertical", command=self.chat_text.yview, style="Jarvis.Vertical.TScrollbar")
-        chat_sb.grid(row=0, column=1, sticky="ns")
-        self.chat_text.configure(yscrollcommand=chat_sb.set)
-        self.chat_text.configure(state=tk.DISABLED)
-        self.chat_text.tag_configure("chat_user_label", foreground=CYAN, font=("JetBrains Mono", 8, "bold"))
-        self.chat_text.tag_configure("chat_user", foreground=TEXT)
-        self.chat_text.tag_configure("chat_ai_label", foreground=INDIGO, font=("JetBrains Mono", 8, "bold"))
-        self.chat_text.tag_configure("chat_ai", foreground=TEXT)
-        self.chat_text.tag_configure("chat_stream", foreground=TEXT)
-        inp = tk.Frame(ai_body, bg=PANEL_2)
-        inp.grid(row=1, column=0, sticky="ew", pady=(10, 0))
-        inp.columnconfigure(0, weight=1)
-        shell = tk.Frame(inp, bg=SHELL, padx=1, pady=1)
-        shell.grid(row=0, column=0, sticky="ew")
-        shell.columnconfigure(0, weight=1)
-        self.chat_entry = tk.Entry(shell, bg=CANVAS, fg=TEXT, insertbackground=CYAN, relief=tk.FLAT, bd=0, font=("JetBrains Mono", 11))
-        self.chat_entry.grid(row=0, column=0, sticky="ew", ipady=8)
-        self.chat_entry.bind("<Return>", lambda _: self._ask_chatbot())
-        ask_btn = self._primary_button(inp, "ASK", self._ask_chatbot)
-        ask_btn.grid(row=0, column=1, padx=(10, 0))
-
-        # ----------------------------------------------------------- right column
-        right = self._make_panel(self.body, PANEL)
-        right.grid(row=0, column=2, sticky="nsew")
-        right.columnconfigure(0, weight=1)
-        right.rowconfigure(0, weight=1)
-
-        right_canvas = tk.Canvas(right, bg=PANEL, highlightthickness=0, bd=0)
-        right_canvas.grid(row=0, column=0, sticky="nsew")
-        right_sb = ttk.Scrollbar(right, orient="vertical", command=right_canvas.yview, style="Jarvis.Vertical.TScrollbar")
-        right_sb.grid(row=0, column=1, sticky="ns")
-        right_canvas.configure(yscrollcommand=right_sb.set)
-        self.right_inner = tk.Frame(right_canvas, bg=PANEL)
-        self.right_window_id = right_canvas.create_window((0, 0), window=self.right_inner, anchor="nw")
-        self.right_inner.bind("<Configure>", lambda _e: right_canvas.configure(scrollregion=right_canvas.bbox("all")))
-        right_canvas.bind("<Configure>", lambda e: right_canvas.itemconfigure(self.right_window_id, width=e.width))
-        self.right_inner.columnconfigure(0, weight=1)
-
-        # -------------------------------------------------------------- job agent
-        job_card, job_body = self._card(self.right_inner, "Job Agent", "Autonomous job-application hunter")
-        job_body.columnconfigure(0, weight=1)
-        self.job_status_label = tk.Label(
-            job_body, text="No job-application task running.", bg=INNER, fg=MUTED,
-            font=("JetBrains Mono", 9), justify="left", anchor="w", wraplength=320, padx=8, pady=4,
-        )
-        self.job_status_label.grid(row=0, column=0, sticky="ew")
-        job_stats = tk.Frame(job_body, bg=PANEL_2)
-        job_stats.grid(row=1, column=0, sticky="ew", pady=(4, 0))
-        self.job_stat_labels: dict[str, tk.Label] = {}
-        stat_colors = {
-            "APPLIED": GREEN, "SKIPPED": AMBER, "FAILED": RED,
-            "INTERVIEW": CYAN, "OFFER": GREEN, "REJECTED": RED,
-        }
-        for row_i, names in enumerate([("APPLIED", "SKIPPED", "FAILED"), ("INTERVIEW", "OFFER", "REJECTED")]):
-            for i, name in enumerate(names):
-                lbl = tk.Label(job_stats, text=f"{name} 0", bg=PANEL_2, fg=stat_colors[name], font=("JetBrains Mono", 9, "bold"))
-                lbl.grid(row=row_i, column=i, padx=(0, 14), sticky="w")
-                self.job_stat_labels[name] = lbl
-        self.job_progress = ttk.Progressbar(job_body, maximum=100, mode="determinate")
-        self.job_progress.grid(row=2, column=0, sticky="ew", pady=(8, 0))
-        job_ctrl = tk.Frame(job_body, bg=PANEL_2)
-        job_ctrl.grid(row=3, column=0, sticky="ew", pady=(8, 0))
-        job_ctrl.columnconfigure(0, weight=1)
-        shell2 = tk.Frame(job_ctrl, bg=SHELL, padx=1, pady=1)
-        shell2.grid(row=0, column=0, sticky="ew")
-        shell2.columnconfigure(0, weight=1)
-        self.job_query_entry = tk.Entry(shell2, bg=CANVAS, fg=TEXT, insertbackground=CYAN, relief=tk.FLAT, bd=0, font=("JetBrains Mono", 9))
-        self.job_query_entry.grid(row=0, column=0, sticky="ew", ipady=5)
-        self.job_query_entry.bind("<Return>", lambda _: self._start_job_apply())
-        apply_btn = self._primary_button(job_ctrl, "APPLY", self._start_job_apply, padx=10)
-        apply_btn.grid(row=0, column=1, padx=(8, 0))
-        ctrl2 = tk.Frame(job_body, bg=PANEL_2)
-        ctrl2.grid(row=4, column=0, sticky="ew", pady=(6, 0))
-        for txt, cmd_fn, kind in [
-            ("STATUS", self._refresh_job_status, "secondary"),
-            ("CANCEL", self._cancel_job, "danger"),
-            ("RESUME", self._resume_job, "success"),
-        ]:
-            if kind == "danger":
-                b = tk.Button(ctrl2, text=txt, command=cmd_fn, bg=DANGER, fg=RED, activebackground=CHIP_HI, relief=tk.FLAT, bd=0,
-                              padx=8, pady=4, font=("JetBrains Mono", 8, "bold"), cursor="hand2")
-            elif kind == "success":
-                b = tk.Button(ctrl2, text=txt, command=cmd_fn, bg=OK, fg=GREEN, activebackground=CHIP_HI, relief=tk.FLAT, bd=0,
-                              padx=8, pady=4, font=("JetBrains Mono", 8, "bold"), cursor="hand2")
-            else:
-                b = tk.Button(ctrl2, text=txt, command=cmd_fn, bg=BTN2, fg=TEXT, activebackground=CHIP_HI, relief=tk.FLAT, bd=0,
-                              padx=8, pady=4, font=("JetBrains Mono", 8, "bold"), cursor="hand2")
-                self._bind_hover(b, BTN2, CHIP_HI)
-            b.pack(side="left", padx=(0, 6))
-        tk.Label(job_body, text="RECENT APPLICATIONS", bg=PANEL_2, fg=MUTED, font=("JetBrains Mono", 8, "bold")).grid(
-            row=5, column=0, sticky="w", pady=(8, 2)
-        )
-        self.recent_list = tk.Listbox(
-            job_body, bg=CANVAS, fg=TEXT, relief=tk.FLAT, bd=0, height=4, font=("JetBrains Mono", 9),
-            highlightthickness=1, highlightbackground=STROKE, selectbackground=SEL, selectforeground=TEXT,
-        )
-        self.recent_list.grid(row=6, column=0, sticky="ew")
-        job_card.grid(row=0, column=0, sticky="ew", padx=12, pady=(12, 8))
-
-        # ------------------------------------------------------------ voice engine
-        voice_card, voice_body = self._card(self.right_inner, "Voice Engine", "Click the wave to toggle")
-        voice_body.columnconfigure(0, weight=1)
-        wave_wrap = tk.Frame(voice_body, bg=INNER, highlightbackground=STROKE, highlightthickness=1)
-        wave_wrap.grid(row=0, column=0, sticky="ew")
-        self.wave_canvas = tk.Canvas(wave_wrap, width=320, height=64, bg=CANVAS, highlightthickness=0, bd=0, cursor="hand2")
-        self.wave_canvas.pack(fill="both", expand=True, padx=4, pady=4)
-        self.wave_canvas.bind("<Button-1>", lambda _: self._toggle_voice())
-        self.voice_switch_button = tk.Button(
-            voice_body, text="VOICE OFF", command=self._toggle_voice, bg=BTN2, fg=TEXT, activebackground=CHIP_HI,
-            relief=tk.FLAT, bd=0, padx=10, pady=5, font=("JetBrains Mono", 9, "bold"), cursor="hand2",
-        )
-        self.voice_switch_button.grid(row=1, column=0, sticky="ew", pady=(6, 0))
-        voice_card.grid(row=1, column=0, sticky="ew", padx=12, pady=(0, 8))
-
-        # --------------------------------------------------------- agentive status
-        agent_card, agent_body = self._card(self.right_inner, "Agent Status", "Pending approval requests")
-        agent_body.columnconfigure(0, weight=1)
-        agent_body.rowconfigure(0, weight=1)
-        agent_head = tk.Frame(agent_body, bg=PANEL_2)
-        agent_head.grid(row=0, column=0, sticky="ew", pady=(0, 4))
-        agent_head.columnconfigure(0, weight=1)
-        tk.Label(agent_head, text="PENDING APPROVALS", bg=PANEL_2, fg=MUTED, font=("JetBrains Mono", 8, "bold")).grid(
-            row=0, column=0, sticky="w"
-        )
-        self._approval_badge = tk.Label(agent_head, text="0", bg=BTN2, fg=TEXT, font=("JetBrains Mono", 8, "bold"), padx=6, pady=1)
-        self._approval_badge.grid(row=0, column=1, sticky="e")
-        approval_shell = tk.Frame(agent_body, bg=CANVAS, highlightbackground=STROKE, highlightthickness=1)
-        approval_shell.grid(row=1, column=0, sticky="nsew")
-        approval_shell.columnconfigure(0, weight=1)
-        approval_shell.rowconfigure(0, weight=1)
-        self.approval_canvas = tk.Canvas(approval_shell, bg=CANVAS, width=320, height=120, highlightthickness=0, bd=0)
-        self.approval_canvas.grid(row=0, column=0, sticky="nsew")
-        approval_sb = ttk.Scrollbar(approval_shell, orient="vertical", command=self.approval_canvas.yview, style="Jarvis.Vertical.TScrollbar")
-        approval_sb.grid(row=0, column=1, sticky="ns")
-        self.approval_canvas.configure(yscrollcommand=approval_sb.set)
-        self.approval_inner = tk.Frame(self.approval_canvas, bg=CANVAS)
-        self.approval_window_id = self.approval_canvas.create_window((0, 0), window=self.approval_inner, anchor="nw")
-        self.approval_inner.bind("<Configure>", lambda _e: self.approval_canvas.configure(scrollregion=self.approval_canvas.bbox("all")))
-        agent_card.grid(row=2, column=0, sticky="ew", padx=12, pady=(0, 8))
-
-        # ---------------------------------------------------------- available apps
-        apps_card, apps_body = self._card(self.right_inner, "Available Apps", "Alt+1..9 to launch")
-        apps_body.columnconfigure(0, weight=1)
-        self.app_filter_var = tk.StringVar()
-        self.app_filter_var.trace_add("write", lambda *_: self._apply_app_filter())
-        filt = tk.Frame(apps_body, bg=SHELL, padx=1, pady=1)
-        filt.grid(row=0, column=0, sticky="ew", pady=(0, 6))
-        filt.columnconfigure(0, weight=1)
-        tk.Entry(filt, textvariable=self.app_filter_var, bg=CANVAS, fg=TEXT, insertbackground=CYAN, relief=tk.FLAT, bd=0,
-                 font=("JetBrains Mono", 9)).grid(row=0, column=0, sticky="ew", ipady=4)
-        self.app_listbox = tk.Listbox(
-            apps_body, bg=LIST, fg=TEXT, relief=tk.FLAT, bd=0, height=5, font=("JetBrains Mono", 9),
-            highlightthickness=1, highlightbackground=STROKE, selectbackground=SEL, selectforeground=TEXT,
-        )
-        self.app_listbox.grid(row=1, column=0, sticky="nsew")
-        self.app_listbox.bind("<Double-Button-1>", lambda _: self._open_selected_app())
-        self.app_listbox.bind("<Return>", lambda _: self._open_selected_app())
-        apps_card.grid(row=3, column=0, sticky="ew", padx=12, pady=(0, 8))
-
-        # ------------------------------------------------------------- scene viewer
-        scene_card, scene_body = self._card(self.right_inner, "Scene Viewer", "Aurora · Gradient · Image")
-        scene_body.columnconfigure(0, weight=1)
-        self.scene = tk.Canvas(scene_body, bg=SCENE, highlightthickness=0, bd=0, width=1, height=120)
-        self.scene.grid(row=0, column=0, sticky="nsew")
-        self.scene.bind("<Configure>", self._reset_scene)
-        scene_card.grid(row=4, column=0, sticky="ew", padx=12, pady=(0, 12))
-
-    def _on_body_resize(self, event: tk.Event) -> None:
-        scene = getattr(self, "scene", None)
-        if scene is None:
-            return
-        w = int(event.width)
-        hidden = getattr(self, "_scene_hidden", False)
-        if w >= 1560:
-            self.body.columnconfigure(0, weight=5)
-            self.body.columnconfigure(1, weight=4)
-            self.body.columnconfigure(2, weight=4)
-            if hidden:
-                scene.grid()
-                self._scene_hidden = False
-        elif w >= 1360:
-            self.body.columnconfigure(0, weight=6)
-            self.body.columnconfigure(1, weight=5)
-            self.body.columnconfigure(2, weight=4)
-            if hidden:
-                scene.grid()
-                self._scene_hidden = False
-        else:
-            self.body.columnconfigure(0, weight=6)
-            self.body.columnconfigure(1, weight=5)
-            self.body.columnconfigure(2, weight=3)
-            if not hidden:
-                scene.grid_remove()
-                self._scene_hidden = True
+    # ------------------------------------------------------------ terminal / feed
 
     def _append_terminal(self, kind: str, text: str) -> None:
-        self.terminal.configure(state=tk.NORMAL)
-        self.terminal.insert(tk.END, f"[{datetime.now().strftime('%H:%M:%S')}] ", ("ts",))
-        tag = {"CMD": "cmd", "OK": "ok", "WARN": "pending", "ERR": "err", "SYS": "sys"}.get(kind, "sys")
-        self.terminal.insert(tk.END, text + "\n", (tag,))
-        self.terminal.see(tk.END)
-        self.terminal.configure(state=tk.DISABLED)
+        ts = datetime.now().strftime("%H:%M:%S")
+        tag = {"CMD": CYAN, "OK": GREEN, "WARN": AMBER, "ERR": RED, "SYS": INDIGO}.get(kind, MUTED)
+        safe = text.replace("&", "&amp;").replace("<", "&lt;").replace(">", "&gt;")
+        self.terminal.append(
+            f'<span style="color:{MUTED}">[{ts}]</span> <span style="color:{tag}">{safe}</span>'
+        )
+        self.terminal.verticalScrollBar().setValue(self.terminal.verticalScrollBar().maximum())
 
     def _append_feed(self, tag: str, text: str) -> None:
-        self.feed_text.configure(state=tk.NORMAL)
-        self.feed_text.insert(tk.END, text + "\n", (tag,))
-        lines = int(self.feed_text.index("end-1c").split(".")[0])
-        if lines > 40:
-            self.feed_text.delete("1.0", f"{lines - 30}.0")
-        self.feed_text.see(tk.END)
-        self.feed_text.configure(state=tk.DISABLED)
+        color = {
+            "feed_cmd": CYAN, "feed_ok": GREEN, "feed_pending": AMBER,
+            "feed_err": RED, "feed_sys": MUTED,
+        }.get(tag, MUTED)
+        safe = text.replace("&", "&amp;").replace("<", "&lt;").replace(">", "&gt;")
+        self.feed_text.append(f'<span style="color:{color}">{safe}</span>')
+        self.feed_text.verticalScrollBar().setValue(self.feed_text.verticalScrollBar().maximum())
 
     def _set_busy(self, busy: bool) -> None:
         self._busy = busy
-        self.run_button.configure(state=tk.DISABLED if busy else tk.NORMAL)
+        self.run_button.setEnabled(not busy)
+
+    def _clear_terminal(self) -> None:
+        self.terminal.clear()
+
+    def _clear_feed(self) -> None:
+        self.feed_text.clear()
+
+    # ------------------------------------------------------------ commands
 
     def _run_preset(self, command: str) -> None:
-        self.command_entry.delete(0, tk.END)
-        self.command_entry.insert(0, command)
+        self.command_entry.setText(command)
         self._run_command()
 
     def _run_command(self) -> None:
         if self._busy:
             return
-        command = self.command_entry.get().strip()
+        command = self.command_entry.text().strip()
         if not command:
             return
-        self.command_entry.delete(0, tk.END)
+        self.command_entry.clear()
         self._run_command_text(command)
 
     def _run_mini_command(self, command: str) -> None:
@@ -938,9 +1020,8 @@ class JarvisHudApp:
             return
         self._push_history(command)
         self._append_terminal("CMD", f"> {command}")
-        self._append_feed("feed_cmd", f"\u25b6 {command}")
+        self._append_feed("feed_cmd", f"▶ {command}")
         self.mini.notify_command(command)
-        self.mini.show()
         self._set_busy(True)
 
         def worker() -> None:
@@ -970,15 +1051,52 @@ class JarvisHudApp:
         n = len(self._cmd_history)
         idx = min(max(self._cmd_history_index + direction, 0), n - 1)
         self._cmd_history_index = idx
-        self.command_entry.delete(0, tk.END)
-        self.command_entry.insert(0, self._cmd_history[idx])
-        self.command_entry.icursor(tk.END)
+        self.command_entry.setText(self._cmd_history[idx])
+
+    # ------------------------------------------------------------ voice
+
+    def _toggle_voice(self) -> None:
+        self._set_busy(True)
+
+        def worker() -> None:
+            try:
+                if self.runtime.voice.is_running():
+                    changed = self.runtime.voice.stop()
+                    self._events.put(("voice", {"running": False, "changed": changed}))
+                else:
+                    changed = self.runtime.voice.start()
+                    self._events.put(("voice", {"running": True, "changed": changed}))
+            except Exception as exc:
+                self._events.put(("error", str(exc)))
+
+        threading.Thread(target=worker, daemon=True).start()
+
+    def _refresh_voice_button(self) -> None:
+        running = self.runtime.voice.is_running()
+        try:
+            status = self.runtime.voice.status()
+        except Exception:
+            status = {}
+        phase, color, amp, speed = voice_phase(status)
+        self.wave_canvas.update_status(phase, color, amp, speed)
+        if running:
+            self.voice_switch_button.setText("VOICE ON")
+            self.voice_switch_button.setStyleSheet(f"color: {GREEN}; background: {_rgba(OK, 220)};")
+            self.online_label.setText("STATUS: STREAMING")
+            self.online_label.setStyleSheet(f"color: {CYAN}; font-weight: 700; font-size: 11px; padding: 4px 10px; background: {_rgba(STATUS, 200)}; border-radius: 8px;")
+        else:
+            self.voice_switch_button.setText("VOICE OFF")
+            self.voice_switch_button.setStyleSheet("")
+            self.online_label.setText("STATUS: ONLINE")
+            self.online_label.setStyleSheet(f"color: {GREEN}; font-weight: 700; font-size: 11px; padding: 4px 10px; background: {_rgba(STATUS, 200)}; border-radius: 8px;")
+
+    # ------------------------------------------------------------ job agent
 
     def _start_job_apply(self) -> None:
-        query = self.job_query_entry.get().strip()
+        query = self.job_query_entry.text().strip()
         if not query:
             return
-        self.job_query_entry.delete(0, tk.END)
+        self.job_query_entry.clear()
         self._run_command_text(f"apply for {query}")
 
     def _refresh_job_status(self) -> None:
@@ -1023,886 +1141,46 @@ class JarvisHudApp:
         threading.Thread(target=worker, daemon=True).start()
 
     def _job_tick(self) -> None:
-        try:
-            if not self.root.winfo_exists():
-                return
-            self._refresh_job_status()
-        finally:
-            self.root.after(5000, self._job_tick)
+        self._refresh_job_status()
 
-    def _raise_main_window(self) -> None:
-        self.root.deiconify()
-        self.root.lift()
-        self.root.focus_force()
-
-    def _restore_ui_config(self) -> None:
+    def _update_job_panel(self, payload: dict[str, Any]) -> None:
+        task = payload.get("task") or {}
+        status = str(task.get("status") or "idle")
+        phase = str(task.get("phase") or "-")
+        applied = int(task.get("applied") or 0)
+        skipped = int(task.get("skipped") or 0)
+        failed = int(task.get("failed") or 0)
+        reason = str(task.get("paused_reason") or "").strip()
+        color = {"idle": MUTED, "running": CYAN, "paused": AMBER, "completed": GREEN, "canceled": MUTED}.get(status, MUTED)
+        text = f"[{status.upper()} · {phase}]"
+        if reason:
+            text += f"\nPaused: {reason}"
+        self.job_status_label.setText(text)
+        self.job_status_label.setStyleSheet(f"color: {color}; font-size: 11px;")
+        self.job_stat_labels["APPLIED"].setText(f"APPLIED {applied}")
+        self.job_stat_labels["SKIPPED"].setText(f"SKIPPED {skipped}")
+        self.job_stat_labels["FAILED"].setText(f"FAILED {failed}")
+        totals = payload.get("totals") or (task.get("totals") if isinstance(task, dict) else None) or {}
+        for name in ("INTERVIEW", "OFFER", "REJECTED"):
+            self.job_stat_labels[name].setText(f"{name} {int(totals.get(name.lower(), 0))}")
         try:
-            cfg = json.loads(self._ui_config_path.read_text(encoding="utf-8"))
-            geo = cfg.get("main_geometry")
-            if geo and geo.count("x") == 1 and "+" in geo:
-                self.root.geometry(geo)
-            if cfg.get("mini_visible"):
-                self.mini.show()
-            self._theme = str(cfg.get("theme") or "aurora")
-            self._gfx_full = bool(cfg.get("gfx_full", False))
-            bg = cfg.get("background") or {}
-            if isinstance(bg, dict) and bg.get("mode") in {"aurora", "gradient", "image"}:
-                self._bg = bg
-            self._cmd_history = [str(x) for x in (cfg.get("cmd_history") or [])][:50]
-            if self._theme not in PALETTES:
-                self._theme = "aurora"
-            if self._theme != "aurora":
-                _apply_palette(self._theme)
-                self._rebuild_ui()
-            else:
-                _apply_palette("aurora")
-            try:
-                self._reset_scene()
-            except Exception:
-                pass
+            max_apps = int(task.get("max_applications") or 0)
+            pct = round((applied / max_apps) * 100) if max_apps else 0
+            self.job_progress.setValue(max(0, min(100, pct)))
         except Exception:
-            pass
-
-    def _save_ui_config(self) -> None:
-        try:
-            cfg = {
-                "main_geometry": self.root.geometry(),
-                "mini_visible": self.mini.is_visible(),
-                "theme": self._theme,
-                "gfx_full": self._gfx_full,
-                "background": self._bg,
-                "cmd_history": self._cmd_history[:50],
-            }
-            self._ui_config_path.parent.mkdir(parents=True, exist_ok=True)
-            self._ui_config_path.write_text(json.dumps(cfg, indent=2), encoding="utf-8")
-        except Exception:
-            pass
-
-    def _save_prefs(self) -> None:
-        self._save_ui_config()
-
-    def _maybe_show_recap(self) -> None:
-        state = self.runtime.memory.get_state("session_review", default={})
-        last_seen = state.get("last_seen_at")
-        self.runtime.memory.set_state("session_review", {"last_seen_at": datetime.now(UTC).isoformat()})
-        if not last_seen:
-            return
-        try:
-            review = self.runtime.memory.session_review(since=last_seen)
-        except Exception as exc:
-            self._append_terminal("ERR", f"Recap failed: {exc}")
-            return
-        if not review["command_count"] and not review["job_applications"] and not review["scheduled_runs"]:
-            return
-        self._open_recap(review, auto=True)
-
-    def _recap(self) -> None:
-        state = self.runtime.memory.get_state("session_review", default={})
-        since = state.get("last_seen_at")
-        try:
-            review = self.runtime.memory.session_review(since=since)
-        except Exception as exc:
-            self._toaster.notify("Recap error", str(exc), RED)
-            return
-        self._open_recap(review)
-
-    def _open_recap(self, review: dict[str, Any], auto: bool = False) -> None:
-        win = tk.Toplevel(self.root)
-        win.title("JARVIS \u2014 While you were away")
-        win.configure(bg=BG)
-        win.geometry("760x600")
-        win.transient(self.root)
-        text = tk.Text(win, bg=TERM, fg=TEXT, relief=tk.FLAT, bd=0, wrap="word", font=("JetBrains Mono", 9), padx=16, pady=10)
-        scroll = tk.Scrollbar(win, command=text.yview)
-        text.configure(yscrollcommand=scroll.set)
-        scroll.pack(side="right", fill="y")
-        text.pack(fill="both", expand=True)
-        text.tag_configure("h", foreground=CYAN, font=("JetBrains Mono", 11, "bold"))
-        text.tag_configure("d", foreground=TEXT)
-        text.tag_configure("m", foreground=MUTED)
-
-        lines: list[tuple[str, str]] = [
-            ("h", "WHILE YOU WERE AWAY\n"),
-            ("h", "\nCOMMANDS\n"),
-        ]
-        counts = review.get("sources") or {}
-        if counts:
-            lines.append(("m", "  " + "  \u00b7  ".join(f"{src}: {n}" for src, n in counts.items()) + "\n"))
-        for row in (review.get("commands") or [])[-12:]:
-            snippet = str(row.get("response_text") or "")[:120].replace("\n", " ")
-            lines.append(("d", f"  {row.get('created_at', '')[:16]} {row.get('source')}: {row.get('command')}\n"))
-            lines.append(("m", f"      {snippet}\n"))
-
-        lines.append(("h", "\nTOOL ACTIVITY\n"))
-        tool_counts = review.get("tool_counts") or {}
-        if tool_counts:
-            lines.append(("m", "  " + "  \u00b7  ".join(f"{k}: {v}" for k, v in tool_counts.items()) + "\n"))
-        top_tools = review.get("top_tools") or {}
-        if top_tools:
-            lines.append(("d", "  Most used: " + ", ".join(top_tools) + "\n"))
-
-        lines.append(("h", "\nJOB PIPELINE\n"))
-        job_status = review.get("job_status") or {}
-        if job_status:
-            lines.append(("m", "  " + "  \u00b7  ".join(f"{k}: {v}" for k, v in job_status.items()) + "\n"))
-        for row in (review.get("job_applications") or [])[-10:]:
-            lines.append(("d", f"  [{row.get('status')}] {row.get('title')} @ {row.get('company') or row.get('site')}\n"))
-
-        lines.append(("h", "\nSCHEDULED RUNS\n"))
-        runs = review.get("scheduled_runs") or []
-        for run in runs[-10:]:
-            lines.append(("d", f"  [{run.get('status')}] {run.get('result', '')[:100]}\n"))
-
-        if not lines:
-            lines = [("m", "Nothing to report.")]
-
-        text.configure(state=tk.NORMAL)
-        for tag, chunk in lines:
-            text.insert(tk.END, chunk, (tag,))
-        text.configure(state=tk.DISABLED)
-
-        if auto:
-            def _open_recap() -> None:
-                win.destroy()
-                self._raise_main_window()
-
-            self._toaster.notify("While you were away", "Click to open the catch-up recap.", CYAN, on_click=_open_recap)
-
-    def _auto_start_path(self) -> Path:
-        return Path(__file__).resolve().parent.parent / "data" / "auto_start.json"
-
-    def _auto_start_enabled(self) -> bool:
-        try:
-            cfg = json.loads(self._auto_start_path().read_text(encoding="utf-8"))
-            return bool(cfg.get("enabled", True))
-        except Exception:
-            return True
-
-    def _write_auto_start(self, enabled: bool) -> None:
-        try:
-            path = self._auto_start_path()
-            path.parent.mkdir(parents=True, exist_ok=True)
-            path.write_text(json.dumps({"enabled": enabled}), encoding="utf-8")
-        except Exception:
-            pass
-
-    def _toggle_auto_start(self) -> None:
-        self._write_auto_start(not self._auto_start_enabled())
-        self._refresh_auto_start_button()
-
-    def _refresh_auto_start_button(self) -> None:
-        on = self._auto_start_enabled()
-        self.auto_start_button.configure(
-            text="AUTOSTART ON" if on else "AUTOSTART OFF",
-            bg=CHIP if on else DANGER,
-            fg=GREEN if on else AMBER,
-        )
-
-    def _toggle_tray(self) -> None:
-        if not self._tray.available:
-            self.root.bell()
-            self._toaster.notify("Tray unavailable", "pystray is not installed.", RED)
-            return
-        if self.root.state() == "withdrawn":
-            self._raise_main_window()
-            return
-        if not self._tray.start():
-            self._raise_main_window()
-            return
-        self.tray_button.configure(text="TRAY ON", bg=OK, fg=GREEN)
-        self._toaster.notify(
-            "JARVIS in tray", "HUD is running in the tray.\nUse the JARVIS icon or Ctrl+Shift+J to bring it back.", GREEN
-        )
-        self.root.withdraw()
-
-    def _tray_show(self) -> None:
-        try:
-            self.root.after(0, self._raise_main_window)
-        except Exception:
-            pass
-
-    def _tray_mini(self) -> None:
-        try:
-            self.root.after(0, self.mini.show)
-        except Exception:
-            pass
-
-    def _tray_exit(self) -> None:
-        try:
-            self.root.after(0, self._on_close)
-        except Exception:
-            pass
-
-    def _open_help(self) -> None:
-        win = tk.Toplevel(self.root)
-        win.title("JARVIS \u2014 What can I do?")
-        win.configure(bg=BG)
-        win.geometry("740x580")
-        win.transient(self.root)
-        text = tk.Text(win, bg=TERM, fg=TEXT, relief=tk.FLAT, bd=0, wrap="word", font=("JetBrains Mono", 9), padx=16, pady=10)
-        scroll = tk.Scrollbar(win, command=text.yview)
-        text.configure(yscrollcommand=scroll.set)
-        scroll.pack(side="right", fill="y")
-        text.pack(fill="both", expand=True)
-        text.tag_configure("h", foreground=CYAN, font=("JetBrains Mono", 11, "bold"))
-        text.tag_configure("d", foreground=TEXT)
-        text.tag_configure("m", foreground=MUTED)
-
-        entries: list[tuple[str, str]] = [
-            ("h", "VOICE + DOCK\n"),
-            ("d", "  youtube pause          toggle play/pause\n"),
-            ("d", "  youtube next           next video\n"),
-            ("d", "  list apps              show apps in the launcher\n"),
-            ("d", "  open whatsapp chat <name>\n"),
-            ("d", "  open <app or site>     e.g. 'open chrome', 'open google'\n"),
-            ("d", "  search web <query>\n"),
-            ("d", "  take screenshot\n"),
-            ("d", "  play <song>            music via yt-dlp\n"),
-            ("h", "\nJOB AGENT\n"),
-            ("d", "  apply for <role> at <company>\n"),
-            ("d", "  job status / job cancel\n"),
-            ("h", f"\nTOOLS ({len(self.runtime.registry.catalog())})\n"),
-        ]
-        for tool in self.runtime.registry.catalog():
-            entries.append(("d", f"  {tool.get('name', '')}\n"))
-            entries.append(("m", f"      {tool.get('description', '')}  [risk: {tool.get('risk', 'low')}]\n"))
-        for tag, chunk in entries:
-            text.insert(tk.END, chunk, (tag,))
-        text.configure(state=tk.DISABLED)
-
-    def _clear_terminal(self) -> None:
-        self.terminal.configure(state=tk.NORMAL)
-        self.terminal.delete("1.0", tk.END)
-        self.terminal.configure(state=tk.DISABLED)
-
-    def _clear_feed(self) -> None:
-        self.feed_text.configure(state=tk.NORMAL)
-        self.feed_text.delete("1.0", tk.END)
-        self.feed_text.configure(state=tk.DISABLED)
-
-    def _open_scheduler(self) -> None:
-        sched_win = getattr(self, "_sched_win", None)
-        if sched_win is not None and sched_win.winfo_exists():
-            sched_win.lift()
-            return
-        win = tk.Toplevel(self.root)
-        win.title("JARVIS \u2014 Scheduler")
-        win.configure(bg=BG)
-        win.geometry("760x520")
-        win.transient(self.root)
-
-        add_panel = self._make_panel(win, PANEL)
-        add_panel.pack(fill="x", padx=14, pady=(14, 8))
-        add_panel.columnconfigure(1, weight=1)
-        add_panel.columnconfigure(3, weight=1)
-        tk.Label(add_panel, text="NEW SCHEDULE", bg=PANEL, fg=MUTED, font=("JetBrains Mono", 9, "bold")).grid(
-            row=0, column=0, sticky="w", padx=10, pady=(8, 2), columnspan=4
-        )
-        tk.Label(add_panel, text="command", bg=PANEL, fg=TEXT, font=("JetBrains Mono", 8)).grid(row=1, column=0, sticky="w", padx=10, pady=4)
-        cmd_entry = tk.Entry(add_panel, bg=ENTRY, fg=TEXT, insertbackground=CYAN, relief=tk.FLAT, bd=0, font=("JetBrains Mono", 9))
-        cmd_entry.grid(row=1, column=1, sticky="ew", padx=6, ipady=5)
-        tk.Label(add_panel, text="recurrence", bg=PANEL, fg=TEXT, font=("JetBrains Mono", 8)).grid(row=1, column=2, sticky="w", padx=6, pady=4)
-        rec_entry = tk.Entry(add_panel, bg=ENTRY, fg=TEXT, insertbackground=CYAN, relief=tk.FLAT, bd=0, font=("JetBrains Mono", 9))
-        rec_entry.grid(row=1, column=3, sticky="ew", padx=6, ipady=5)
-        tk.Button(
-            add_panel, text="SCHEDULE", command=lambda: self._add_schedule(cmd_entry, rec_entry),
-            bg=CYAN, fg="#021018", relief=tk.FLAT, bd=0, padx=12, pady=5,
-            font=("JetBrains Mono", 9, "bold"), cursor="hand2",
-        ).grid(row=1, column=4, padx=(8, 10), pady=4)
-        tk.Label(add_panel, text="e.g. daily at 09:00  ·  hourly  ·  every 30 minutes  ·  weekly on monday at 10:00",
-                 bg=PANEL, fg=MUTED, font=("JetBrains Mono", 8)).grid(row=2, column=0, columnspan=5, sticky="w", padx=10, pady=(0, 8))
-        rec_entry.bind("<Return>", lambda _: self._add_schedule(cmd_entry, rec_entry))
-
-        list_panel = self._make_panel(win, PANEL_2)
-        list_panel.pack(fill="both", expand=True, padx=14, pady=(0, 8))
-        list_panel.rowconfigure(1, weight=1)
-        list_panel.columnconfigure(0, weight=1)
-        head = tk.Frame(list_panel, bg=PANEL_2)
-        head.grid(row=0, column=0, sticky="ew", padx=8, pady=(6, 2))
-        head.columnconfigure(0, weight=1)
-        tk.Label(head, text="SCHEDULED JOBS", bg=PANEL_2, fg=MUTED, font=("JetBrains Mono", 9, "bold")).grid(row=0, column=0, sticky="w")
-        tk.Button(
-            head, text="REFRESH", command=lambda: self._scheduler_load(), bg=BTN2, fg=TEXT,
-            relief=tk.FLAT, bd=0, padx=8, pady=2, font=("JetBrains Mono", 8, "bold"), cursor="hand2",
-        ).grid(row=0, column=1, sticky="e")
-        self._sched_listbox = tk.Listbox(list_panel, bg=LIST, fg=TEXT, relief=tk.FLAT, bd=0, font=("Consolas", 9), selectbackground=SEL)
-        self._sched_listbox.grid(row=1, column=0, sticky="nsew", padx=(8, 0), pady=(0, 8))
-        sched_sb = tk.Scrollbar(list_panel, command=self._sched_listbox.yview, bg=PANEL, troughcolor=LIST, activebackground=STROKE)
-        sched_sb.grid(row=1, column=1, sticky="ns", padx=(0, 8), pady=(0, 8))
-        self._sched_listbox.configure(yscrollcommand=sched_sb.set)
-
-        actions = tk.Frame(win, bg=BG)
-        actions.pack(fill="x", padx=14, pady=(0, 14))
-        self._sched_status = tk.Label(actions, text="", bg=BG, fg=MUTED, font=("JetBrains Mono", 8))
-        self._sched_status.pack(side="left")
-        tk.Button(
-            actions, text="DELETE", command=self._delete_schedule, bg=DANGER, fg=RED,
-            relief=tk.FLAT, bd=0, padx=10, pady=5, font=("JetBrains Mono", 9, "bold"), cursor="hand2",
-        ).pack(side="right", padx=(8, 0))
-        tk.Button(
-            actions, text="ENABLE / DISABLE", command=self._toggle_schedule, bg=BTN2, fg=TEXT,
-            relief=tk.FLAT, bd=0, padx=10, pady=5, font=("JetBrains Mono", 9, "bold"), cursor="hand2",
-        ).pack(side="right")
-        self._sched_listbox.bind("<Double-Button-1>", lambda _: self._toggle_schedule())
-
-        self._sched_win = win
-        self._sched_jobs: list[dict[str, Any]] = []
-        self._scheduler_load()
-        self._scheduler_poll()
-
-    def _scheduler_load(self) -> None:
-        def worker() -> None:
-            try:
-                jobs = self.runtime.scheduler.list_jobs()
-                self._events.put(("sched_list", jobs))
-            except Exception as exc:
-                self._events.put(("error", str(exc)))
-
-        threading.Thread(target=worker, daemon=True).start()
-
-    def _scheduler_poll(self) -> None:
-        alive = self.root.winfo_exists() and getattr(self, "_sched_win", None) is not None and self._sched_win.winfo_exists()
-        if not alive:
-            return
-        self._scheduler_load()
-        self.root.after(4000, self._scheduler_poll)
-
-    def _handle_sched_list(self, jobs: list[dict[str, Any]]) -> None:
-        if not getattr(self, "_sched_win", None) or not self._sched_win.winfo_exists():
-            return
-        self._sched_jobs = jobs
-        box = self._sched_listbox
-        box.delete(0, tk.END)
-        if not jobs:
-            box.insert(tk.END, "No schedules yet.")
-        for job in jobs:
-            state = "ON " if job.get("enabled") else "OFF"
-            last = job.get("last_status") or "never"
-            stamp = str(job.get("last_result") or "")[:60]
-            box.insert(
-                tk.END,
-                f"[{state}] {job.get('id', '')}  {job.get('command', '')} \u2014 {job.get('recurrence', '')}  |  last: {last}{' · ' + stamp if stamp else ''}",
-            )
-        self._sched_status.configure(text=f"{len(jobs)} job(s) \u00b7 auto-refreshes every 4s")
-
-    def _add_schedule(self, cmd_entry: tk.Entry, rec_entry: tk.Entry) -> None:
-        command = cmd_entry.get().strip()
-        recurrence = rec_entry.get().strip()
-        if not command or not recurrence:
-            self._sched_status.configure(text="Both command and recurrence are required.", fg=AMBER)
-            return
-
-        def worker() -> None:
-            try:
-                self.runtime.scheduler.add(command, recurrence)
-                self._events.put(("sched_added", command))
-            except ValueError as exc:
-                self._events.put(("sched_error", str(exc)))
-            except Exception as exc:
-                self._events.put(("error", str(exc)))
-
-        threading.Thread(target=worker, daemon=True).start()
-
-    def _delete_schedule(self) -> None:
-        sel = self._sched_listbox.curselection()
-        if not sel:
-            return
-        idx = sel[0]
-        if idx >= len(self._sched_jobs):
-            return
-        job_id = self._sched_jobs[idx].get("id")
-
-        def worker() -> None:
-            try:
-                self.runtime.scheduler.remove(job_id)
-                self._events.put(("sched_changed", "deleted"))
-            except Exception as exc:
-                self._events.put(("error", str(exc)))
-
-        threading.Thread(target=worker, daemon=True).start()
-
-    def _toggle_schedule(self) -> None:
-        sel = self._sched_listbox.curselection()
-        if not sel:
-            return
-        idx = sel[0]
-        if idx >= len(self._sched_jobs):
-            return
-        job = self._sched_jobs[idx]
-        job_id = job.get("id")
-        enabled = bool(job.get("enabled"))
-
-        def worker() -> None:
-            try:
-                self.runtime.scheduler.set_enabled(job_id, not enabled)
-                self._events.put(("sched_changed", "toggled"))
-            except Exception as exc:
-                self._events.put(("error", str(exc)))
-
-        threading.Thread(target=worker, daemon=True).start()
-
-    def _open_history(self) -> None:
-        hist_win = getattr(self, "_hist_win", None)
-        if hist_win is not None and hist_win.winfo_exists():
-            hist_win.lift()
-            return
-        win = tk.Toplevel(self.root)
-        win.title("JARVIS \u2014 History & Insights")
-        win.configure(bg=BG)
-        win.geometry("820x560")
-        win.transient(self.root)
-        win.rowconfigure(1, weight=1)
-        win.columnconfigure(0, weight=1)
-
-        head = tk.Frame(win, bg=BG)
-        head.grid(row=0, column=0, sticky="ew", padx=14, pady=(12, 4))
-        head.columnconfigure(0, weight=1)
-        tk.Label(head, text="HISTORY & INSIGHTS", bg=BG, fg=CYAN, font=("JetBrains Mono", 12, "bold")).grid(row=0, column=0, sticky="w")
-        tk.Button(
-            head, text="REFRESH", command=self._history_load, bg=BTN2, fg=TEXT,
-            relief=tk.FLAT, bd=0, padx=8, pady=3, font=("JetBrains Mono", 8, "bold"), cursor="hand2",
-        ).grid(row=0, column=1, sticky="e")
-
-        style = ttk.Style(win)
-        try:
-            style.theme_use("clam")
-        except Exception:
-            pass
-        style.configure("Hist.TNotebook", background=BG, borderwidth=0, tabmargins=(0, 0, 0, 0))
-        style.configure("Hist.TNotebook.Tab", background=PANEL_2, foreground=TEXT, padding=(14, 7), font=("JetBrains Mono", 9, "bold"))
-        style.map("Hist.TNotebook.Tab", background=[("selected", SEL)], foreground=[("selected", TEXT)])
-        style.configure("Hist.TFrame", background=PANEL_2)
-
-        nb = ttk.Notebook(win, style="Hist.TNotebook")
-        nb.grid(row=1, column=0, sticky="nsew", padx=14, pady=(0, 6))
-
-        self._hist_texts: dict[str, tk.Text] = {}
-        for tab_name, _tag in [("commands", "h"), ("tools", "h"), ("metrics", "h")]:
-            frame = ttk.Frame(nb, style="Hist.TFrame")
-            frame.rowconfigure(0, weight=1)
-            frame.columnconfigure(0, weight=1)
-            text = tk.Text(frame, bg=TERM, fg=TEXT, relief=tk.FLAT, bd=0, wrap="word", font=("Consolas", 9), padx=10, pady=8)
-            text.grid(row=0, column=0, sticky="nsew")
-            sb = tk.Scrollbar(frame, command=text.yview, bg=PANEL, troughcolor=TERM, activebackground=STROKE)
-            sb.grid(row=0, column=1, sticky="ns")
-            text.configure(yscrollcommand=sb.set)
-            text.configure(state=tk.DISABLED)
-            for tag_name, color in [("h", CYAN), ("d", TEXT), ("m", MUTED), ("ok", GREEN), ("warn", AMBER), ("err", RED)]:
-                text.tag_configure(tag_name, foreground=color)
-            nb.add(frame, text=tab_name.upper())
-            self._hist_texts[tab_name] = text
-
-        status = tk.Label(win, text="Loading history\u2026", bg=BG, fg=MUTED, font=("JetBrains Mono", 8))
-        status.grid(row=2, column=0, sticky="w", padx=14, pady=(0, 12))
-        self._hist_status = status
-
-        self._hist_win = win
-        self._history_load()
-
-    def _history_load(self) -> None:
-        def worker() -> None:
-            try:
-                data = {
-                    "commands": self.runtime.orchestrator.get_history(limit=60),
-                    "tools": self.runtime.orchestrator.get_tool_history(limit=80),
-                    "metrics": self.runtime.orchestrator.get_metrics(limit=500),
-                }
-                self._events.put(("history_data", data))
-            except Exception as exc:
-                self._events.put(("error", str(exc)))
-
-        threading.Thread(target=worker, daemon=True).start()
-
-    def _fill_history_tab(self, key: str, lines: list[tuple[str, str]]) -> None:
-        text = self._hist_texts.get(key)
-        if text is None or not text.winfo_exists():
-            return
-        text.configure(state=tk.NORMAL)
-        text.delete("1.0", tk.END)
-        for tag, chunk in lines:
-            text.insert(tk.END, chunk, (tag,))
-        text.configure(state=tk.DISABLED)
-
-    def _handle_history_data(self, data: dict[str, Any]) -> None:
-        if not getattr(self, "_hist_win", None) or not self._hist_win.winfo_exists():
-            return
-
-        cmd_lines: list[tuple[str, str]] = []
-        for row in (data.get("commands") or [])[:60]:
-            cmd_lines.append(("d", f"  [{row.get('created_at', '')[:19]}] {row.get('source', '?')}: {row.get('command', '')}\n"))
-            snippet = str(row.get("response_text") or "")[:160].replace("\n", " ")
-            if snippet:
-                cmd_lines.append(("m", f"      {snippet}\n"))
-        self._fill_history_tab("commands", cmd_lines or [("m", "No command history yet.")])
-
-        tool_lines: list[tuple[str, str]] = []
-        for row in (data.get("tools") or [])[:80]:
-            status = str(row.get("status", "?"))
-            risk = str(row.get("risk", "low"))
-            tool_lines.append(("d", f"  [{row.get('created_at', '')[:19]}] {row.get('tool', '?')} [{status}]\n"))
-            tool_lines.append(("m", f"      {row.get('command', '')}  ·  risk: {risk}{'  ·  ' + str(row.get('error') or '') if row.get('error') else ''}\n"))
-        self._fill_history_tab("tools", tool_lines or [("m", "No tool activity yet.")])
-
-        metrics = data.get("metrics") or {}
-        summary = metrics.get("summary") or {}
-        m_lines: list[tuple[str, str]] = [
-            ("h", "METRICS SUMMARY\n"),
-            ("d", f"  window: {summary.get('window', 0)} executions\n"),
-            ("d", f"  total commands: {summary.get('total_commands', 0)}\n"),
-            ("d", f"  success rate: {float(summary.get('success_rate', 0)) * 100:.1f}%\n"),
-            ("d", f"  failure rate: {float(summary.get('failure_rate', 0)) * 100:.1f}%\n"),
-            ("d", f"  avg duration: {int(summary.get('avg_duration_ms', 0))} ms\n"),
-        ]
-        status_counts = summary.get("status_counts") or {}
-        if status_counts:
-            m_lines.append(("h", "\nBY STATUS\n"))
-            for status, count in status_counts.items():
-                m_lines.append(("d", f"  {status}: {count}\n"))
-        top_failed = summary.get("top_failed_tools") or []
-        if top_failed:
-            m_lines.append(("h", "\nTOP FAILED TOOLS\n"))
-            for item in top_failed:
-                name = item.get("tool") if isinstance(item, dict) else item
-                cnt = item.get("failures") if isinstance(item, dict) else ""
-                m_lines.append(("d", f"  {name}: {cnt}\n"))
-        recent = (metrics.get("recent") or [])[:30]
-        if recent:
-            m_lines.append(("h", "\nRECENT EXECUTIONS\n"))
-            for row in recent:
-                m_lines.append(("d", f"  [{row.get('created_at', '')[:19]}] {row.get('command', '')} \u2192 {row.get('status', '?')} ({int(row.get('duration_ms', 0))}ms)\n"))
-        self._fill_history_tab("metrics", m_lines)
-        self._hist_status.configure(text=f"Loaded at {datetime.now().strftime('%H:%M:%S')}")
-
-    # ---- tasks window ---------------------------------------------------------
-
-    def _open_tasks(self) -> None:
-        tasks_win = getattr(self, "_tasks_win", None)
-        if tasks_win is not None and tasks_win.winfo_exists():
-            tasks_win.lift()
-            return
-        win = tk.Toplevel(self.root)
-        win.title("JARVIS \u2014 Tasks & Progress")
-        win.configure(bg=BG)
-        win.geometry("840x580")
-        win.transient(self.root)
-        win.rowconfigure(1, weight=1)
-        win.columnconfigure(0, weight=1)
-
-        head = tk.Frame(win, bg=BG)
-        head.grid(row=0, column=0, sticky="ew", padx=14, pady=(12, 4))
-        head.columnconfigure(0, weight=1)
-        tk.Label(head, text="TASKS & PROGRESS", bg=BG, fg=CYAN, font=("JetBrains Mono", 12, "bold")).grid(row=0, column=0, sticky="w")
-        tk.Button(
-            head, text="REFRESH", command=self._tasks_load, bg=BTN2, fg=TEXT,
-            relief=tk.FLAT, bd=0, padx=8, pady=3, font=("JetBrains Mono", 8, "bold"), cursor="hand2",
-        ).grid(row=0, column=1, sticky="e")
-
-        list_panel = self._make_panel(win, PANEL_2)
-        list_panel.grid(row=1, column=0, sticky="nsew", padx=14, pady=(0, 8))
-        list_panel.rowconfigure(1, weight=1)
-        list_panel.columnconfigure(0, weight=1)
-        tk.Label(list_panel, text="TRACKED TASKS", bg=PANEL_2, fg=MUTED, font=("JetBrains Mono", 9, "bold")).grid(
-            row=0, column=0, sticky="w", padx=10, pady=(6, 2), columnspan=2
-        )
-        self._tasks_listbox = tk.Listbox(list_panel, bg=LIST, fg=TEXT, relief=tk.FLAT, bd=0, font=("Consolas", 9), selectbackground=SEL, height=8)
-        self._tasks_listbox.grid(row=1, column=0, sticky="nsew", padx=(8, 0), pady=(0, 6))
-        tasks_sb = tk.Scrollbar(list_panel, command=self._tasks_listbox.yview, bg=PANEL, troughcolor=LIST, activebackground=STROKE)
-        tasks_sb.grid(row=1, column=1, sticky="ns", padx=(0, 8), pady=(0, 6))
-        self._tasks_listbox.configure(yscrollcommand=tasks_sb.set)
-        self._tasks_listbox.bind("<<ListboxSelect>>", self._show_task_detail)
-
-        detail = self._make_panel(win, PANEL_2)
-        detail.grid(row=2, column=0, sticky="nsew", padx=14, pady=(0, 8))
-        detail.rowconfigure(1, weight=1)
-        detail.columnconfigure(0, weight=1)
-        tk.Label(detail, text="TASK DETAIL", bg=PANEL_2, fg=MUTED, font=("JetBrains Mono", 9, "bold")).grid(
-            row=0, column=0, sticky="w", padx=10, pady=(6, 2), columnspan=2
-        )
-        self._task_detail_text = tk.Text(detail, bg=TERM, fg=TEXT, relief=tk.FLAT, bd=0, wrap="word", font=("Consolas", 9), padx=8, pady=6, height=10)
-        self._task_detail_text.grid(row=1, column=0, sticky="nsew", padx=(8, 0), pady=(0, 8))
-        detail_sb = tk.Scrollbar(detail, command=self._task_detail_text.yview, bg=PANEL, troughcolor=TERM, activebackground=STROKE)
-        detail_sb.grid(row=1, column=1, sticky="ns", padx=(0, 8), pady=(0, 8))
-        self._task_detail_text.configure(yscrollcommand=detail_sb.set)
-        self._task_detail_text.configure(state=tk.DISABLED)
-        for tag_name, color in [("h", CYAN), ("d", TEXT), ("m", MUTED), ("ok", GREEN), ("warn", AMBER), ("err", RED)]:
-            self._task_detail_text.tag_configure(tag_name, foreground=color)
-
-        status = tk.Label(win, text="", bg=BG, fg=MUTED, font=("JetBrains Mono", 8))
-        status.grid(row=3, column=0, sticky="w", padx=14, pady=(0, 12))
-        self._tasks_status = status
-
-        self._tasks_win = win
-        self._tasks_items: list[dict[str, Any]] = []
-        self._tasks_load()
-        self._tasks_poll()
-
-    def _tasks_poll(self) -> None:
-        alive = self.root.winfo_exists() and getattr(self, "_tasks_win", None) is not None and self._tasks_win.winfo_exists()
-        if not alive:
-            return
-        self._tasks_load()
-        self.root.after(4000, self._tasks_poll)
-
-    def _tasks_load(self) -> None:
-        def worker() -> None:
-            try:
-                payload = self.runtime.registry.execute("task_list", {"limit": 50})
-                self._events.put(("tasks_list", payload))
-            except Exception as exc:
-                self._events.put(("error", str(exc)))
-
-        threading.Thread(target=worker, daemon=True).start()
-
-    def _handle_tasks_list(self, payload: dict[str, Any]) -> None:
-        if not getattr(self, "_tasks_win", None) or not self._tasks_win.winfo_exists():
-            return
-        items = payload.get("items") or []
-        self._tasks_items = items
-        box = self._tasks_listbox
-        box.delete(0, tk.END)
-        if not items:
-            box.insert(tk.END, "No tasks yet \u2014 ask JARVIS to 'plan' something, or create one via the planner.")
-        for item in items:
-            progress = item.get("progress") or {}
-            status = str(item.get("status", "?")).upper()
-            box.insert(
-                tk.END,
-                f"[{status}] {item.get('id', '')}  {str(item.get('command', ''))[:48]}  |  {progress.get('completed', 0)}/{progress.get('total', 0)} steps ({progress.get('percent', 0)}%)",
-            )
-        self._tasks_status.configure(text=f"{len(items)} task(s) \u00b7 auto-refreshes every 4s")
-
-    def _show_task_detail(self, _event: tk.Event | None = None) -> None:
-        sel = self._tasks_listbox.curselection()
-        if not sel or sel[0] >= len(self._tasks_items):
-            return
-        task_id = str(self._tasks_items[sel[0]].get("id", ""))
-
-        def worker() -> None:
-            try:
-                payload = self.runtime.registry.execute("task_status", {"task_id": task_id})
-                self._events.put(("task_detail", payload))
-            except Exception as exc:
-                self._events.put(("error", str(exc)))
-
-        threading.Thread(target=worker, daemon=True).start()
-
-    def _handle_task_detail(self, payload: dict[str, Any]) -> None:
-        text = getattr(self, "_task_detail_text", None)
-        if text is None or not text.winfo_exists():
-            return
-        lines: list[tuple[str, str]] = [
-            ("h", f"TASK {payload.get('task_id', '?')}\n"),
-            ("d", f"  command: {payload.get('command', '')}\n"),
-            ("d", f"  status: {payload.get('status', '?')}\n"),
-        ]
-        progress = payload.get("progress") or {}
-        lines.append(("d", f"  progress: {progress.get('completed', 0)}/{progress.get('total', 0)} steps ({progress.get('percent', 0)}%), current: {progress.get('current_step') or 'none'}\n"))
-        if payload.get("error"):
-            lines.append(("err", f"  error: {payload.get('error')}\n"))
-        lines.append(("h", "\nSTEPS\n"))
-        for step in payload.get("steps") or []:
-            line = f"  [{step.get('status', '?')}] {step.get('tool', '?')}"
-            if step.get("error"):
-                line += f" \u2014 {step.get('error')}"
-            if step.get("attempts", 1) > 1:
-                line += f" (attempts: {step.get('attempts')})"
-            lines.append(("d", line + "\n"))
-        if not (payload.get("steps") or []):
-            lines.append(("m", "  no steps recorded\n"))
-        text.configure(state=tk.NORMAL)
-        text.delete("1.0", tk.END)
-        for tag, chunk in lines:
-            text.insert(tk.END, chunk, (tag,))
-        text.configure(state=tk.DISABLED)
-
-    # ---- memory & knowledge window --------------------------------------------
-
-    def _open_memory(self) -> None:
-        mem_win = getattr(self, "_mem_win", None)
-        if mem_win is not None and mem_win.winfo_exists():
-            mem_win.lift()
-            return
-        win = tk.Toplevel(self.root)
-        win.title("JARVIS \u2014 Memory & Knowledge")
-        win.configure(bg=BG)
-        win.geometry("840x580")
-        win.transient(self.root)
-        win.rowconfigure(2, weight=1)
-        win.columnconfigure(0, weight=1)
-
-        head = tk.Frame(win, bg=BG)
-        head.grid(row=0, column=0, sticky="ew", padx=14, pady=(12, 4))
-        head.columnconfigure(1, weight=1)
-        tk.Label(head, text="MEMORY & KNOWLEDGE", bg=BG, fg=CYAN, font=("JetBrains Mono", 12, "bold")).grid(row=0, column=0, sticky="w")
-        search_wrap = tk.Frame(head, bg=SHELL, padx=1, pady=1)
-        search_wrap.grid(row=0, column=1, sticky="ew", padx=10)
-        self._mem_query = tk.Entry(search_wrap, bg=CANVAS, fg=TEXT, insertbackground=CYAN, relief=tk.FLAT, bd=0, font=("JetBrains Mono", 9))
-        self._mem_query.pack(fill="x", ipady=4)
-        self._mem_query.bind("<Return>", lambda _: self._memory_recall())
-        tk.Button(
-            head, text="SEARCH", command=self._memory_recall, bg=INDIGO, fg="#05101b", relief=tk.FLAT, bd=0,
-            padx=8, pady=3, font=("JetBrains Mono", 8, "bold"), cursor="hand2",
-        ).grid(row=0, column=2, sticky="e")
-        tk.Button(
-            head, text="REFRESH", command=self._memory_load, bg=BTN2, fg=TEXT,
-            relief=tk.FLAT, bd=0, padx=8, pady=3, font=("JetBrains Mono", 8, "bold"), cursor="hand2",
-        ).grid(row=0, column=3, sticky="e", padx=(8, 0))
-
-        style = ttk.Style(win)
-        try:
-            style.theme_use("clam")
-        except Exception:
-            pass
-        style.configure("Mem.TNotebook", background=BG, borderwidth=0, tabmargins=(0, 0, 0, 0))
-        style.configure("Mem.TNotebook.Tab", background=PANEL_2, foreground=TEXT, padding=(14, 7), font=("JetBrains Mono", 9, "bold"))
-        style.map("Mem.TNotebook.Tab", background=[("selected", SEL)], foreground=[("selected", TEXT)])
-        style.configure("Mem.TFrame", background=PANEL_2)
-
-        nb = ttk.Notebook(win, style="Mem.TNotebook")
-        nb.grid(row=2, column=0, sticky="nsew", padx=14, pady=(0, 6))
-
-        self._mem_texts: dict[str, tk.Text] = {}
-        for tab_name in ("episodes", "knowledge", "search"):
-            frame = ttk.Frame(nb, style="Mem.TFrame")
-            frame.rowconfigure(0, weight=1)
-            frame.columnconfigure(0, weight=1)
-            text = tk.Text(frame, bg=TERM, fg=TEXT, relief=tk.FLAT, bd=0, wrap="word", font=("Consolas", 9), padx=10, pady=8)
-            text.grid(row=0, column=0, sticky="nsew")
-            sb = tk.Scrollbar(frame, command=text.yview, bg=PANEL, troughcolor=TERM, activebackground=STROKE)
-            sb.grid(row=0, column=1, sticky="ns")
-            text.configure(yscrollcommand=sb.set)
-            text.configure(state=tk.DISABLED)
-            for tag_name, color in [("h", CYAN), ("d", TEXT), ("m", MUTED), ("ok", GREEN), ("warn", AMBER), ("err", RED)]:
-                text.tag_configure(tag_name, foreground=color)
-            nb.add(frame, text=tab_name.upper())
-            self._mem_texts[tab_name] = text
-
-        status = tk.Label(win, text="", bg=BG, fg=MUTED, font=("JetBrains Mono", 8))
-        status.grid(row=3, column=0, sticky="w", padx=14, pady=(0, 12))
-        self._mem_status = status
-
-        self._mem_win = win
-        self._memory_load()
-
-    def _memory_load(self) -> None:
-        def worker() -> None:
-            try:
-                episodes = self.runtime.registry.execute("memory_list", {"limit": 25})
-                knowledge = self.runtime.registry.execute("knowledge_stats", {})
-                self._events.put(("memory_data", {"episodes": episodes, "knowledge": knowledge}))
-            except Exception as exc:
-                self._events.put(("error", str(exc)))
-
-        threading.Thread(target=worker, daemon=True).start()
-
-    def _handle_memory_data(self, data: dict[str, Any]) -> None:
-        if not getattr(self, "_mem_win", None) or not self._mem_win.winfo_exists():
-            return
-        episodes = data.get("episodes") or {}
-        ep_items = episodes.get("episodes") or []
-        ep_lines: list[tuple[str, str]] = [("h", f"EPISODIC MEMORY ({episodes.get('count', len(ep_items))})\n")]
-        if not ep_items:
-            ep_lines.append(("m", "  no episodic memories yet\n"))
-        for ep in ep_items[:25]:
-            ep_lines.append(("d", f"  [{ep.get('id')}] {str(ep.get('command', ''))[:70]} \u2014 {ep.get('status', '?')}\n"))
-            if ep.get("summary"):
-                ep_lines.append(("m", f"      {str(ep.get('summary', ''))[:140]}\n"))
-        self._fill_memory_tab("episodes", ep_lines)
-
-        knowledge = data.get("knowledge") or {}
-        stats = knowledge.get("stats") or {}
-        kn_lines: list[tuple[str, str]] = [("h", "KNOWLEDGE BASE\n")]
-        if stats:
-            for key, value in stats.items():
-                kn_lines.append(("d", f"  {key}: {value}\n"))
-        else:
-            kn_lines.append(("m", "  knowledge base empty \u2014 use 'remember' or 'index' commands\n"))
-        self._fill_memory_tab("knowledge", kn_lines)
-
-    def _memory_recall(self) -> None:
-        query = (self._mem_query.get() or "").strip()
-        if not query:
-            return
-
-        def worker() -> None:
-            try:
-                payload = self.runtime.registry.execute("recall", {"query": query, "top_k": 8})
-                self._events.put(("memory_search", payload))
-            except Exception as exc:
-                self._events.put(("error", str(exc)))
-
-        threading.Thread(target=worker, daemon=True).start()
-
-    def _handle_memory_search(self, payload: dict[str, Any]) -> None:
-        if not getattr(self, "_mem_win", None) or not self._mem_win.winfo_exists():
-            return
-        results = payload.get("results") or []
-        lines: list[tuple[str, str]] = [("h", f"SEARCH: {payload.get('query', '')}\n")]
-        if not results:
-            lines.append(("m", "  no matches\n"))
-        for hit in results[:20]:
-            title = str(hit.get("title") or hit.get("doc_type") or "?")
-            score = hit.get("score")
-            content = str(hit.get("content") or "")[:160]
-            score_str = f"  ({score:.2f})" if isinstance(score, (int, float)) else ""
-            lines.append(("d", f"  {title}{score_str}\n"))
-            if content:
-                lines.append(("m", f"      {content}\n"))
-        self._fill_memory_tab("search", lines)
-
-    def _fill_memory_tab(self, key: str, lines: list[tuple[str, str]]) -> None:
-        text = self._mem_texts.get(key)
-        if text is None or not text.winfo_exists():
-            return
-        text.configure(state=tk.NORMAL)
-        text.delete("1.0", tk.END)
-        for tag, chunk in lines:
-            text.insert(tk.END, chunk, (tag,))
-        text.configure(state=tk.DISABLED)
-
-    def _toggle_voice(self) -> None:
-        self._set_busy(True)
-
-        def worker() -> None:
-            try:
-                if self.runtime.voice.is_running():
-                    changed = self.runtime.voice.stop()
-                    self._events.put(("voice", {"running": False, "changed": changed}))
-                else:
-                    changed = self.runtime.voice.start()
-                    self._events.put(("voice", {"running": True, "changed": changed}))
-            except Exception as exc:
-                self._events.put(("error", str(exc)))
-
-        threading.Thread(target=worker, daemon=True).start()
-
-    def _refresh_voice_button(self) -> None:
-        self._wave_active = self.runtime.voice.is_running()
-        if self._wave_active:
-            self.voice_switch_button.configure(text="VOICE ON", bg=OK, fg=GREEN)
-            self.online_label.configure(text="STATUS: STREAMING")
-        else:
-            self.voice_switch_button.configure(text="VOICE OFF", bg=BTN2, fg=TEXT)
-            self.online_label.configure(text="STATUS: ONLINE")
-
-    def _animate_wave(self) -> None:
-        self.wave_canvas.delete("all")
-        w = max(1, self.wave_canvas.winfo_width())
-        h = max(1, self.wave_canvas.winfo_height())
-        c = h // 2
-        try:
-            status = self.runtime.voice.status()
-        except Exception:
-            status = {}
-        phase, color, amp, speed = voice_phase(status)
-        self._wave_phase += speed
-        pts: list[float] = []
-        for x in range(0, w + 1, 6):
-            pts.extend([x, c + math.sin((x * 0.05) + self._wave_phase) * amp])
-        if len(pts) >= 4:
-            self.wave_canvas.create_line(pts, fill=color, width=2, smooth=True)
-        self.wave_canvas.create_text(10, 10, anchor="nw", text=f"VOICE {phase}", fill=color, font=("JetBrains Mono", 9, "bold"))
-        self.root.after(50, self._animate_wave)
+            self.job_progress.setValue(0)
+        recent = payload.get("recent") or []
+        self.recent_list.clear()
+        for item in recent[:12]:
+            title = str(item.get("title") or "?")
+            company = str(item.get("company") or item.get("site") or "?")
+            ts = str(item.get("created_at") or "")[:16].replace("T", " ")
+            self.recent_list.addItem(f"{ts}  {title} @ {company}")
+        if status == "paused" and self._job_prev_status != "paused":
+            self._toaster.notify("Job paused", reason or "Task paused, waiting on you.", AMBER, on_click=self._raise_main_window)
+        self._job_prev_status = status
+
+    # ------------------------------------------------------------ approvals
 
     def _refresh_approvals(self) -> None:
         def worker() -> None:
@@ -1914,94 +1192,52 @@ class JarvisHudApp:
 
         threading.Thread(target=worker, daemon=True).start()
 
-    def _diagnose_system(self) -> None:
-        """Run diagnose_system tool off the UI thread and report to the terminal."""
-        self._append_terminal("SYS", "Running system diagnosis\u2026")
-
-        def worker() -> None:
-            try:
-                payload = self.runtime.registry.execute("diagnose_system", {})
-                self._events.put(("diagnosis", payload))
-            except Exception as exc:
-                self._events.put(("diagnosis_error", str(exc)))
-
-        threading.Thread(target=worker, daemon=True).start()
-
-    def _handle_diagnosis(self, payload: dict[str, Any]) -> None:
-        status = payload.get("status", "info")
-        if status == "completed":
-            diagnosis = payload.get("diagnosis", {})
-            explanation = payload.get("explanation", "")
-            raw_metrics = payload.get("raw_metrics", {})
-            if diagnosis.get("root_cause"):
-                self._append_terminal("SYS", f"Diagnosis: issue detected \u2014 {diagnosis['root_cause']}")
-            else:
-                self._append_terminal("SYS", f"Diagnosis: no issues detected \u2014 {explanation}")
-            if raw_metrics:
-                cpu = raw_metrics.get("cpu_percent", "N/A")
-                mem = raw_metrics.get("memory_percent", "N/A")
-                self._append_terminal("SYS", f"  CPU: {cpu}% \u2022 RAM: {mem}%")
-        else:
-            self._append_terminal("WARN", f"Diagnosis not available: {payload.get('explanation', 'unknown')}")
-
-    def _handle_diagnosis_error(self, message: str) -> None:
-        self._append_terminal("ERR", f"Diagnosis failed: {message}")
-
     def _render_approval_cards(self, items: list[dict[str, Any]]) -> None:
-        inner = getattr(self, "approval_inner", None)
-        if inner is None:
-            return
-        for widget in inner.winfo_children():
-            widget.destroy()
+        while self.approval_lay.count():
+            item = self.approval_lay.takeAt(0)
+            w = item.widget()
+            if w is not None:
+                w.deleteLater()
         self._approval_cards.clear()
         self._pending_ids = [str(item.get("id") or item.get("approval_id") or "") for item in items]
         for item in items:
-            card = tk.Frame(inner, bg=INNER, highlightbackground=STROKE, highlightthickness=1, bd=0)
-            card.pack(fill="x", padx=6, pady=3)
+            card = QFrame()
+            card.setObjectName("Card")
+            card.setStyleSheet(f"background: {_rgba(INNER, 200)}; border: 1px solid {_rgba(STROKE, 180)}; border-radius: 10px;")
+            lay = QVBoxLayout(card)
+            lay.setContentsMargins(10, 8, 10, 8)
+            lay.setSpacing(4)
             prompt = str(item.get("prompt") or item.get("command") or "")
-            tk.Label(
-                card, text=prompt[:90] or "(no prompt)", bg=INNER, fg=TEXT, font=("JetBrains Mono", 8, "bold"),
-                anchor="w", justify="left", wraplength=240,
-            ).pack(fill="x", padx=6, pady=(4, 0))
+            p = QLabel(prompt[:120] or "(no prompt)")
+            p.setWordWrap(True)
+            p.setStyleSheet(f"color: {TEXT}; font-size: 11px; font-weight: 700;")
+            lay.addWidget(p)
             detail = str(item.get("reason") or item.get("summary") or item.get("description") or "")
             if detail:
-                tk.Label(
-                    card, text=detail[:140], bg=INNER, fg=MUTED, font=("JetBrains Mono", 8),
-                    anchor="w", justify="left", wraplength=240,
-                ).pack(fill="x", padx=6)
-            actions = tk.Frame(card, bg=INNER)
-            actions.pack(fill="x", padx=6, pady=4)
+                d = QLabel(detail[:160])
+                d.setWordWrap(True)
+                d.setStyleSheet(f"color: {MUTED}; font-size: 10px;")
+                lay.addWidget(d)
+            act = QHBoxLayout()
             approval_id = str(item.get("id") or item.get("approval_id") or "")
-
-            def _make_approve(aid: str) -> Callable[[], None]:
-                return lambda: self._approve_id(aid)
-
-            def _make_reject(aid: str) -> Callable[[], None]:
-                return lambda: self._reject_id(aid)
-
-            tk.Button(
-                actions, text="APPROVE", command=_make_approve(approval_id), bg=OK, fg=GREEN,
-                relief=tk.FLAT, bd=0, padx=8, pady=2, font=("JetBrains Mono", 8, "bold"), cursor="hand2",
-            ).pack(side="left", padx=(0, 6))
-            tk.Button(
-                actions, text="REJECT", command=_make_reject(approval_id), bg=DANGER, fg=RED,
-                relief=tk.FLAT, bd=0, padx=8, pady=2, font=("JetBrains Mono", 8, "bold"), cursor="hand2",
-            ).pack(side="left")
+            approve = self._chip("APPROVE", lambda aid=approval_id: self._approve_id(aid))
+            approve.setStyleSheet(f"color: {GREEN}; background: {_rgba(OK, 220)};")
+            reject = self._chip("REJECT", lambda aid=approval_id: self._reject_id(aid))
+            reject.setStyleSheet(f"color: {RED}; background: {_rgba(DANGER, 220)};")
+            act.addWidget(approve)
+            act.addWidget(reject)
+            act.addStretch(1)
+            lay.addLayout(act)
+            self.approval_lay.addWidget(card)
             self._approval_cards[approval_id] = card
-        if self._approval_badge is not None:
-            count = len(items)
-            self._approval_badge.configure(
-                text=str(count) if count else "0", bg=AMBER if count else BTN2, fg="#021018" if count else TEXT,
-            )
-        try:
-            self.approval_canvas.configure(scrollregion=self.approval_canvas.bbox("all"))
-        except Exception:
-            pass
+        self.approval_lay.addStretch(1)
+        count = len(items)
+        self._approval_badge.setText(str(count) if count else "0")
+        self._approval_badge.setStyleSheet(
+            f"color: {'#021018' if count else TEXT}; background: {_rgba(AMBER if count else BTN2, 220)}; padding: 2px 8px; border-radius: 8px; font-weight: 700;"
+        )
         if len(items) > self._last_pending_count and items:
-            self.root.bell()
-            self._toaster.notify(
-                "Approval pending", f"{len(items)} action(s) waiting for you.", AMBER, on_click=self._raise_main_window
-            )
+            self._toaster.notify("Approval pending", f"{len(items)} action(s) waiting for you.", AMBER, on_click=self._raise_main_window)
         self._last_pending_count = len(items)
 
     def _approve_id(self, approval_id: str) -> None:
@@ -2028,45 +1264,186 @@ class JarvisHudApp:
 
         threading.Thread(target=worker, daemon=True).start()
 
+    # ------------------------------------------------------------ diagnose
+
+    def _diagnose_system(self) -> None:
+        self._append_terminal("SYS", "Running system diagnosis…")
+
+        def worker() -> None:
+            try:
+                payload = self.runtime.registry.execute("diagnose_system", {})
+                self._events.put(("diagnosis", payload))
+            except Exception as exc:
+                self._events.put(("diagnosis_error", str(exc)))
+
+        threading.Thread(target=worker, daemon=True).start()
+
+    def _handle_diagnosis(self, payload: dict[str, Any]) -> None:
+        status = payload.get("status", "info")
+        if status == "completed":
+            diagnosis = payload.get("diagnosis", {})
+            explanation = payload.get("explanation", "")
+            raw_metrics = payload.get("raw_metrics", {})
+            if diagnosis.get("root_cause"):
+                self._append_terminal("SYS", f"Diagnosis: issue detected — {diagnosis['root_cause']}")
+            else:
+                self._append_terminal("SYS", f"Diagnosis: no issues detected — {explanation}")
+            if raw_metrics:
+                cpu = raw_metrics.get("cpu_percent", "N/A")
+                mem = raw_metrics.get("memory_percent", "N/A")
+                self._append_terminal("SYS", f"  CPU: {cpu}% • RAM: {mem}%")
+        else:
+            self._append_terminal("WARN", f"Diagnosis not available: {payload.get('explanation', 'unknown')}")
+
+    def _handle_diagnosis_error(self, message: str) -> None:
+        self._append_terminal("ERR", f"Diagnosis failed: {message}")
+
+    # ------------------------------------------------------------ hub / events
+
+    def _on_hub_event(self, topic: str, payload: dict[str, Any]) -> None:
+        if topic in {"command_start", "command_done", "agent_step", "approval", "scheduler_run"}:
+            self._events.put(("hub_event", (topic, payload)))
+
     def _handle_hub_event(self, topic: str, payload: dict[str, Any]) -> None:
         text = ""
         tag = "feed_sys"
         if topic == "command_start":
-            text = f"\u25b8 {payload.get('command', '')}"
+            text = f"▸ {payload.get('command', '')}"
             tag = "feed_cmd"
         elif topic == "command_done":
             status = payload.get("status", "done")
-            text = f"\u2713 {payload.get('command', '')} \u2192 {status}"
+            text = f"✓ {payload.get('command', '')} → {status}"
             tag = "feed_ok" if str(status) not in {"error", "failed"} else "feed_err"
         elif topic == "agent_step":
-            text = f"\u2699 {payload.get('step', '')}"
+            text = f"⚙ {payload.get('step', '')}"
             tag = "feed_pending"
         elif topic == "approval":
             self._refresh_approvals()
         elif topic == "scheduler_run":
-            text = f"\u23f1 scheduled: {payload.get('command', '')} [{payload.get('status', '')}]"
+            text = f"⏱ scheduled: {payload.get('command', '')} [{payload.get('status', '')}]"
         if text:
             self._append_feed(tag, text)
 
-    def _bind_hotkeys(self) -> None:
-        for i in range(1, 10):
-            def _open_alt(_e: tk.Event, idx: int = i - 1) -> None:
-                self._open_app_by_index(idx)
+    def _handle_command_result(self, payload: dict[str, Any]) -> None:
+        self._set_busy(False)
+        self._append_terminal("OK", payload.get("response_text", ""))
+        has_failure = False
+        has_pending = False
+        for item in payload.get("results") or []:
+            tool = item.get("tool")
+            status = item.get("status")
+            if status == "completed":
+                self._append_terminal("OK", f"{tool}: completed")
+            elif status == "pending":
+                self._append_terminal("WARN", f"{tool}: pending approval")
+                has_pending = True
+            else:
+                self._append_terminal("ERR", f"{tool}: {item.get('error')}")
+                has_failure = True
+        command = str(payload.get("command", "command"))
+        if has_failure:
+            self._append_feed("feed_err", f"✗ {command} FAILED")
+            self._toaster.notify("Command failed", command, RED)
+        elif has_pending:
+            self._append_feed("feed_pending", f"⏳ {command} awaiting approval")
+            self._toaster.notify("Approval required", command, AMBER, on_click=self._raise_main_window)
+        else:
+            self._append_feed("feed_ok", f"✓ {command} done")
+        self._refresh_approvals()
 
-            self.root.bind_all(f"<Alt-Key-{i}>", _open_alt)
-        self.root.bind_all("<F1>", lambda _: self._open_help())
-        self.root.bind_all("<Control-l>", lambda _: self._clear_terminal())
-        self.root.bind_all("<Control-k>", lambda _: self._clear_feed())
+    def _handle_agent_step(self, step: dict[str, Any]) -> None:
+        tool = str(step.get("tool", "?"))
+        status = str(step.get("status", "?"))
+        iteration = int(step.get("iteration", 1))
+        snippet = str(step.get("output_snippet", "") or "").strip()
+        line = f"[agent i{iteration}] ▸ {tool} [{status}]"
+        if snippet:
+            line += f" — {snippet}"
+        if status == "failed":
+            self._append_terminal("ERR", line)
+            self._append_feed("feed_err", f"✗ agent: {tool} failed")
+        elif status == "pending":
+            self._append_terminal("WARN", line)
+            self._append_feed("feed_pending", f"⏳ agent: {tool} pending approval")
+        else:
+            self._append_terminal("OK", line)
+            self._append_feed("feed_cmd", f"▸ agent: {tool} done")
 
-    def _scheduler_on_run(self, job: dict[str, Any], status: str, text: str) -> None:
-        self._events.put(("sched_run", (job, status, text)))
-        try:
-            self._hub.publish(
-                "scheduler_run",
-                {"command": job.get("command"), "status": status, "result": text, "job_id": job.get("id")},
-            )
-        except Exception:
-            pass
+    def _poll_events(self) -> None:
+        while True:
+            try:
+                event, payload = self._events.get_nowait()
+            except queue.Empty:
+                break
+            if event == "command_result":
+                self._handle_command_result(payload)
+            elif event == "agent_step":
+                self._handle_agent_step(payload)
+            elif event == "voice":
+                self._set_busy(False)
+                self._refresh_voice_button()
+            elif event == "approvals":
+                self._render_approval_cards(payload)
+            elif event == "hub_event":
+                topic, payload2 = payload
+                self._handle_hub_event(topic, payload2)
+            elif event == "summon_mini":
+                self._raise_main_window()
+                self.mini.show()
+                self._toaster.notify("JARVIS", "Mini HUD summoned — Ctrl+Shift+J", CYAN, duration_ms=2500)
+            elif event == "approval_result":
+                self._set_busy(False)
+                self._append_terminal("OK", payload.get("message", ""))
+                self._refresh_approvals()
+            elif event == "app_launcher":
+                self._handle_app_launcher(payload)
+            elif event == "chat_stream_chunk":
+                self._append_chat_stream_chunk(str(payload))
+            elif event == "chat_stream_done":
+                self._finish_chat_stream()
+                self._set_busy(False)
+                done = str(payload or "").strip()
+                if done:
+                    self._chat_history.append({"role": "assistant", "content": done})
+                    self._chat_history = self._chat_history[-12:]
+            elif event == "job_status":
+                self._update_job_panel(payload)
+            elif event == "job_msg":
+                self._set_busy(False)
+                self._append_terminal("OK", str(payload))
+                self._append_feed("feed_sys", str(payload))
+            elif event == "sched_run":
+                job, status, text = payload
+                tag = "OK" if str(status) != "failed" else "ERR"
+                self._append_terminal(tag, f"[scheduler] {job.get('command')} → {status}: {text}")
+                self._append_feed("feed_sys", f"⏱ scheduled: {job.get('command')} [{status}]")
+            elif event == "sched_list":
+                self._handle_sched_list(payload)
+            elif event == "sched_added":
+                self._append_terminal("OK", f"[scheduler] added: {payload}")
+                self._append_feed("feed_sys", f"⏱ scheduled: {payload}")
+            elif event == "sched_error":
+                self._append_terminal("ERR", f"[scheduler] {payload}")
+            elif event == "history_data":
+                self._handle_history_data(payload)
+            elif event == "tasks_list":
+                self._handle_tasks_list(payload)
+            elif event == "task_detail":
+                self._handle_task_detail(payload)
+            elif event == "memory_data":
+                self._handle_memory_data(payload)
+            elif event == "memory_search":
+                self._handle_memory_search(payload)
+            elif event == "diagnosis":
+                self._handle_diagnosis(payload)
+            elif event == "diagnosis_error":
+                self._handle_diagnosis_error(str(payload))
+            elif event == "error":
+                self._set_busy(False)
+                self._append_terminal("ERR", str(payload))
+                self._toaster.notify("JARVIS error", str(payload), RED)
+
+    # ------------------------------------------------------------ app launcher
 
     def _refresh_app_launcher(self) -> None:
         def worker() -> None:
@@ -2092,8 +1469,8 @@ class JarvisHudApp:
         self._apply_app_filter()
 
     def _apply_app_filter(self) -> None:
-        q = (self.app_filter_var.get() or "").strip().lower()
-        self.app_listbox.delete(0, tk.END)
+        q = self.app_filter_var.text().strip().lower()
+        self.app_listbox.clear()
         self._app_launch_items = []
         for item in self._all_app_launch_items:
             if q and q not in item["label"].lower() and q not in item["command"].lower():
@@ -2101,61 +1478,58 @@ class JarvisHudApp:
             self._app_launch_items.append(item)
         for idx, item in enumerate(self._app_launch_items):
             hk = f"Alt+{idx+1}" if idx < 9 else "      "
-            self.app_listbox.insert(tk.END, f"{hk:<7}  {item['label']}")
+            self.app_listbox.addItem(f"{hk:<7}  {item['label']}")
         if not self._app_launch_items:
-            self.app_listbox.insert(tk.END, "No apps match filter.")
+            self.app_listbox.addItem("No apps match filter.")
 
     def _open_selected_app(self) -> None:
-        sel = self.app_listbox.curselection()
-        if not sel:
-            return
-        self._open_app_by_index(sel[0])
+        row = self.app_listbox.currentRow()
+        if row >= 0:
+            self._open_app_by_index(row)
 
     def _open_app_by_index(self, idx: int) -> None:
         if idx < 0 or idx >= len(self._app_launch_items):
             return
-        self.command_entry.delete(0, tk.END)
-        self.command_entry.insert(0, self._app_launch_items[idx]["command"])
+        self.command_entry.setText(self._app_launch_items[idx]["command"])
         self._run_command()
 
+    # ------------------------------------------------------------ chat
+
     def _append_chat(self, role: str, text: str) -> None:
-        self.chat_text.configure(state=tk.NORMAL)
+        safe = text.replace("&", "&amp;").replace("<", "&lt;").replace(">", "&gt;")
         if role == "user":
-            self.chat_text.insert(tk.END, "YOU\n", ("chat_user_label",))
-            self.chat_text.insert(tk.END, text + "\n\n", ("chat_user",))
+            self.chat_text.append(f'<span style="color:{CYAN}; font-weight:700; font-size:10px;">YOU</span>')
+            self.chat_text.append(f'<span style="color:{TEXT}">{safe}</span>')
         else:
-            self.chat_text.insert(tk.END, "JARVIS\n", ("chat_ai_label",))
-            self.chat_text.insert(tk.END, text + "\n\n", ("chat_ai",))
-        self.chat_text.see(tk.END)
-        self.chat_text.configure(state=tk.DISABLED)
+            self.chat_text.append(f'<span style="color:{INDIGO}; font-weight:700; font-size:10px;">JARVIS</span>')
+            self.chat_text.append(f'<span style="color:{TEXT}">{safe}</span>')
+        self.chat_text.verticalScrollBar().setValue(self.chat_text.verticalScrollBar().maximum())
 
     def _start_chat_stream(self) -> None:
-        self.chat_text.configure(state=tk.NORMAL)
-        self.chat_text.insert(tk.END, "JARVIS\n", ("chat_ai_label",))
-        self.chat_text.configure(state=tk.DISABLED)
+        self.chat_text.append(f'<span style="color:{INDIGO}; font-weight:700; font-size:10px;">JARVIS</span>')
         self._chat_streaming = True
 
     def _append_chat_stream_chunk(self, chunk: str) -> None:
         if not self._chat_streaming:
             return
-        self.chat_text.configure(state=tk.NORMAL)
-        self.chat_text.insert(tk.END, chunk, ("chat_stream",))
-        self.chat_text.see(tk.END)
-        self.chat_text.configure(state=tk.DISABLED)
+        safe = chunk.replace("&", "&amp;").replace("<", "&lt;").replace(">", "&gt;")
+        cursor = self.chat_text.textCursor()
+        cursor.movePosition(QTextCursor.MoveOperation.End)
+        cursor.insertHtml(f'<span style="color:{TEXT}">{safe}</span>')
+        self.chat_text.setTextCursor(cursor)
+        self.chat_text.verticalScrollBar().setValue(self.chat_text.verticalScrollBar().maximum())
 
     def _finish_chat_stream(self) -> None:
         if not self._chat_streaming:
             return
-        self.chat_text.configure(state=tk.NORMAL)
-        self.chat_text.insert(tk.END, "\n\n", ("chat_stream",))
-        self.chat_text.configure(state=tk.DISABLED)
+        self.chat_text.append("")
         self._chat_streaming = False
 
     def _ask_chatbot(self) -> None:
-        q = self.chat_entry.get().strip()
+        q = self.chat_entry.text().strip()
         if not q:
             return
-        self.chat_entry.delete(0, tk.END)
+        self.chat_entry.clear()
         self._append_chat("user", q)
         self._set_busy(True)
         self._start_chat_stream()
@@ -2201,217 +1575,718 @@ class JarvisHudApp:
         self._events.put(("chat_stream_done", "".join(built).strip()))
         return True
 
-    def _reset_scene(self, _: tk.Event | None = None) -> None:
-        self.scene.delete("all")
-        w = max(1, self.scene.winfo_width())
-        h = max(1, self.scene.winfo_height())
-        self._draw_background()
-        cx, cy = int(w * 0.68), int(h * 0.72)
-        self.scene.create_oval(cx - 90, cy - 90, cx + 90, cy + 90, outline=INDIGO, width=1, tags="ring")
-        self.scene.create_oval(cx - 120, cy - 120, cx + 120, cy + 120, outline=RING2, width=1, tags="ring2")
-        self.scene.create_rectangle(cx - 86, cy - 8, cx + 86, cy + 2, fill=CYAN, outline="")
-        self.scene.create_rectangle(cx - 58, cy - 8, cx - 48, cy + 72, fill=INDIGO, outline="")
-        self.scene.create_rectangle(cx + 48, cy - 8, cx + 58, cy + 72, fill=INDIGO, outline="")
-        self._scene_particles.clear()
-        count = 40 if self._gfx_full else 12
-        for _i in range(count):
-            x = random.uniform(0, w)
-            y = random.uniform(0, h)
-            r = random.uniform(2, 5)
-            speed = random.uniform(0.2, 0.9)
-            node = self.scene.create_oval(x - r, y - r, x + r, y + r, fill=INDIGO, outline="")
-            self._scene_particles.append({"id": node, "x": x, "y": y, "r": r, "speed": speed})
+    # ------------------------------------------------------------ hotkeys
 
-    def _animate_scene(self) -> None:
-        if not self.root.winfo_exists():
-            return
-        w = max(1, self.scene.winfo_width())
-        h = max(1, self.scene.winfo_height())
-        cx, cy = int(w * 0.68), int(h * 0.72)
-        self._scene_angle += 0.03
-        r = 90 + (3 * math.sin(self._scene_angle))
-        r2 = 120 + (4 * math.cos(self._scene_angle * 0.7))
-        self.scene.coords("ring", cx - r, cy - r, cx + r, cy + r)
-        self.scene.coords("ring2", cx - r2, cy - r2, cx + r2, cy + r2)
-        for p in self._scene_particles:
-            p["y"] += p["speed"]
-            p["x"] += math.sin(self._scene_angle + p["y"] * 0.02) * 0.5
-            if p["y"] > h + 8:
-                p["y"] = -8
-                p["x"] = random.uniform(0, w)
-            x, y, r0 = p["x"], p["y"], p["r"]
-            self.scene.coords(p["id"], x - r0, y - r0, x + r0, y + r0)
-        self.root.after(38, self._animate_scene)
+    def _bind_hotkeys(self) -> None:
+        for i in range(1, 10):
+            sc = QShortcut(QKeySequence(f"Alt+{i}"), self)
+            sc.activated.connect(lambda idx=i - 1: self._open_app_by_index(idx))
+        sc = QShortcut(QKeySequence("F1"), self)
+        sc.activated.connect(self._open_help)
+        sc = QShortcut(QKeySequence("Ctrl+L"), self)
+        sc.activated.connect(self._clear_terminal)
+        sc = QShortcut(QKeySequence("Ctrl+K"), self)
+        sc.activated.connect(self._clear_feed)
 
-    def _handle_command_result(self, payload: dict[str, Any]) -> None:
-        self._set_busy(False)
-        self._append_terminal(OK, payload.get("response_text", ""))
-        has_failure = False
-        has_pending = False
-        for item in payload.get("results") or []:
-            tool = item.get("tool")
-            status = item.get("status")
-            if status == "completed":
-                self._append_terminal(OK, f"{tool}: completed")
-            elif status == "pending":
-                self._append_terminal("WARN", f"{tool}: pending approval")
-                has_pending = True
-            else:
-                self._append_terminal("ERR", f"{tool}: {item.get('error')}")
-                has_failure = True
-        command = str(payload.get("command", "command"))
-        if has_failure:
-            self._append_feed("feed_err", f"\u2717 {command} FAILED")
-            self.root.bell()
-            self._toaster.notify("Command failed", command, RED)
-        elif has_pending:
-            self._append_feed("feed_pending", f"\u23f3 {command} awaiting approval")
-            self.root.bell()
-            self._toaster.notify("Approval required", command, AMBER, on_click=self._raise_main_window)
-        else:
-            self._append_feed("feed_ok", f"\u2713 {command} done")
-        self._refresh_approvals()
+    # ------------------------------------------------------------ scheduler
 
-    def _handle_agent_step(self, step: dict[str, Any]) -> None:
-        tool = str(step.get("tool", "?"))
-        status = str(step.get("status", "?"))
-        iteration = int(step.get("iteration", 1))
-        snippet = str(step.get("output_snippet", "") or "").strip()
-        line = f"[agent i{iteration}] \u25b8 {tool} [{status}]"
-        if snippet:
-            line += f" \u2014 {snippet}"
-        if status == "failed":
-            self._append_terminal("ERR", line)
-            self._append_feed("feed_err", f"\u2717 agent: {tool} failed")
-        elif status == "pending":
-            self._append_terminal("WARN", line)
-            self._append_feed("feed_pending", f"\u23f3 agent: {tool} pending approval")
-        else:
-            self._append_terminal(OK, line)
-            self._append_feed("feed_cmd", f"\u25b8 agent: {tool} done")
-
-    def _poll_events(self) -> None:
-        while True:
-            try:
-                event, payload = self._events.get_nowait()
-            except queue.Empty:
-                break
-            if event == "command_result":
-                self._handle_command_result(payload)
-            elif event == "agent_step":
-                self._handle_agent_step(payload)
-            elif event == "voice":
-                self._set_busy(False)
-                self._wave_active = bool(payload.get("running"))
-                self._refresh_voice_button()
-            elif event == "approvals":
-                self._render_approval_cards(payload)
-            elif event == "hub_event":
-                topic, payload2 = payload
-                self._handle_hub_event(topic, payload2)
-            elif event == "summon_mini":
-                self._raise_main_window()
-                self.mini.show()
-                self._toaster.notify("JARVIS", "Mini HUD summoned \u2014 Ctrl+Shift+J", CYAN, duration_ms=2500)
-            elif event == "approval_result":
-                self._set_busy(False)
-                self._append_terminal(OK, payload.get("message", ""))
-                self._refresh_approvals()
-            elif event == "app_launcher":
-                self._handle_app_launcher(payload)
-            elif event == "chat_stream_chunk":
-                self._append_chat_stream_chunk(str(payload))
-            elif event == "chat_stream_done":
-                self._finish_chat_stream()
-                self._set_busy(False)
-                done = str(payload or "").strip()
-                if done:
-                    self._chat_history.append({"role": "assistant", "content": done})
-                    self._chat_history = self._chat_history[-12:]
-            elif event == "job_status":
-                self._update_job_panel(payload)
-            elif event == "job_msg":
-                self._set_busy(False)
-                self._append_terminal(OK, str(payload))
-                self._append_feed("feed_sys", str(payload))
-            elif event == "sched_run":
-                job, status, text = payload
-                tag = OK if str(status) != "failed" else "ERR"
-                self._append_terminal(tag, f"[scheduler] {job.get('command')} \u2192 {status}: {text}")
-                self._append_feed("feed_sys", f"\u23f1 scheduled: {job.get('command')} [{status}]")
-            elif event == "sched_list":
-                self._handle_sched_list(payload)
-            elif event == "sched_added":
-                self._append_terminal(OK, f"[scheduler] added: {payload}")
-                self._append_feed("feed_sys", f"\u23f1 scheduled: {payload}")
-                if getattr(self, "_sched_status", None) is not None:
-                    self._sched_status.configure(text=f"Scheduled: {payload}", fg=GREEN)
-                self._scheduler_load()
-            elif event == "sched_error":
-                self._append_terminal("ERR", f"[scheduler] {payload}")
-                if getattr(self, "_sched_status", None) is not None:
-                    self._sched_status.configure(text=str(payload), fg=RED)
-            elif event == "sched_changed":
-                self._scheduler_load()
-            elif event == "history_data":
-                self._handle_history_data(payload)
-            elif event == "tasks_list":
-                self._handle_tasks_list(payload)
-            elif event == "task_detail":
-                self._handle_task_detail(payload)
-            elif event == "memory_data":
-                self._handle_memory_data(payload)
-            elif event == "memory_search":
-                self._handle_memory_search(payload)
-            elif event == "diagnosis":
-                self._handle_diagnosis(payload)
-            elif event == "diagnosis_error":
-                self._handle_diagnosis_error(str(payload))
-            elif event == "error":
-                self._set_busy(False)
-                self._append_terminal("ERR", str(payload))
-                self.root.bell()
-                self._toaster.notify("JARVIS error", str(payload), RED)
-        self.root.after(80, self._poll_events)
-
-    def _update_job_panel(self, payload: dict[str, Any]) -> None:
-        task = payload.get("task") or {}
-        status = str(task.get("status") or "idle")
-        phase = str(task.get("phase") or "-")
-        applied = int(task.get("applied") or 0)
-        skipped = int(task.get("skipped") or 0)
-        failed = int(task.get("failed") or 0)
-        reason = str(task.get("paused_reason") or "").strip()
-        color = {"idle": MUTED, "running": CYAN, "paused": AMBER, "completed": GREEN, "canceled": MUTED}.get(status, MUTED)
-        text = f"[{status.upper()} \u00b7 {phase}]"
-        if reason:
-            text += f"\nPaused: {reason}"
-        self.job_status_label.configure(text=text, fg=color)
-        self.job_stat_labels["APPLIED"].configure(text=f"APPLIED {applied}")
-        self.job_stat_labels["SKIPPED"].configure(text=f"SKIPPED {skipped}")
-        self.job_stat_labels["FAILED"].configure(text=f"FAILED {failed}")
-        totals = payload.get("totals") or (task.get("totals") if isinstance(task, dict) else None) or {}
-        for name in ("INTERVIEW", "OFFER", "REJECTED"):
-            self.job_stat_labels[name].configure(text=f"{name} {int(totals.get(name.lower(), 0))}")
+    def _scheduler_on_run(self, job: dict[str, Any], status: str, text: str) -> None:
+        self._events.put(("sched_run", (job, status, text)))
         try:
-            max_apps = int(task.get("max_applications") or 0)
-            pct = round((applied / max_apps) * 100) if max_apps else 0
-            self.job_progress.configure(value=max(0, min(100, pct)))
+            self._hub.publish(
+                "scheduler_run",
+                {"command": job.get("command"), "status": status, "result": text, "job_id": job.get("id")},
+            )
         except Exception:
-            self.job_progress.configure(value=0)
-        recent = payload.get("recent") or []
-        recent_box = getattr(self, "recent_list", None)
-        if recent_box is not None:
-            recent_box.delete(0, tk.END)
-            for item in recent[:12]:
-                title = str(item.get("title") or "?")
-                company = str(item.get("company") or item.get("site") or "?")
-                ts = str(item.get("created_at") or "")[:16].replace("T", " ")
-                recent_box.insert(tk.END, f"{ts}  {title} @ {company}")
-        if status == "paused" and self._job_prev_status != "paused":
-            self.root.bell()
-            self._toaster.notify("Job paused", reason or "Task paused, waiting on you.", AMBER, on_click=self._raise_main_window)
-        self._job_prev_status = status
+            pass
+
+    def _open_scheduler(self) -> None:
+        win = QDialog(self)
+        win.setWindowTitle("JARVIS — Scheduler")
+        win.resize(760, 520)
+        lay = QVBoxLayout(win)
+
+        add_panel = QFrame()
+        add_panel.setObjectName("Card")
+        add_lay = QVBoxLayout(add_panel)
+        add_lay.setContentsMargins(12, 10, 12, 10)
+        add_lay.setSpacing(6)
+        lbl = QLabel("NEW SCHEDULE")
+        lbl.setStyleSheet(f"color: {MUTED}; font-size: 11px; font-weight: 700;")
+        add_lay.addWidget(lbl)
+        row1 = QHBoxLayout()
+        cmd_entry = QLineEdit()
+        cmd_entry.setPlaceholderText("command…")
+        rec_entry = QLineEdit()
+        rec_entry.setPlaceholderText("recurrence (e.g. daily at 09:00)…")
+        row1.addWidget(cmd_entry, 1)
+        row1.addWidget(rec_entry, 1)
+        add_lay.addLayout(row1)
+        hint = QLabel("e.g. daily at 09:00  ·  hourly  ·  every 30 minutes  ·  weekly on monday at 10:00")
+        hint.setStyleSheet(f"color: {MUTED}; font-size: 10px;")
+        add_lay.addWidget(hint)
+        btn_row = QHBoxLayout()
+        btn_row.addStretch(1)
+        btn_row.addWidget(self._chip("SCHEDULE", lambda: self._add_schedule(cmd_entry, rec_entry), primary=True))
+        add_lay.addLayout(btn_row)
+        lay.addWidget(add_panel)
+
+        list_panel = QFrame()
+        list_panel.setObjectName("Card")
+        list_lay = QVBoxLayout(list_panel)
+        list_lay.setContentsMargins(12, 10, 12, 10)
+        head = QHBoxLayout()
+        lbl = QLabel("SCHEDULED JOBS")
+        lbl.setStyleSheet(f"color: {MUTED}; font-size: 11px; font-weight: 700;")
+        head.addWidget(lbl, 1)
+        head.addWidget(self._chip("REFRESH", self._scheduler_load))
+        list_lay.addLayout(head)
+        self._sched_listbox = QListWidget()
+        list_lay.addWidget(self._sched_listbox)
+        lay.addWidget(list_panel, 1)
+
+        actions = QHBoxLayout()
+        self._sched_status = QLabel("")
+        self._sched_status.setStyleSheet(f"color: {MUTED}; font-size: 10px;")
+        actions.addWidget(self._sched_status, 1)
+        actions.addWidget(self._chip("ENABLE / DISABLE", self._toggle_schedule))
+        actions.addWidget(self._chip("DELETE", self._delete_schedule))
+        lay.addLayout(actions)
+
+        self._sched_win = win
+        self._sched_jobs: list[dict[str, Any]] = []
+        self._scheduler_load()
+        poll = QTimer(win)
+        poll.timeout.connect(self._scheduler_load)
+        poll.start(4000)
+        win.exec()
+
+    def _scheduler_load(self) -> None:
+        def worker() -> None:
+            try:
+                jobs = self.runtime.scheduler.list_jobs()
+                self._events.put(("sched_list", jobs))
+            except Exception as exc:
+                self._events.put(("error", str(exc)))
+
+        threading.Thread(target=worker, daemon=True).start()
+
+    def _handle_sched_list(self, jobs: list[dict[str, Any]]) -> None:
+        if not getattr(self, "_sched_win", None):
+            return
+        self._sched_jobs = jobs
+        box = self._sched_listbox
+        box.clear()
+        if not jobs:
+            box.addItem("No schedules yet.")
+        for job in jobs:
+            state = "ON " if job.get("enabled") else "OFF"
+            last = job.get("last_status") or "never"
+            stamp = str(job.get("last_result") or "")[:60]
+            box.addItem(f"[{state}] {job.get('id', '')}  {job.get('command', '')} — {job.get('recurrence', '')}  |  last: {last}{' · ' + stamp if stamp else ''}")
+        self._sched_status.setText(f"{len(jobs)} job(s) · auto-refreshes every 4s")
+
+    def _add_schedule(self, cmd_entry: QLineEdit, rec_entry: QLineEdit) -> None:
+        command = cmd_entry.text().strip()
+        recurrence = rec_entry.text().strip()
+        if not command or not recurrence:
+            return
+
+        def worker() -> None:
+            try:
+                job = self.runtime.scheduler.add(command=command, recurrence=recurrence)
+                self._events.put(("sched_added", job.get("id", "")))
+                self._events.put(("sched_list", self.runtime.scheduler.list_jobs()))
+            except Exception as exc:
+                self._events.put(("sched_error", str(exc)))
+
+        threading.Thread(target=worker, daemon=True).start()
+
+    def _delete_schedule(self) -> None:
+        row = self._sched_listbox.currentRow()
+        if row < 0 or row >= len(self._sched_jobs):
+            return
+        job_id = str(self._sched_jobs[row].get("id", ""))
+        if not job_id:
+            return
+
+        def worker() -> None:
+            try:
+                self.runtime.scheduler.remove(job_id)
+                self._events.put(("sched_list", self.runtime.scheduler.list_jobs()))
+            except Exception as exc:
+                self._events.put(("sched_error", str(exc)))
+
+        threading.Thread(target=worker, daemon=True).start()
+
+    def _toggle_schedule(self) -> None:
+        row = self._sched_listbox.currentRow()
+        if row < 0 or row >= len(self._sched_jobs):
+            return
+        job = self._sched_jobs[row]
+        job_id = str(job.get("id", ""))
+
+        def worker() -> None:
+            try:
+                if job.get("enabled"):
+                    self.runtime.scheduler.set_enabled(job_id, False)
+                else:
+                    self.runtime.scheduler.set_enabled(job_id, True)
+                self._events.put(("sched_list", self.runtime.scheduler.list_jobs()))
+            except Exception as exc:
+                self._events.put(("sched_error", str(exc)))
+
+        threading.Thread(target=worker, daemon=True).start()
+
+    # ------------------------------------------------------------ history
+
+    def _open_history(self) -> None:
+        win = QDialog(self)
+        win.setWindowTitle("JARVIS — History")
+        win.resize(820, 560)
+        lay = QVBoxLayout(win)
+        tabs = QTabWidget()
+        self._hist_texts: dict[str, QTextEdit] = {}
+        for tab_name in ("commands", "tools", "metrics"):
+            text = QTextEdit()
+            text.setReadOnly(True)
+            tabs.addTab(text, tab_name.upper())
+            self._hist_texts[tab_name] = text
+        lay.addWidget(tabs, 1)
+        status = QLabel("")
+        status.setStyleSheet(f"color: {MUTED}; font-size: 10px;")
+        lay.addWidget(status)
+        self._hist_status = status
+
+        self._hist_win = win
+        self._history_load()
+        win.exec()
+
+    def _history_load(self) -> None:
+        def worker() -> None:
+            try:
+                data = {
+                    "commands": self.runtime.orchestrator.get_history(limit=60),
+                    "tools": self.runtime.orchestrator.get_tool_history(limit=80),
+                    "metrics": self.runtime.orchestrator.get_metrics(limit=500),
+                }
+                self._events.put(("history_data", data))
+            except Exception as exc:
+                self._events.put(("error", str(exc)))
+
+        threading.Thread(target=worker, daemon=True).start()
+
+    def _fill_history_tab(self, key: str, lines: list[str]) -> None:
+        text = self._hist_texts.get(key)
+        if text is None:
+            return
+        text.clear()
+        text.setPlainText("\n".join(lines))
+
+    def _handle_history_data(self, data: dict[str, Any]) -> None:
+        if not getattr(self, "_hist_win", None):
+            return
+        cmd_lines: list[str] = []
+        for row in (data.get("commands") or [])[:60]:
+            cmd_lines.append(f"[{row.get('created_at', '')[:19]}] {row.get('source', '?')}: {row.get('command', '')}")
+            snippet = str(row.get("response_text") or "")[:160].replace("\n", " ")
+            if snippet:
+                cmd_lines.append(f"      {snippet}")
+        self._fill_history_tab("commands", cmd_lines or ["No command history yet."])
+
+        tool_lines: list[str] = []
+        for row in (data.get("tools") or [])[:80]:
+            tool_lines.append(f"[{row.get('created_at', '')[:19]}] {row.get('tool', '?')} [{row.get('status', '?')}]")
+            err = str(row.get("error") or "") if row.get("error") else ""
+            tool_lines.append(f"      {row.get('command', '')}  ·  risk: {row.get('risk', 'low')}{'  ·  ' + err if err else ''}")
+        self._fill_history_tab("tools", tool_lines or ["No tool activity yet."])
+
+        metrics = data.get("metrics") or {}
+        summary = metrics.get("summary") or {}
+        m_lines = [
+            "METRICS SUMMARY",
+            f"  window: {summary.get('window', 0)} executions",
+            f"  total commands: {summary.get('total_commands', 0)}",
+            f"  success rate: {float(summary.get('success_rate', 0)) * 100:.1f}%",
+            f"  failure rate: {float(summary.get('failure_rate', 0)) * 100:.1f}%",
+            f"  avg duration: {int(summary.get('avg_duration_ms', 0))} ms",
+        ]
+        status_counts = summary.get("status_counts") or {}
+        if status_counts:
+            m_lines.append("")
+            m_lines.append("BY STATUS")
+            for status, count in status_counts.items():
+                m_lines.append(f"  {status}: {count}")
+        recent = (metrics.get("recent") or [])[:30]
+        if recent:
+            m_lines.append("")
+            m_lines.append("RECENT EXECUTIONS")
+            for row in recent:
+                m_lines.append(f"  [{row.get('created_at', '')[:19]}] {row.get('command', '')} → {row.get('status', '?')} ({int(row.get('duration_ms', 0))}ms)")
+        self._fill_history_tab("metrics", m_lines)
+        self._hist_status.setText(f"Loaded at {datetime.now().strftime('%H:%M:%S')}")
+
+    # ------------------------------------------------------------ tasks
+
+    def _open_tasks(self) -> None:
+        win = QDialog(self)
+        win.setWindowTitle("JARVIS — Tasks & Progress")
+        win.resize(840, 580)
+        lay = QVBoxLayout(win)
+        head = QHBoxLayout()
+        title = QLabel("TASKS & PROGRESS")
+        title.setStyleSheet(f"color: {CYAN}; font-size: 14px; font-weight: 800;")
+        head.addWidget(title, 1)
+        head.addWidget(self._chip("REFRESH", self._tasks_load))
+        lay.addLayout(head)
+
+        list_panel = QFrame()
+        list_panel.setObjectName("Card")
+        list_lay = QVBoxLayout(list_panel)
+        lbl = QLabel("TRACKED TASKS")
+        lbl.setStyleSheet(f"color: {MUTED}; font-size: 11px; font-weight: 700;")
+        list_lay.addWidget(lbl)
+        self._tasks_listbox = QListWidget()
+        self._tasks_listbox.currentRowChanged.connect(lambda _: self._show_task_detail())
+        list_lay.addWidget(self._tasks_listbox)
+        lay.addWidget(list_panel, 1)
+
+        detail_panel = QFrame()
+        detail_panel.setObjectName("Card")
+        detail_lay = QVBoxLayout(detail_panel)
+        lbl = QLabel("TASK DETAIL")
+        lbl.setStyleSheet(f"color: {MUTED}; font-size: 11px; font-weight: 700;")
+        detail_lay.addWidget(lbl)
+        self._task_detail_text = QTextEdit()
+        self._task_detail_text.setReadOnly(True)
+        detail_lay.addWidget(self._task_detail_text)
+        lay.addWidget(detail_panel, 2)
+
+        status = QLabel("")
+        status.setStyleSheet(f"color: {MUTED}; font-size: 10px;")
+        lay.addWidget(status)
+        self._tasks_status = status
+
+        self._tasks_win = win
+        self._tasks_items: list[dict[str, Any]] = []
+        self._tasks_load()
+        poll = QTimer(win)
+        poll.timeout.connect(self._tasks_load)
+        poll.start(4000)
+        win.exec()
+
+    def _tasks_load(self) -> None:
+        def worker() -> None:
+            try:
+                payload = self.runtime.registry.execute("task_list", {"limit": 50})
+                self._events.put(("tasks_list", payload))
+            except Exception as exc:
+                self._events.put(("error", str(exc)))
+
+        threading.Thread(target=worker, daemon=True).start()
+
+    def _handle_tasks_list(self, payload: dict[str, Any]) -> None:
+        if not getattr(self, "_tasks_win", None):
+            return
+        items = payload.get("items") or []
+        self._tasks_items = items
+        box = self._tasks_listbox
+        box.clear()
+        if not items:
+            box.addItem("No tasks yet — ask JARVIS to 'plan' something, or create one via the planner.")
+        for item in items:
+            progress = item.get("progress") or {}
+            status = str(item.get("status", "?")).upper()
+            box.addItem(f"[{status}] {item.get('id', '')}  {str(item.get('command', ''))[:48]}  |  {progress.get('completed', 0)}/{progress.get('total', 0)} steps ({progress.get('percent', 0)}%)")
+        self._tasks_status.setText(f"{len(items)} task(s) · auto-refreshes every 4s")
+
+    def _show_task_detail(self) -> None:
+        row = self._tasks_listbox.currentRow()
+        if row < 0 or row >= len(self._tasks_items):
+            return
+        task_id = str(self._tasks_items[row].get("id", ""))
+
+        def worker() -> None:
+            try:
+                payload = self.runtime.registry.execute("task_status", {"task_id": task_id})
+                self._events.put(("task_detail", payload))
+            except Exception as exc:
+                self._events.put(("error", str(exc)))
+
+        threading.Thread(target=worker, daemon=True).start()
+
+    def _handle_task_detail(self, payload: dict[str, Any]) -> None:
+        text = getattr(self, "_task_detail_text", None)
+        if text is None:
+            return
+        lines = [
+            f"TASK {payload.get('task_id', '?')}",
+            f"  command: {payload.get('command', '')}",
+            f"  status: {payload.get('status', '?')}",
+        ]
+        progress = payload.get("progress") or {}
+        lines.append(f"  progress: {progress.get('completed', 0)}/{progress.get('total', 0)} steps ({progress.get('percent', 0)}%), current: {progress.get('current_step') or 'none'}")
+        if payload.get("error"):
+            lines.append(f"  error: {payload.get('error')}")
+        lines.append("")
+        lines.append("STEPS")
+        for step in payload.get("steps") or []:
+            line = f"  [{step.get('status', '?')}] {step.get('tool', '?')}"
+            if step.get("error"):
+                line += f" — {step.get('error')}"
+            if step.get("attempts", 1) > 1:
+                line += f" (attempts: {step.get('attempts')})"
+            lines.append(line)
+        if not (payload.get("steps") or []):
+            lines.append("  no steps recorded")
+        text.setPlainText("\n".join(lines))
+
+    # ------------------------------------------------------------ memory
+
+    def _open_memory(self) -> None:
+        win = QDialog(self)
+        win.setWindowTitle("JARVIS — Memory & Knowledge")
+        win.resize(840, 580)
+        lay = QVBoxLayout(win)
+        head = QHBoxLayout()
+        title = QLabel("MEMORY & KNOWLEDGE")
+        title.setStyleSheet(f"color: {CYAN}; font-size: 14px; font-weight: 800;")
+        head.addWidget(title, 1)
+        self._mem_query = QLineEdit()
+        self._mem_query.setPlaceholderText("Search knowledge…")
+        self._mem_query.returnPressed.connect(self._memory_recall)
+        head.addWidget(self._mem_query, 1)
+        head.addWidget(self._chip("SEARCH", self._memory_recall, primary=True))
+        head.addWidget(self._chip("REFRESH", self._memory_load))
+        lay.addLayout(head)
+
+        tabs = QTabWidget()
+        self._mem_texts: dict[str, QTextEdit] = {}
+        for tab_name in ("episodes", "knowledge", "search"):
+            text = QTextEdit()
+            text.setReadOnly(True)
+            tabs.addTab(text, tab_name.upper())
+            self._mem_texts[tab_name] = text
+        lay.addWidget(tabs, 1)
+        status = QLabel("")
+        status.setStyleSheet(f"color: {MUTED}; font-size: 10px;")
+        lay.addWidget(status)
+        self._mem_status = status
+
+        self._mem_win = win
+        self._memory_load()
+        win.exec()
+
+    def _memory_load(self) -> None:
+        def worker() -> None:
+            try:
+                episodes = self.runtime.registry.execute("memory_list", {"limit": 25})
+                knowledge = self.runtime.registry.execute("knowledge_stats", {})
+                self._events.put(("memory_data", {"episodes": episodes, "knowledge": knowledge}))
+            except Exception as exc:
+                self._events.put(("error", str(exc)))
+
+        threading.Thread(target=worker, daemon=True).start()
+
+    def _handle_memory_data(self, data: dict[str, Any]) -> None:
+        if not getattr(self, "_mem_win", None):
+            return
+        episodes = data.get("episodes") or {}
+        ep_items = episodes.get("episodes") or []
+        ep_lines = [f"EPISODIC MEMORY ({episodes.get('count', len(ep_items))})"]
+        if not ep_items:
+            ep_lines.append("  no episodic memories yet")
+        for ep in ep_items[:25]:
+            ep_lines.append(f"  [{ep.get('id')}] {str(ep.get('command', ''))[:70]} — {ep.get('status', '?')}")
+            if ep.get("summary"):
+                ep_lines.append(f"      {str(ep.get('summary', ''))[:140]}")
+        self._fill_memory_tab("episodes", ep_lines)
+
+        knowledge = data.get("knowledge") or {}
+        stats = knowledge.get("stats") or {}
+        kn_lines = ["KNOWLEDGE BASE"]
+        if stats:
+            for key, value in stats.items():
+                kn_lines.append(f"  {key}: {value}")
+        else:
+            kn_lines.append("  knowledge base empty — use 'remember' or 'index' commands")
+        self._fill_memory_tab("knowledge", kn_lines)
+
+    def _memory_recall(self) -> None:
+        query = self._mem_query.text().strip()
+        if not query:
+            return
+
+        def worker() -> None:
+            try:
+                payload = self.runtime.registry.execute("recall", {"query": query, "top_k": 8})
+                self._events.put(("memory_search", payload))
+            except Exception as exc:
+                self._events.put(("error", str(exc)))
+
+        threading.Thread(target=worker, daemon=True).start()
+
+    def _handle_memory_search(self, payload: dict[str, Any]) -> None:
+        if not getattr(self, "_mem_win", None):
+            return
+        results = payload.get("results") or []
+        lines = [f"SEARCH: {payload.get('query', '')}"]
+        if not results:
+            lines.append("  no matches")
+        for hit in results[:20]:
+            title = str(hit.get("title") or hit.get("doc_type") or "?")
+            score = hit.get("score")
+            content = str(hit.get("content") or "")[:160]
+            score_str = f"  ({score:.2f})" if isinstance(score, (int, float)) else ""
+            lines.append(f"  {title}{score_str}")
+            if content:
+                lines.append(f"      {content}")
+        self._fill_memory_tab("search", lines)
+
+    def _fill_memory_tab(self, key: str, lines: list[str]) -> None:
+        text = self._mem_texts.get(key)
+        if text is None:
+            return
+        text.clear()
+        text.setPlainText("\n".join(lines))
+
+    # ------------------------------------------------------------ help / recap
+
+    def _open_help(self) -> None:
+        win = QDialog(self)
+        win.setWindowTitle("JARVIS — What can I do?")
+        win.resize(740, 580)
+        lay = QVBoxLayout(win)
+        text = QTextEdit()
+        text.setReadOnly(True)
+        entries: list[str] = [
+            "VOICE + DOCK",
+            "  youtube pause          toggle play/pause",
+            "  youtube next           next video",
+            "  list apps              show apps in the launcher",
+            "  open whatsapp chat <name>",
+            "  open <app or site>     e.g. 'open chrome', 'open google'",
+            "  search web <query>",
+            "  take screenshot",
+            "  play <song>            music via yt-dlp",
+            "",
+            "JOB AGENT",
+            "  apply for <role> at <company>",
+            "  job status / job cancel",
+            "",
+            f"TOOLS ({len(self.runtime.registry.catalog())})",
+        ]
+        for tool in self.runtime.registry.catalog():
+            entries.append(f"  {tool.get('name', '')}")
+            entries.append(f"      {tool.get('description', '')}  [risk: {tool.get('risk', 'low')}]")
+        text.setPlainText("\n".join(entries))
+        lay.addWidget(text)
+        win.exec()
+
+    def _maybe_show_recap(self) -> None:
+        state = self.runtime.memory.get_state("session_review", default={})
+        last_seen = state.get("last_seen_at")
+        self.runtime.memory.set_state("session_review", {"last_seen_at": datetime.now(UTC).isoformat()})
+        if not last_seen:
+            return
+        try:
+            review = self.runtime.memory.session_review(since=last_seen)
+        except Exception as exc:
+            self._append_terminal("ERR", f"Recap failed: {exc}")
+            return
+        if not review["command_count"] and not review["job_applications"] and not review["scheduled_runs"]:
+            return
+        self._open_recap(review, auto=True)
+
+    def _recap(self) -> None:
+        state = self.runtime.memory.get_state("session_review", default={})
+        since = state.get("last_seen_at")
+        try:
+            review = self.runtime.memory.session_review(since=since)
+        except Exception as exc:
+            self._toaster.notify("Recap error", str(exc), RED)
+            return
+        self._open_recap(review)
+
+    def _open_recap(self, review: dict[str, Any], auto: bool = False) -> None:
+        win = QDialog(self)
+        win.setWindowTitle("JARVIS — While you were away")
+        win.resize(760, 600)
+        lay = QVBoxLayout(win)
+        text = QTextEdit()
+        text.setReadOnly(True)
+
+        lines: list[str] = ["WHILE YOU WERE AWAY", "", "COMMANDS"]
+        counts = review.get("sources") or {}
+        if counts:
+            lines.append("  " + "  ·  ".join(f"{src}: {n}" for src, n in counts.items()))
+        for row in (review.get("commands") or [])[-12:]:
+            snippet = str(row.get("response_text") or "")[:120].replace("\n", " ")
+            lines.append(f"  {row.get('created_at', '')[:16]} {row.get('source')}: {row.get('command')}")
+            lines.append(f"      {snippet}")
+        lines.append("")
+        lines.append("TOOL ACTIVITY")
+        tool_counts = review.get("tool_counts") or {}
+        if tool_counts:
+            lines.append("  " + "  ·  ".join(f"{k}: {v}" for k, v in tool_counts.items()))
+        top_tools = review.get("top_tools") or {}
+        if top_tools:
+            lines.append("  Most used: " + ", ".join(top_tools))
+        lines.append("")
+        lines.append("JOB PIPELINE")
+        job_status = review.get("job_status") or {}
+        if job_status:
+            lines.append("  " + "  ·  ".join(f"{k}: {v}" for k, v in job_status.items()))
+        for row in (review.get("job_applications") or [])[-10:]:
+            lines.append(f"  [{row.get('status')}] {row.get('title')} @ {row.get('company') or row.get('site')}")
+        lines.append("")
+        lines.append("SCHEDULED RUNS")
+        runs = review.get("scheduled_runs") or []
+        for run in runs[-10:]:
+            lines.append(f"  [{run.get('status')}] {run.get('result', '')[:100]}")
+        if not lines:
+            lines = ["Nothing to report."]
+        text.setPlainText("\n".join(lines))
+        lay.addWidget(text)
+
+        if auto:
+            def _open_recap() -> None:
+                win.close()
+                self._raise_main_window()
+
+            self._toaster.notify("While you were away", "Click to open the catch-up recap.", CYAN, on_click=_open_recap)
+        win.exec()
+
+    # ------------------------------------------------------------ autostart / tray
+
+    def _auto_start_path(self) -> Path:
+        return Path(__file__).resolve().parent.parent / "data" / "auto_start.json"
+
+    def _auto_start_enabled(self) -> bool:
+        try:
+            cfg = json.loads(self._auto_start_path().read_text(encoding="utf-8"))
+            return bool(cfg.get("enabled", True))
+        except Exception:
+            return True
+
+    def _write_auto_start(self, enabled: bool) -> None:
+        try:
+            path = self._auto_start_path()
+            path.parent.mkdir(parents=True, exist_ok=True)
+            path.write_text(json.dumps({"enabled": enabled}), encoding="utf-8")
+        except Exception:
+            pass
+
+    def _toggle_auto_start(self) -> None:
+        self._write_auto_start(not self._auto_start_enabled())
+        self._refresh_auto_start_button()
+
+    def _refresh_auto_start_button(self) -> None:
+        on = self._auto_start_enabled()
+        self.auto_start_button.setText("AUTOSTART ON" if on else "AUTOSTART OFF")
+        if on:
+            self.auto_start_button.setStyleSheet(f"color: {GREEN}; background: {_rgba(OK, 220)};")
+        else:
+            self.auto_start_button.setStyleSheet(f"color: {AMBER}; background: {_rgba(DANGER, 220)};")
+
+    def _toggle_tray(self) -> None:
+        if not self._tray.available:
+            self._toaster.notify("Tray unavailable", "pystray is not installed.", RED)
+            return
+        if self.isHidden():
+            self._raise_main_window()
+            return
+        if not self._tray.start():
+            self._raise_main_window()
+            return
+        self.tray_button.setText("TRAY ON")
+        self.tray_button.setStyleSheet(f"color: {GREEN}; background: {_rgba(OK, 220)};")
+        self._toaster.notify(
+            "JARVIS in tray", "HUD is running in the tray.\nUse the JARVIS icon or Ctrl+Shift+J to bring it back.", GREEN
+        )
+        self.hide()
+
+    def _tray_show(self) -> None:
+        QTimer.singleShot(0, self._raise_main_window)
+
+    def _tray_mini(self) -> None:
+        QTimer.singleShot(0, self.mini.show)
+
+    def _tray_exit(self) -> None:
+        QTimer.singleShot(0, self._on_close)
+
+    def _raise_main_window(self) -> None:
+        self.showNormal()
+        self.raise_()
+        self.activateWindow()
+
+    # ------------------------------------------------------------ persistence
+
+    def _restore_ui_config(self) -> None:
+        try:
+            cfg = json.loads(self._ui_config_path.read_text(encoding="utf-8"))
+            if cfg.get("mini_visible"):
+                self.mini.show()
+            self._theme = str(cfg.get("theme") or "aurora")
+            self._gfx_full = bool(cfg.get("gfx_full", False))
+            bg = cfg.get("background") or {}
+            if isinstance(bg, dict) and bg.get("mode") in {"aurora", "gradient", "image"}:
+                self._bg = bg
+            self._cmd_history = [str(x) for x in (cfg.get("cmd_history") or [])][:50]
+            if self._theme not in PALETTES:
+                self._theme = "aurora"
+            _apply_palette(self._theme)
+            self.theme_button.setText(f"THEME {self._theme.upper()}")
+            self.backdrop.set_bg(self._bg.get("mode", "aurora"), self._bg.get("value", ""))
+            self.backdrop.set_gfx(self._gfx_full)
+            self.setStyleSheet(_build_qss())
+        except Exception:
+            pass
+        self.showMaximized()
+
+    def _save_ui_config(self) -> None:
+        try:
+            cfg = {
+                "mini_visible": self.mini.isVisible(),
+                "theme": self._theme,
+                "gfx_full": self._gfx_full,
+                "background": self._bg,
+                "cmd_history": self._cmd_history[:50],
+            }
+            self._ui_config_path.parent.mkdir(parents=True, exist_ok=True)
+            self._ui_config_path.write_text(json.dumps(cfg, indent=2), encoding="utf-8")
+        except Exception:
+            pass
+
+    def _save_prefs(self) -> None:
+        self._save_ui_config()
+
+    def _poll_summon_signal(self) -> None:
+        try:
+            path = Path(__file__).resolve().parent.parent / "data" / "summon.json"
+            if path.exists():
+                try:
+                    cfg = json.loads(path.read_text(encoding="utf-8"))
+                    stamp = float(cfg.get("ts", 0) or 0)
+                    import time
+
+                    if time.time() - stamp < 5:
+                        self._raise_main_window()
+                        self.mini.show()
+                        self._toaster.notify("JARVIS", "Launch requested — window brought to front.", CYAN, duration_ms=2500)
+                finally:
+                    try:
+                        path.unlink()
+                    except OSError:
+                        pass
+        except Exception:
+            pass
+
+    # ------------------------------------------------------------ close
+
+    def closeEvent(self, event) -> None:
+        self._on_close()
+        event.accept()
 
     def _on_close(self) -> None:
         try:
@@ -2440,10 +2315,42 @@ class JarvisHudApp:
             self.mini.close()
         except Exception:
             pass
-        self.root.destroy()
 
     def run(self) -> None:
-        self.root.mainloop()
+        self.show()
+        if os.environ.get("JARVIS_DUMP"):
+            QTimer.singleShot(2500, self._dump_widgets)
+        self._app.exec()
+
+    def _dump_widgets(self) -> None:
+        try:
+            out = Path(os.environ.get("JARVIS_DUMP", "widgets.txt"))
+            lines = []
+            for w in self._app.allWidgets():
+                g = w.geometry()
+                cls = type(w).__name__
+                obj = w.objectName()
+                vis = "V" if w.isVisible() else "h"
+                en = "E" if w.isEnabled() else "d"
+                lines.append(f"{vis}{en} {cls} '{obj}' x={g.x()} y={g.y()} w={g.width()} h={g.height()}")
+            out.write_text("\n".join(sorted(lines)), encoding="utf-8")
+        except Exception as e:
+            try:
+                Path("widgets.txt").write_text(f"ERR {e}", encoding="utf-8")
+            except Exception:
+                pass
+
+
+def _signal_running_instance() -> None:
+    """Write a summon signal so an already-running HUD brings its window to front."""
+    try:
+        path = Path(__file__).resolve().parent.parent / "data" / "summon.json"
+        path.parent.mkdir(parents=True, exist_ok=True)
+        import time
+
+        path.write_text(json.dumps({"ts": time.time()}), encoding="utf-8")
+    except Exception:
+        pass
 
 
 def _enable_dpi_awareness() -> None:
@@ -2461,8 +2368,12 @@ def main() -> None:
     from app.core.single_instance import SingleInstance
 
     if not SingleInstance("hud").acquire():
-        return  # another HUD instance is already running; exit silently
-    JarvisHudApp().run()
+        _signal_running_instance()  # another HUD is running; ask it to come to the front
+        return
+    app = QApplication(sys.argv)
+    app.setApplicationName("JARVIS")
+    window = JarvisHudApp(app)
+    window.run()
 
 
 if __name__ == "__main__":

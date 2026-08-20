@@ -50,9 +50,12 @@ switch ($action.ToLower()) {
       exit 0
     }
     $py = Join-Path $root ".venv\Scripts\python.exe"
-    if (-not (Test-Path -LiteralPath $py)) {
+    $pyw = Join-Path $root ".venv\Scripts\pythonw.exe"
+    if (Test-Path -LiteralPath $pyw) {
+      $py = $pyw
+    } elseif (-not (Test-Path -LiteralPath $py)) {
       $py = "python"
     }
-    Start-Process -FilePath $py -ArgumentList "-m", "app.gui" -WorkingDirectory $root -WindowStyle Hidden
+    Start-Process -FilePath $py -ArgumentList "-m", "app.gui" -WorkingDirectory $root
   }
 }
