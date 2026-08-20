@@ -95,10 +95,7 @@ class ResourceMonitor:
 
     def snapshot(self) -> ResourceSample:
         with self._lock:
-            if self._sample is not None:
-                return self._sample
-        sample = self._sample_once()
-        with self._lock:
+            sample = self._sample_once()
             self._sample = sample
         return sample
 

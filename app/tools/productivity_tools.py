@@ -12,31 +12,19 @@ from app.tools.registry import ToolRegistry
 
 
 def _copy_to_clipboard(text: str) -> str:
-    import tkinter as tk
+    import pyperclip
 
-    root = tk.Tk()
-    root.withdraw()
-    try:
-        root.clipboard_clear()
-        root.clipboard_append(text)
-        root.update()
-        return text
-    finally:
-        root.destroy()
+    pyperclip.copy(text)
+    return text
 
 
 def _read_clipboard() -> str:
-    import tkinter as tk
+    import pyperclip
 
-    root = tk.Tk()
-    root.withdraw()
     try:
-        try:
-            return root.clipboard_get()
-        except tk.TclError:
-            return ""
-    finally:
-        root.destroy()
+        return str(pyperclip.paste() or "").strip()
+    except Exception:
+        return ""
 
 
 def _send_smtp_email(settings: Settings, to: str, subject: str, body: str) -> None:

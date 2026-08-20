@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import importlib.util
 import json
 from typing import Any, Protocol
 
@@ -338,6 +339,10 @@ def create_planner(settings: Settings, for_agent: bool = False) -> BasePlanner:
             return NullPlanner(f"Groq init failed: {exc}")
 
     if provider == "litellm":
+        if not importlib.util.find_spec("litellm"):
+            return NullPlanner(
+                "litellm extra not installed; run: pip install -e .[litellm]"
+            )
         model = settings.litellm_model if not for_agent else (settings.agent_litellm_model or settings.litellm_model)
         try:
             return LiteLLMPlanner(settings, model=model)

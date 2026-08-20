@@ -224,20 +224,28 @@ class TaskPlanner:
         desc = params.get("description", "")
         if not desc:
             return {"status": "error", "message": "Reminder description required"}
-        # Parse time from description (simplified)
-        when = "in 1 hour"  # default
-        # Try to extract time from description
-        time_match = re.search(r"(?:in|at|for)\s+(.+)$", params.get("description", ""))
+        # Locate a reminder-time phrase ('in 5 minutes', 'at 14:30', 'tomorrow at 09:00')
+        # and use the rest as the message text.
+        time_match = re.search(
+            r"\b(in \d+ minutes?|in \d+ hours?|at \d{1,2}:\d{2}|tomorrow at \d{1,2}:\d{2})\b",
+            desc,
+            flags=re.IGNORECASE,
+        )
         if time_match:
             when = time_match.group(1).strip()
+            message = (desc[: time_match.start()] + " " + desc[time_match.end() :]).strip()
+            message = re.sub(r"\s+", " ", message).strip(" .,;")
+        else:
+            when = "in 1 hour"
+            message = desc
         from app.core.scheduler import parse_reminder_when
         at = parse_reminder_when(when)
-        job = self.scheduler.add_once(f"announce {desc}", at)
+        job = self.scheduler.add_once(f"announce {message}", at)
         return {
             "status": "success",
             "job_id": job["id"],
             "scheduled_for": at.isoformat(),
-            "message": f"Reminder set for {at.isoformat()}: {desc}",
+            "message": f"Reminder set for {at.isoformat()}: {message}",
         }
 
     def _create_event(self, params: dict[str, Any]) -> dict[str, Any]:
@@ -271,9 +279,46 @@ class TaskPlanner:
         desc = params.get("description", "")
         if not desc:
             return {"status": "error", "message": "Schedule description required"}
-        # Try to parse recurrence from description
-        recurrence = "daily"
+        from app.core.scheduler import parse_recurrence
+
+        # Pass 1: contiguous recurrence phrase, e.g. "clean temp files daily at 09:00".
+        recurrence = None
         command = desc
+        match = re.search(
+            r"\b(daily at \d{1,2}:\d{2}|weekly on \w+ at \d{1,2}:\d{2}|hourly|every \d+ minutes|once at \d{1,2}:\d{2})\b",
+            desc,
+            flags=re.IGNORECASE,
+        )
+        if match:
+            recurrence = match.group(1).strip()
+            command = (desc[: match.start()] + " " + desc[match.end() :]).strip()
+            command = re.sub(r"\s+", " ", command).strip(" .,;")
+        else:
+            # Pass 2: frequency prefix + command + trailing time, e.g.
+            # "daily backup at 09:00" -> recurrence "daily at 09:00".
+            trailing = re.search(r"\bat (\d{1,2}):(\d{2})\s*$", desc)
+            prefix = re.match(r"^(daily|hourly|weekly on \w+)\s+(.+)$", desc)
+            if trailing and prefix:
+                frequency = prefix.group(1).strip()
+                inner_command = prefix.group(2).strip()
+                time_part = trailing.group(0).strip()
+                if frequency == "hourly":
+                    recurrence = "hourly"
+                else:
+                    recurrence = f"{frequency} {time_part}"
+                command = inner_command
+                if command.endswith(time_part):
+                    command = command[: -len(time_part)].strip()
+                command = re.sub(r"\s+", " ", command).strip(" .,;")
+        if recurrence is None or parse_recurrence(recurrence) is None:
+            return {
+                "status": "error",
+                "message": (
+                    "Missing or unrecognized recurrence. Add one of: "
+                    "'daily at HH:MM', 'weekly on <day> at HH:MM', 'hourly', 'every N minutes', "
+                    "or 'once at HH:MM'."
+                ),
+            }
         job = self.scheduler.add(command, recurrence)
         return {
             "status": "success",

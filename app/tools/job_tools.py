@@ -67,10 +67,10 @@ def register_job_tools(registry: ToolRegistry, settings: Settings, memory: Memor
         if status not in allowed:
             raise ValueError(f"status must be one of: {', '.join(sorted(allowed))}.")
         notes = str(args.get("notes", "")).strip() or None
-        interview_stage = args.get("interview_stage")
-        next_action = args.get("next_action")
-        deadline = args.get("deadline")
-        if not memory.update_job_status(url, status, notes):
+        interview_stage = str(args.get("interview_stage", "")).strip() or None
+        next_action = str(args.get("next_action", "")).strip() or None
+        deadline = str(args.get("deadline", "")).strip() or None
+        if not memory.update_job_status(url, status, notes, interview_stage, next_action, deadline):
             raise ValueError("No applied job found with that URL.")
         result = {"result_text": f"Marked job as {status}.", "url": url, "status": status}
         if interview_stage is not None:

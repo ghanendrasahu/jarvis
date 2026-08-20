@@ -63,6 +63,8 @@ def register_interaction_tools(registry: ToolRegistry, settings: Settings) -> No
         for window in gw.getAllWindows():
             title = (window.title or "").strip()
             if title_contains in title.lower():
+                if window.isMinimized:
+                    window.restore()
                 window.activate()
                 return {"focused": title}
         raise RuntimeError(f"No window found containing: {title_contains}")

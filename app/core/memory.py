@@ -102,10 +102,15 @@ class MemoryStore:
                     location TEXT,
                     url TEXT NOT NULL,
                     status TEXT NOT NULL,
-                    notes TEXT
+                    notes TEXT,
+                    source TEXT,
+                    interview_stage TEXT,
+                    next_action TEXT,
+                    deadline TEXT
                 )
                 """
             )
+            self._ensure_job_columns(conn)
             conn.execute("CREATE INDEX IF NOT EXISTS idx_jobs_applied_url ON jobs_applied(url)")
             conn.execute("CREATE INDEX IF NOT EXISTS idx_jobs_applied_status ON jobs_applied(status)")
             conn.execute("CREATE INDEX IF NOT EXISTS idx_tool_history_status ON tool_history(status)")
@@ -132,6 +137,21 @@ class MemoryStore:
             conn.execute("CREATE INDEX IF NOT EXISTS idx_episodic_created ON episodic_memory(created_at)")
             conn.execute("CREATE INDEX IF NOT EXISTS idx_episodic_command ON episodic_memory(command)")
             conn.commit()
+
+    def _ensure_job_columns(self, conn: sqlite3.Connection) -> None:
+        """Add job-tracking columns to existing databases (created before the schema grew)."""
+        existing = {row["name"] for row in conn.execute("PRAGMA table_info(jobs_applied)")}
+        for column, ddl in (
+            ("source", "TEXT"),
+            ("interview_stage", "TEXT"),
+            ("next_action", "TEXT"),
+            ("deadline", "TEXT"),
+        ):
+            if column not in existing:
+                try:
+                    conn.execute(f"ALTER TABLE jobs_applied ADD COLUMN {column} {ddl}")
+                except sqlite3.Error as exc:
+                    logger.warning("could not add jobs_applied.%s: %s", column, exc)
 
     def prune(self, days: int = 60) -> dict[str, int]:
         """Delete history/metrics older than ``days``. Returns rows removed per table."""
@@ -419,7 +439,15 @@ class MemoryStore:
             ).fetchone()
         return row is not None
 
-    def update_job_status(self, url: str, status: str, notes: str | None = None) -> bool:
+    def update_job_status(
+        self,
+        url: str,
+        status: str,
+        notes: str | None = None,
+        interview_stage: str | None = None,
+        next_action: str | None = None,
+        deadline: str | None = None,
+    ) -> bool:
         with self._lock:
             row = self._conn.execute(
                 "SELECT id FROM jobs_applied WHERE url = ? ORDER BY id DESC LIMIT 1",
@@ -428,8 +456,8 @@ class MemoryStore:
             if not row:
                 return False
             self._conn.execute(
-                "UPDATE jobs_applied SET status = ?, notes = ? WHERE id = ?",
-                (status, notes, row["id"]),
+                "UPDATE jobs_applied SET status = ?, notes = ?, interview_stage = ?, next_action = ?, deadline = ? WHERE id = ?",
+                (status, notes, interview_stage, next_action, deadline, row["id"]),
             )
             self._conn.commit()
         return True
@@ -443,15 +471,20 @@ class MemoryStore:
         url: str,
         status: str,
         notes: str | None = None,
+        source: str | None = None,
+        interview_stage: str | None = None,
+        next_action: str | None = None,
+        deadline: str | None = None,
     ) -> None:
         created_at = datetime.now(UTC).isoformat()
         with self._lock:
             self._conn.execute(
                 """
-                INSERT INTO jobs_applied (created_at, site, title, company, location, url, status, notes)
-                VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+                INSERT INTO jobs_applied
+                    (created_at, site, title, company, location, url, status, notes, source, interview_stage, next_action, deadline)
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                 """,
-                (created_at, site, title, company, location, url, status, notes),
+                (created_at, site, title, company, location, url, status, notes, source, interview_stage, next_action, deadline),
             )
             self._conn.commit()
 
@@ -460,7 +493,7 @@ class MemoryStore:
         with self._lock:
             rows = self._conn.execute(
                 """
-                SELECT created_at, site, title, company, location, url, status, notes
+                SELECT created_at, site, title, company, location, url, status, notes, source, interview_stage, next_action, deadline
                 FROM jobs_applied
                 ORDER BY id DESC
                 LIMIT ?

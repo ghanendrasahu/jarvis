@@ -89,6 +89,8 @@ def register_shell_tools(registry: ToolRegistry, settings: Settings) -> None:
             ["powershell", "-NoProfile", "-Command", command],
             capture_output=True,
             text=True,
+            encoding="utf-8",
+            errors="replace",
             timeout=max(1, min(timeout_seconds, 120)),
         )
 

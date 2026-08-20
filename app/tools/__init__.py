@@ -23,6 +23,7 @@ from app.tools.proactive_tools import register_proactive_tools
 from app.tools.productivity_tools import register_productivity_tools
 from app.tools.rag_tools import register_rag_tools
 from app.tools.registry import ToolRegistry
+from app.tools.research_tools import register_research_tools
 from app.tools.scheduler_tools import register_scheduler_tools
 from app.tools.shell_tools import register_shell_tools
 from app.tools.system_tools import register_system_tools
@@ -39,6 +40,7 @@ def register_all_tools(
     calendar: CalendarStore | None = None,
     task_engine: Any | None = None,
     monitor: ResourceMonitor | None = None,
+    orchestrator: Any | None = None,
 ) -> None:
     register_system_tools(registry, settings, monitor=monitor)
     register_file_tools(registry, settings)
@@ -61,6 +63,7 @@ def register_all_tools(
         register_scheduler_tools(registry, scheduler)
     if task_engine is not None:
         register_task_tools(registry, settings, task_engine)
+    register_research_tools(registry, settings, orchestrator=orchestrator)
     register_task_planner_tools(
         registry,
         settings,

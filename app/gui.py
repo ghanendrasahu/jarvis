@@ -3,7 +3,6 @@
 import ctypes
 import json
 import math
-import os
 import queue
 import random
 import shutil
@@ -14,31 +13,30 @@ from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any
 
-from PySide6.QtCore import QPointF, Qt, QTimer, Signal
+from PySide6.QtCore import QEvent, QPointF, Qt, QTimer
 from PySide6.QtGui import (
     QColor,
     QFont,
+    QKeySequence,
     QLinearGradient,
     QPainter,
     QPainterPath,
     QPen,
     QPixmap,
+    QShortcut,
     QTextCursor,
 )
 from PySide6.QtWidgets import (
     QApplication,
-    QComboBox,
     QDialog,
     QFileDialog,
     QFrame,
-    QGraphicsDropShadowEffect,
     QHBoxLayout,
     QLabel,
     QLineEdit,
     QListWidget,
     QMainWindow,
     QMenu,
-    QPlainTextEdit,
     QProgressBar,
     QPushButton,
     QScrollArea,
@@ -48,7 +46,6 @@ from PySide6.QtWidgets import (
     QVBoxLayout,
     QWidget,
 )
-from PySide6.QtGui import QKeySequence, QShortcut
 
 from app.bootstrap import build_runtime
 from app.core.events import EventHub
@@ -56,6 +53,7 @@ from app.core.media import background_image_path, list_background_images
 from app.core.palette import PALETTES, THEME_ORDER
 from app.hotkey import GlobalHotkey
 from app.minihud import MiniHud, voice_phase
+from app.minihud import apply_palette as apply_mini_palette
 from app.toast import Toaster
 from app.tray import TrayIcon
 
@@ -217,6 +215,14 @@ def _build_qss() -> str:
         border: 1px solid {TOOLTIP_BORDER};
         padding: 5px; border-radius: 6px;
     }}
+    QFrame#Toast {{
+        background: {PANEL_2};
+        border: 1px solid {_rgba(STROKE, 180)};
+        border-radius: 12px;
+    }}
+    QLabel#ToastTitle {{ color: {TEXT}; font-size: 13px; font-weight: 700; }}
+    QLabel#ToastMsg {{ color: {MUTED}; font-size: 11px; }}
+    QLabel#ToastClose {{ color: {MUTED}; font-size: 14px; }}
     """
 
 
@@ -435,6 +441,7 @@ class JarvisHudApp(QMainWindow):
         self._chat_history: list[dict[str, str]] = []
         self._cmd_history: list[str] = []
         self._cmd_history_index = -1
+        self._scheduler_announce: Callable[[dict[str, Any], str, str], None] | None = None
         self._last_pending_count = 0
         self._job_prev_status = ""
         self._theme = "aurora"
@@ -476,6 +483,7 @@ class JarvisHudApp(QMainWindow):
         self._append_terminal("SYS", "HUD online.")
 
         self._restore_ui_config()
+        self._scheduler_announce = self.runtime.scheduler.on_run
         self.runtime.scheduler.on_run = self._scheduler_on_run
         self.runtime.scheduler.start()
         self._maybe_show_recap()
@@ -612,6 +620,7 @@ class JarvisHudApp(QMainWindow):
         self.command_entry.setPlaceholderText("Type a command, e.g. 'system status'…")
         self.command_entry.setFont(QFont("Consolas", 12))
         self.command_entry.returnPressed.connect(self._run_command)
+        self.command_entry.installEventFilter(self)
         row.addWidget(self.command_entry, 1)
         self.run_button = self._chip("EXECUTE", self._run_command, primary=True)
         row.addWidget(self.run_button)
@@ -844,6 +853,8 @@ class JarvisHudApp(QMainWindow):
         self.backdrop.set_bg(self._bg.get("mode", "aurora"), self._bg.get("value", ""))
         self.backdrop.set_gfx(self._gfx_full)
         self._refresh_gfx_button()
+        apply_mini_palette(PALETTES[self._theme])
+        self.mini.apply_palette(PALETTES[self._theme])
 
     def _cycle_theme(self) -> None:
         idx = THEME_ORDER.index(_current_theme)
@@ -1049,9 +1060,22 @@ class JarvisHudApp(QMainWindow):
         if not self._cmd_history:
             return
         n = len(self._cmd_history)
-        idx = min(max(self._cmd_history_index + direction, 0), n - 1)
+        if direction > 0:
+            idx = min(max(self._cmd_history_index + 1, 0), n - 1)
+        else:
+            idx = max(min(self._cmd_history_index - 1, n - 1), 0) if self._cmd_history_index >= 0 else 0
         self._cmd_history_index = idx
         self.command_entry.setText(self._cmd_history[idx])
+
+    def eventFilter(self, obj, event) -> bool:
+        if obj is self.command_entry and event.type() == QEvent.Type.KeyPress:
+            if event.key() == Qt.Key.Key_Up:
+                self._history_step(-1)
+                return True
+            if event.key() == Qt.Key.Key_Down:
+                self._history_step(1)
+                return True
+        return super().eventFilter(obj, event)
 
     # ------------------------------------------------------------ voice
 
@@ -1592,6 +1616,12 @@ class JarvisHudApp(QMainWindow):
 
     def _scheduler_on_run(self, job: dict[str, Any], status: str, text: str) -> None:
         self._events.put(("sched_run", (job, status, text)))
+        announce = self._scheduler_announce
+        if announce is not None:
+            try:
+                announce(job, status, text)
+            except Exception:
+                pass
         try:
             self._hub.publish(
                 "scheduler_run",
@@ -1659,6 +1689,12 @@ class JarvisHudApp(QMainWindow):
         poll = QTimer(win)
         poll.timeout.connect(self._scheduler_load)
         poll.start(4000)
+
+        def _on_close() -> None:
+            poll.stop()
+            self._sched_win = None
+
+        win.finished.connect(_on_close)
         win.exec()
 
     def _scheduler_load(self) -> None:
@@ -1873,6 +1909,12 @@ class JarvisHudApp(QMainWindow):
         poll = QTimer(win)
         poll.timeout.connect(self._tasks_load)
         poll.start(4000)
+
+        def _on_close() -> None:
+            poll.stop()
+            self._tasks_win = None
+
+        win.finished.connect(_on_close)
         win.exec()
 
     def _tasks_load(self) -> None:
@@ -2213,7 +2255,11 @@ class JarvisHudApp(QMainWindow):
         QTimer.singleShot(0, self.mini.show)
 
     def _tray_exit(self) -> None:
-        QTimer.singleShot(0, self._on_close)
+        QTimer.singleShot(0, self._request_quit)
+
+    def _request_quit(self) -> None:
+        self._on_close()
+        self._app.quit()
 
     def _raise_main_window(self) -> None:
         self.showNormal()
@@ -2236,6 +2282,7 @@ class JarvisHudApp(QMainWindow):
             if self._theme not in PALETTES:
                 self._theme = "aurora"
             _apply_palette(self._theme)
+            apply_mini_palette(PALETTES[self._theme])
             self.theme_button.setText(f"THEME {self._theme.upper()}")
             self.backdrop.set_bg(self._bg.get("mode", "aurora"), self._bg.get("value", ""))
             self.backdrop.set_gfx(self._gfx_full)
@@ -2286,6 +2333,7 @@ class JarvisHudApp(QMainWindow):
 
     def closeEvent(self, event) -> None:
         self._on_close()
+        self._app.quit()
         event.accept()
 
     def _on_close(self) -> None:
@@ -2318,27 +2366,7 @@ class JarvisHudApp(QMainWindow):
 
     def run(self) -> None:
         self.show()
-        if os.environ.get("JARVIS_DUMP"):
-            QTimer.singleShot(2500, self._dump_widgets)
         self._app.exec()
-
-    def _dump_widgets(self) -> None:
-        try:
-            out = Path(os.environ.get("JARVIS_DUMP", "widgets.txt"))
-            lines = []
-            for w in self._app.allWidgets():
-                g = w.geometry()
-                cls = type(w).__name__
-                obj = w.objectName()
-                vis = "V" if w.isVisible() else "h"
-                en = "E" if w.isEnabled() else "d"
-                lines.append(f"{vis}{en} {cls} '{obj}' x={g.x()} y={g.y()} w={g.width()} h={g.height()}")
-            out.write_text("\n".join(sorted(lines)), encoding="utf-8")
-        except Exception as e:
-            try:
-                Path("widgets.txt").write_text(f"ERR {e}", encoding="utf-8")
-            except Exception:
-                pass
 
 
 def _signal_running_instance() -> None:

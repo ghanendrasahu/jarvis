@@ -88,7 +88,7 @@ class AutonomousAgent:
         on_step: Callable[[dict[str, Any]], None] | None = None,
     ) -> AgentRunResult | None:
         """Continue a run that paused for approval, using the stored resume token."""
-        token = self._resume_tokens.pop(approval_id, None)
+        token = self._pop_resume_token(approval_id)
         if not token:
             return None
         state = _LoopState(
@@ -132,6 +132,32 @@ class AutonomousAgent:
 
     def forget(self, approval_id: str) -> None:
         self._resume_tokens.pop(approval_id, None)
+        self._drop_resume_token(approval_id)
+
+    def _store_resume_token(self, approval_id: str, token: dict[str, Any]) -> None:
+        self._resume_tokens[approval_id] = token
+        try:
+            self.memory.set_state(f"agent_resume:{approval_id}", token)
+        except Exception:
+            logger.warning("failed to persist resume token for %s", approval_id, exc_info=True)
+
+    def _pop_resume_token(self, approval_id: str) -> dict[str, Any] | None:
+        token = self._resume_tokens.pop(approval_id, None)
+        if token is not None:
+            return token
+        try:
+            token = self.memory.get_state(f"agent_resume:{approval_id}", default=None)
+        except Exception:
+            return None
+        if token:
+            self._drop_resume_token(approval_id)
+        return token if token else None
+
+    def _drop_resume_token(self, approval_id: str) -> None:
+        try:
+            self.memory.set_state(f"agent_resume:{approval_id}", None)
+        except Exception:
+            logger.warning("failed to drop resume token for %s", approval_id, exc_info=True)
 
     def _loop(
         self,
@@ -234,19 +260,22 @@ class AutonomousAgent:
                         break
                 elif outcome.status == "pending":
                     if outcome.pending_approval_id:
-                        self._resume_tokens[outcome.pending_approval_id] = {
-                            "command": command,
-                            "source": source,
-                            "auto_approve": auto_approve,
-                            "max_iterations": max_iterations,
-                            "action_cap": action_cap,
-                            "role": role,
-                            "all_results": [item.model_dump() for item in state.all_results],
-                            "observation_rows": state.observation_rows,
-                            "failed_counts": state.failed_counts,
-                            "action_total": state.action_total,
-                            "iterations": iterations,
-                        }
+                        self._store_resume_token(
+                            outcome.pending_approval_id,
+                            {
+                                "command": command,
+                                "source": source,
+                                "auto_approve": auto_approve,
+                                "max_iterations": max_iterations,
+                                "action_cap": action_cap,
+                                "role": role,
+                                "all_results": [item.model_dump() for item in state.all_results],
+                                "observation_rows": state.observation_rows,
+                                "failed_counts": state.failed_counts,
+                                "action_total": state.action_total,
+                                "iterations": iterations,
+                            },
+                        )
                     stopped_reason = "approval_required"
                     break
                 elif outcome.status == "completed":

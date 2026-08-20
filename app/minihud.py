@@ -6,7 +6,7 @@ from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any
 
-from PySide6.QtCore import Qt, QTimer, QPoint
+from PySide6.QtCore import QPoint, Qt, QTimer
 from PySide6.QtGui import QColor, QPainter, QPen
 from PySide6.QtWidgets import (
     QFrame,
@@ -20,6 +20,7 @@ from PySide6.QtWidgets import (
 )
 
 from app.core.monitor import ResourceMonitor
+from app.core.palette import Palette
 
 BG = "#020617"
 PANEL = "#0a1428"
@@ -32,6 +33,92 @@ GREEN = "#86efac"
 AMBER = "#fbbf24"
 RED = "#fb7185"
 GLASS = "rgba(10, 20, 40, 0.92)"
+INDIGO = "#818cf8"
+CHIP = "#0f1f3c"
+CHIP_HI = "#183159"
+DANGER = "#3a1a24"
+ENTRY = "#040a16"
+SEL = "#1c3257"
+
+_PALETTE_KEYS = (
+    "BG",
+    "PANEL",
+    "PANEL_2",
+    "STROKE",
+    "CYAN",
+    "INDIGO",
+    "TEXT",
+    "MUTED",
+    "GREEN",
+    "AMBER",
+    "RED",
+    "CHIP",
+    "CHIP_HI",
+    "DANGER",
+    "ENTRY",
+    "SEL",
+)
+
+
+def _build_qss() -> str:
+    return f"""
+    QFrame#MiniShell {{
+        background: {PANEL};
+        border: 1px solid {STROKE};
+        border-radius: 14px;
+    }}
+    QLabel#MiniBrand {{ color: {CYAN}; font-size: 13px; font-weight: 800; letter-spacing: 1px; }}
+    QLabel#MiniCmd {{ color: {TEXT}; font-size: 12px; font-weight: 700; }}
+    QLabel#MiniRes {{ color: {MUTED}; font-size: 11px; }}
+    QLabel#MiniStat {{ color: {MUTED}; font-size: 10px; }}
+    QPushButton#MiniBtn {{
+        color: {MUTED};
+        background: {_rgba(CHIP, 200)};
+        border: 1px solid {_rgba(STROKE, 120)};
+        border-radius: 8px;
+        padding: 4px 10px;
+        font-size: 10px;
+        font-weight: 700;
+    }}
+    QPushButton#MiniBtn:hover {{ background: {_rgba(CHIP_HI, 230)}; }}
+    QPushButton#MiniAccent {{
+        color: {BG};
+        background: qlineargradient(x1:0, y1:0, x2:1, y2:0, stop:0 {CYAN}, stop:1 {INDIGO});
+        border: none;
+        border-radius: 8px;
+        padding: 4px 10px;
+        font-size: 10px;
+        font-weight: 800;
+    }}
+    QPushButton#MiniDanger {{ background: {_rgba(DANGER, 200)}; color: {RED}; border-radius: 8px; padding: 4px 10px; font-size: 10px; font-weight: 700; }}
+    QLineEdit#MiniEntry {{
+        background: {_rgba(ENTRY, 235)};
+        border: 1px solid {_rgba(CYAN, 90)};
+        border-radius: 8px;
+        padding: 6px 8px;
+        color: {TEXT};
+        font-size: 11px;
+        selection-background-color: {SEL};
+    }}
+    QLineEdit#MiniEntry:focus {{ border: 1px solid {CYAN}; background: {_rgba(SEL, 200)}; }}
+    """
+
+
+def _rgba(hex_color: str, alpha: int) -> str:
+    c = hex_color.lstrip("#")
+    if len(c) == 6:
+        r, g, b = int(c[0:2], 16), int(c[2:4], 16), int(c[4:6], 16)
+        return f"rgba({r}, {g}, {b}, {alpha})"
+    return f"rgba(0, 0, 0, {alpha})"
+
+
+def apply_palette(palette: Palette) -> None:
+    """Re-theme MiniHud's module-level colors from a palette dict (see app.core.palette)."""
+    from typing import cast
+    for key in palette:
+        safe_key: str = cast(str, key)
+        if safe_key in _PALETTE_KEYS:
+            globals()[safe_key] = palette[safe_key]  # type: ignore[literal-required]
 
 
 def voice_phase(status: dict[str, Any]) -> tuple[str, str, float, float]:
@@ -79,6 +166,7 @@ class MiniHud(QWidget):
 
         self.setAttribute(Qt.WidgetAttribute.WA_TranslucentBackground)
         self.setFixedWidth(340)
+        self.setStyleSheet(_build_qss())
 
         shell = QFrame(self)
         shell.setObjectName("MiniShell")
@@ -224,6 +312,14 @@ class MiniHud(QWidget):
         self.res_label.setText("working…")
         self.res_label.setStyleSheet("color: #fbbf24; font-size: 11px;")
 
+    def apply_palette(self, palette: Palette) -> None:
+        """Re-theme inline widgets after a theme change."""
+        apply_palette(palette)
+        self.setStyleSheet(_build_qss())
+        self.cpu_bar.set_color(CYAN)
+        self.ram_bar.set_color(AMBER)
+        self._animate_dot()
+
     def show(self) -> None:
         super().show()
         self.raise_()
@@ -343,11 +439,15 @@ class _MiniBar(QWidget):
         self._value = max(0.0, min(100.0, float(value)))
         self.update()
 
+    def set_color(self, color: str) -> None:
+        self._color = color
+        self.update()
+
     def paintEvent(self, event) -> None:
         p = QPainter(self)
         p.setRenderHint(QPainter.RenderHint.Antialiasing)
-        p.setPen(QPen(QColor("#0d1a33"), 1))
-        p.setBrush(QColor("#0a1428"))
+        p.setPen(QPen(QColor(PANEL_2), 1))
+        p.setBrush(QColor(PANEL))
         p.drawRoundedRect(self.rect().adjusted(0, 0, -1, -1), 4, 4)
         fill_w = int((self.width() - 4) * (self._value / 100.0))
         if fill_w > 2:

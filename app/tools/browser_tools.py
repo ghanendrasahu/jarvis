@@ -159,13 +159,9 @@ def _focus_window(title_hints: list[str]) -> str | None:
 
 def _read_clipboard_text() -> str:
     try:
-        import tkinter as tk
+        import pyperclip
 
-        root = tk.Tk()
-        root.withdraw()
-        value = root.clipboard_get()
-        root.destroy()
-        return str(value).strip()
+        return str(pyperclip.paste() or "").strip()
     except Exception:
         return ""
 
@@ -196,38 +192,28 @@ class _PlaywrightAutomation:
         start_seconds = max(0, safe_int(args.get("start_seconds", 0), 0))
         prefer_first = bool(args.get("prefer_first_result", True))
 
-        page = self._ensure_page("https://www.youtube.com", ["youtube.com", "youtu.be"])
         resolved_video_id: str | None = None
+        target_url = "https://www.youtube.com"
 
         if raw_url:
-            url = raw_url if raw_url.startswith(("http://", "https://")) else f"https://{raw_url}"
-            page.goto(_append_start_time(url, start_seconds), wait_until="domcontentloaded", timeout=self._timeout_ms)
+            target_url = _append_start_time(
+                raw_url if raw_url.startswith(("http://", "https://")) else f"https://{raw_url}", start_seconds
+            )
         elif query:
             encoded = urllib.parse.quote_plus(query)
             if prefer_first:
-                search_url = f"https://www.youtube.com/results?search_query={encoded}"
-                page.goto(search_url, wait_until="domcontentloaded", timeout=self._timeout_ms)
-                page.wait_for_selector("ytd-video-renderer a#video-title", timeout=self._timeout_ms)
-                first = page.locator("ytd-video-renderer a#video-title").first
-                href = first.get_attribute("href") or ""
-                if href:
-                    parsed = urllib.parse.urlparse(href)
-                    query_values = urllib.parse.parse_qs(parsed.query)
-                    video_id_values = query_values.get("v") or []
-                    if video_id_values:
-                        resolved_video_id = video_id_values[0]
-                    target = urllib.parse.urljoin("https://www.youtube.com", href)
-                    page.goto(_append_start_time(target, start_seconds), wait_until="domcontentloaded", timeout=self._timeout_ms)
+                resolved_video_id, target_url = _first_youtube_video_url(query)
+                if resolved_video_id is None:
+                    target_url = f"https://www.youtube.com/results?search_query={encoded}"
                 else:
-                    first.click(timeout=self._timeout_ms)
+                    target_url = _append_start_time(target_url, start_seconds)
             else:
-                page.goto(
-                    f"https://www.youtube.com/results?search_query={encoded}",
-                    wait_until="domcontentloaded",
-                    timeout=self._timeout_ms,
-                )
-        else:
-            page.goto("https://www.youtube.com", wait_until="domcontentloaded", timeout=self._timeout_ms)
+                target_url = f"https://www.youtube.com/results?search_query={encoded}"
+
+        page = self._ensure_page(target_url, ["youtube.com", "youtu.be"])
+
+        if resolved_video_id is not None:
+            page.wait_for_selector("video, #movie_player", timeout=self._timeout_ms)
 
         return {
             "opened": page.url,
@@ -416,7 +402,18 @@ class _PlaywrightAutomation:
         if send_now:
             try:
                 page.wait_for_selector("footer", timeout=self._timeout_ms)
+                msg_box = page.locator("div[contenteditable='true'][data-tab='10'], div[contenteditable='true']").last
+                msg_box.click(timeout=5000)
+                if message:
+                    current = msg_box.inner_text(timeout=3000)
+                    if message not in current:
+                        msg_box.fill(message, timeout=5000)
+                page.wait_for_timeout(800)
                 page.keyboard.press("Enter")
+                page.wait_for_timeout(1200)
+                sent = page.locator("div.message-out, span[data-icon='msg-check'], span[data-icon='msg-dblcheck']")
+                if sent.count() == 0:
+                    raise RuntimeError("WhatsApp message was not delivered (no sent message bubble detected).")
             except Exception as exc:
                 raise RuntimeError(f"Failed to send WhatsApp message automatically: {exc}") from exc
 
@@ -482,7 +479,6 @@ def register_browser_tools(registry: ToolRegistry, settings: Settings) -> None:
             pass
         try:
             page = automation._ensure_page(url, [host] if host else ["http"])
-            page.goto(url, wait_until="domcontentloaded", timeout=automation._timeout_ms)
             title = page.title()
             body_text = page.locator("body").inner_text(timeout=5000) or ""
         except Exception as exc:

@@ -288,6 +288,26 @@ class DirectCommandRouter:
             return [Action(tool="search_web", args={"query": query}, risk="low", reason="Open web search")]
         if normalized in {"research", "do research", "research this", "research that"}:
             return [Action(tool="research_agent_start", args={"question": normalized}, risk="low", reason="Start research agent workflow")]
+
+        research_match = re.match(
+            r"^(?:research|investigate|find reliable information about|look up|search the web for)\s+(.+)$",
+            normalized,
+        )
+        if research_match:
+            question = research_match.group(1).strip()
+            if question:
+                return [
+                    Action(
+                        tool="research_agent_start",
+                        args={"question": question},
+                        risk="low",
+                        reason="Start research agent workflow",
+                    )
+                ]
+        if normalized.startswith("read url "):
+            url = normalized[9:].strip()
+            return [Action(tool="read_webpage", args={"url": url}, risk="low", reason="Read webpage")]
+
         if normalized.startswith("recall "):
             return [Action(tool="memory_recall", args={"query": normalized[7:].strip()}, risk="low", reason="Recall relevant episodic memory")]
         if normalized.startswith("what did we do"):

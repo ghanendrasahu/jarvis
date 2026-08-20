@@ -1,12 +1,14 @@
 from __future__ import annotations
 
 from datetime import UTC, datetime
-from typing import Any
+from typing import TYPE_CHECKING, Any
 
 from app.core.events import EventHub
 from app.core.logging import get_logger
-from app.core.orchestrator import JarvisOrchestrator
 from app.tools.registry import ToolRegistry
+
+if TYPE_CHECKING:
+    from app.core.orchestrator import JarvisOrchestrator
 
 logger = get_logger("research_agent")
 
@@ -85,15 +87,30 @@ class ResearchAgent:
         # The orchestrator routes to the search_web tool; we extract results
         # from the ToolExecutionResult payload if available.
         if result and result.results:
-            return [
-                {
-                    "rank": i + 1,
-                    "title": (r.output or {}).get("title", ""),
-                    "url": (r.output or {}).get("url", ""),
-                    "snippet": (r.output or {}).get("result_text", ""),
-                }
-                for i, r in enumerate(result.results)
-            ]
+            for r in result.results:
+                output = r.output or {}
+                payload_results = output.get("results") or []
+                if payload_results:
+                    return [
+                        {
+                            "rank": i + 1,
+                            "title": str(item.get("title", "")),
+                            "url": str(item.get("url", "")),
+                            "snippet": str(item.get("snippet") or item.get("result_text") or ""),
+                        }
+                        for i, item in enumerate(payload_results)
+                    ]
+                # Fallback: single-result tools that put the answer at the top level.
+                url = output.get("url") or ""
+                if url:
+                    return [
+                        {
+                            "rank": 1,
+                            "title": str(output.get("title", "")),
+                            "url": str(url),
+                            "snippet": str(output.get("result_text") or output.get("text") or ""),
+                        }
+                    ]
         return []
 
     def _collect(self, url: str) -> dict[str, Any] | None:
@@ -107,10 +124,10 @@ class ResearchAgent:
             r = result.results[0]
             output = r.output or {}
             return {
-                "url": r.tool,
-                "title": output.get("title", ""),
-                "text": output.get("text", ""),
-                "chars": output.get("chars", 0),
+                "url": str(output.get("url") or url),
+                "title": str(output.get("title", "")),
+                "text": str(output.get("text", "")),
+                "chars": int(output.get("chars", 0) or 0),
             }
         return None
 

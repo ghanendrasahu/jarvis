@@ -174,6 +174,14 @@ class TaskEngine:
             step.category = outcome.category
             step.metadata = dict(outcome.metadata or {})
             step.finished_at = datetime.now(UTC).isoformat()
+            self.memory.log_tool_result(
+                command=task.command,
+                tool=outcome.tool,
+                status=outcome.status,
+                risk=outcome.risk,
+                output=outcome.output,
+                error=outcome.error,
+            )
             self._save(task)
 
             self._emit(
@@ -196,6 +204,11 @@ class TaskEngine:
                         "output_snippet": self._snippet(step),
                     }
                 )
+
+            if outcome.status == "pending":
+                # A step is waiting for approval: pause the whole task and do
+                # not execute any later steps until the approval is resolved.
+                break
 
         self._finalize(task)
         self._save(task)
@@ -234,7 +247,11 @@ class TaskEngine:
         return self.run(task_id, auto_approve=auto_approve, on_step=on_step, timeout_seconds=task.timeout_seconds)
 
     def resume_after_approval(self, approval_id: str, outcome: ToolExecutionResult) -> bool:
-        """Apply an approved/rejected outcome to any task step waiting on it."""
+        """Apply an approved/rejected outcome to any task step waiting on it.
+
+        When the outcome is completed and later steps remain, execution continues
+        through the remaining steps (pausing again if another approval is needed).
+        """
         for task in self.list(limit=200):
             for step in task.steps:
                 if step.pending_approval_id != approval_id:
@@ -245,12 +262,39 @@ class TaskEngine:
                 step.pending_approval_id = None
                 step.metadata = dict(outcome.metadata or {})
                 step.finished_at = datetime.now(UTC).isoformat()
-                self._finalize(task)
                 self._save(task)
                 self._emit(
                     "task_step",
                     {"task_id": task.id, "step_id": step.id, "tool": step.tool, "status": step.status},
                 )
+                if outcome.status == "completed":
+                    remaining = [item for item in task.steps if item.status == "pending"]
+                    if remaining:
+                        self.run(task.id, timeout_seconds=task.timeout_seconds)
+                    else:
+                        self._finalize(task)
+                        self._save(task)
+                        self._emit(
+                            "task_done",
+                            {
+                                "task_id": task.id,
+                                "command": task.command,
+                                "status": task.status,
+                                "progress": task.progress,
+                            },
+                        )
+                else:
+                    self._finalize(task)
+                    self._save(task)
+                    self._emit(
+                        "task_done",
+                        {
+                            "task_id": task.id,
+                            "command": task.command,
+                            "status": task.status,
+                            "progress": task.progress,
+                        },
+                    )
                 return True
         return False
 

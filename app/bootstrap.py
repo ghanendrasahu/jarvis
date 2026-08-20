@@ -66,7 +66,7 @@ def build_runtime(events: EventHub | None = None) -> Runtime:
     _step("settings+memory+rag", step)
 
     step = time.perf_counter()
-    approvals = ApprovalManager()
+    approvals = ApprovalManager(memory=memory)
     planner = wrap_planner_with_rag(create_planner(settings), rag)
     reasoning_planner = wrap_planner_with_rag(create_planner(settings, for_agent=True), rag)
     router = DirectCommandRouter()
@@ -120,6 +120,7 @@ def build_runtime(events: EventHub | None = None) -> Runtime:
         calendar=calendar,
         task_engine=task_engine,
         monitor=monitor,
+        orchestrator=orchestrator,
     )
     _step("monitor+tool registration", step)
 

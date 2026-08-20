@@ -3,9 +3,12 @@ from __future__ import annotations
 from dataclasses import dataclass
 from datetime import UTC, datetime, timedelta
 from threading import Lock
+from typing import Any
 from uuid import uuid4
 
 from app.models.schemas import Action, ApprovalItem
+
+_STATE_KEY = "pending_approvals"
 
 
 @dataclass
@@ -18,10 +21,44 @@ class PendingApproval:
 
 
 class ApprovalManager:
-    def __init__(self, ttl_minutes: int = 30) -> None:
+    def __init__(self, ttl_minutes: int = 30, memory: Any = None) -> None:
         self._ttl_minutes = ttl_minutes
         self._lock = Lock()
+        self._memory = memory
         self._pending: dict[str, PendingApproval] = {}
+        if memory is not None:
+            self._load()
+
+    def _load(self) -> None:
+        raw = self._memory.get_state(_STATE_KEY, default={}) or {}
+        for approval_id, payload in raw.items():
+            try:
+                item = PendingApproval(
+                    approval_id=str(payload["approval_id"]),
+                    command=str(payload.get("command") or ""),
+                    action=Action.model_validate(payload.get("action") or {}),
+                    created_at=datetime.fromisoformat(payload["created_at"]),
+                    expires_at=datetime.fromisoformat(payload["expires_at"]),
+                )
+            except Exception:
+                continue
+            self._pending[approval_id] = item
+        self._cleanup_expired()
+
+    def _persist(self) -> None:
+        if self._memory is None:
+            return
+        payload = {
+            approval_id: {
+                "approval_id": item.approval_id,
+                "command": item.command,
+                "action": item.action.model_dump(mode="json"),
+                "created_at": item.created_at.isoformat(),
+                "expires_at": item.expires_at.isoformat(),
+            }
+            for approval_id, item in self._pending.items()
+        }
+        self._memory.set_state(_STATE_KEY, payload)
 
     def _cleanup_expired(self) -> None:
         now = datetime.now(UTC)
@@ -43,18 +80,22 @@ class ApprovalManager:
         with self._lock:
             self._cleanup_expired()
             self._pending[approval_id] = pending
+            self._persist()
         return approval_id
 
     def approve(self, approval_id: str) -> PendingApproval | None:
         with self._lock:
             self._cleanup_expired()
-            return self._pending.pop(approval_id, None)
+            item = self._pending.pop(approval_id, None)
+            self._persist()
+            return item
 
     def reject(self, approval_id: str) -> bool:
         with self._lock:
             self._cleanup_expired()
             existed = approval_id in self._pending
             self._pending.pop(approval_id, None)
+            self._persist()
             return existed
 
     def list_pending(self) -> list[ApprovalItem]:

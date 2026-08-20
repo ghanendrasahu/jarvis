@@ -146,7 +146,11 @@ class Settings(BaseSettings):
 
     @property
     def resolved_allowed_roots(self) -> list[Path]:
-        roots = [Path(self.workspace_root).expanduser().resolve(), Path.home().resolve()]
+        # NOTE: the user's home directory is intentionally NOT an implicit
+        # allowed root. Implicitly trusting the whole home tree would let the
+        # agent read/write any file the user owns. Add explicit roots via
+        # `allowed_roots` when broader access is required.
+        roots = [Path(self.workspace_root).expanduser().resolve()]
         roots.extend(Path(item).expanduser().resolve() for item in self.allowed_roots)
         deduped: list[Path] = []
         seen: set[str] = set()

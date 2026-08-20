@@ -218,6 +218,7 @@ class JobAgent:
                         url=job.url,
                         status=status,
                         notes=note,
+                        source=site,
                     )
                     if status == "applied":
                         task["applied"] += 1
@@ -271,11 +272,12 @@ class JobAgent:
             except Exception:
                 logger.info("no results selector found on %s", url)
 
-        cards_links = self.session.extract_text(page, results_selector or "a[href]", attribute="href", multiple=True)
+        link_selector = str(card.get("link") or "").strip() or results_selector or "a[href]"
+        cards_links = self.session.extract_text(page, link_selector, attribute="href", multiple=True)
         unique_links: list[str] = []
         for link in cards_links:
             resolved = urllib.parse.urljoin(url, link)
-            if resolved not in unique_links:
+            if resolved not in unique_links and resolved != url:
                 unique_links.append(resolved)
 
         titles = self.session.extract_text(page, card.get("title") or "h2 a, h3 a", multiple=True) if card.get("title") else []
@@ -288,13 +290,12 @@ class JobAgent:
             title = titles[index] if index < len(titles) else "Untitled role"
             company = companies[index] if index < len(companies) else ""
             location = locations[index] if index < len(locations) else ""
-            link = unique_links[index] if index < len(unique_links) else url
+            link = unique_links[index] if index < len(unique_links) else ""
+            if not link:
+                continue
             listings.append(JobListing(site=profile.get("name", "generic"), title=title, company=company, location=location, url=link))
             if len(listings) >= 20:
                 break
-
-        if not listings:
-            listings.append(JobListing(site=profile.get("name", "generic"), title=query, company="", location="", url=url))
         return listings
 
     @staticmethod
@@ -308,6 +309,8 @@ class JobAgent:
     # ---- apply ------------------------------------------------------------
 
     def _apply_to_job(self, profile: dict[str, Any], job: JobListing, task: dict[str, Any]) -> tuple[str, str]:
+        if not profile.get("easy_apply"):
+            return "skipped", "site does not expose an in-page Easy Apply flow (easy_apply=false)"
         host = self._host_of(profile)
         try:
             page = self.session.ensure_page(job.url, [host] if host else ["http"])
@@ -480,8 +483,10 @@ class JobAgent:
 
     def _upload_resume(self, page: Any) -> str:
         resume = Path(self.settings.resume_pdf_path).expanduser()
-        if not resume.exists():
-            return "no-resume-file"
+        if not resume.is_file():
+            return f"no-resume-file:{resume.name if resume.name else 'CV.pdf'}"
+        if resume.stat().st_size == 0:
+            return "resume-empty"
         file_input = page.locator("input[type='file']")
         if file_input.count() == 0:
             return "no-upload-field"

@@ -51,6 +51,7 @@ TOOL_META: dict[str, ToolMeta] = {
     # ---- browser --------------------------------------------------------------
     "search_web": ToolMeta("browser", "read", external_action=True, timeout_seconds=30),
     "read_webpage": ToolMeta("browser", "read", external_action=True, timeout_seconds=30),
+    "research_agent_start": ToolMeta("browser", "read", external_action=True, timeout_seconds=300),
     "open_youtube_video": ToolMeta("browser", "execute", external_action=True, timeout_seconds=30),
     "control_youtube": ToolMeta("browser", "execute", external_action=True, timeout_seconds=20),
     "seek_youtube": ToolMeta("browser", "execute", external_action=True, timeout_seconds=20),
