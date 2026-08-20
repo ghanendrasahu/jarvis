@@ -5,20 +5,17 @@ import json
 import math
 import queue
 import random
+import shutil
 import threading
-import time
 import tkinter as tk
 from collections.abc import Callable
 from datetime import UTC, datetime
 from pathlib import Path
-from tkinter import ttk
+from tkinter import filedialog, ttk
 from typing import Any
-
-import psutil
 
 from app.bootstrap import build_runtime
 from app.core.events import EventHub
-from app.core.gpu import get_gpu_status
 from app.core.media import background_image_path, list_background_images
 from app.core.palette import PALETTES, THEME_ORDER
 from app.hotkey import GlobalHotkey
@@ -48,6 +45,16 @@ _apply_palette(_current_theme)
 
 def _backgrounds_dir() -> Path:
     return Path(__file__).resolve().parent.parent / "data" / "backgrounds"
+
+
+def _unique_path(directory: Path, filename: str) -> Path:
+    candidate = directory / filename
+    stem, suffix = candidate.stem, candidate.suffix
+    counter = 1
+    while candidate.exists():
+        candidate = directory / f"{stem}_{counter}{suffix}"
+        counter += 1
+    return candidate
 
 
 class Tooltip:
@@ -425,11 +432,16 @@ class JarvisHudApp:
 
                 sw.bind("<Button-1>", _make_gradient_binding(i))
         elif current_mode == "image":
+            tk.Button(
+                body, text="BROWSE\u2026", command=lambda: self._pick_background_image(win),
+                bg=CYAN, fg="#021018", relief=tk.FLAT, bd=0, padx=12, pady=5,
+                font=("JetBrains Mono", 9, "bold"), cursor="hand2",
+            ).pack(anchor="w", pady=(0, 8))
             files = list_background_images(_backgrounds_dir())
             grid = tk.Frame(body, bg=BG)
             grid.pack(anchor="w")
             if not files:
-                tk.Label(body, text="No images yet \u2014 put a .png or .gif in data/backgrounds/ and click Refresh.",
+                tk.Label(body, text="No images yet \u2014 pick one above, or drop a .png/.gif in data/backgrounds/.",
                          bg=BG, fg=MUTED, font=("JetBrains Mono", 8)).pack(anchor="w", pady=6)
             for idx, item in enumerate(files):
                 btn = self._chip(grid, item["name"], lambda n=item["name"]: self._apply_background("image", n))
@@ -453,6 +465,34 @@ class JarvisHudApp:
         except Exception:
             pass
         self._open_backgrounds()
+
+    def _pick_background_image(self, win: tk.Toplevel) -> None:
+        """Open a native file dialog, import the chosen image into data/backgrounds, and apply it."""
+        path = filedialog.askopenfilename(
+            title="Choose a background image",
+            parent=win,
+            filetypes=[("Image files", "*.png *.jpg *.jpeg *.gif *.bmp *.webp"), ("All files", "*.*")],
+        )
+        if not path:
+            return
+        src = Path(path)
+        try:
+            dest_dir = _backgrounds_dir()
+            dest_dir.mkdir(parents=True, exist_ok=True)
+            if src.suffix.lower() in {".png", ".gif"}:
+                dest = _unique_path(dest_dir, src.name)
+                shutil.copy2(src, dest)
+            else:
+                from PIL import Image
+
+                img = Image.open(src)
+                img.load()
+                dest = _unique_path(dest_dir, src.stem + ".png")
+                img.convert("RGBA").save(dest, "PNG")
+            self._apply_background("image", dest.name)
+            self._reopen_backgrounds(win)
+        except Exception:
+            self._toaster.notify("Background import failed", "Could not import that image.", RED)
 
     def _build_ui(self) -> None:
         self._scene_hidden = False
@@ -559,7 +599,7 @@ class JarvisHudApp:
         left = self._make_panel(self.body, PANEL)
         left.grid(row=0, column=0, sticky="nsew", padx=(0, 10))
         left.columnconfigure(0, weight=1)
-        left.rowconfigure(3, weight=1)
+        left.rowconfigure(2, weight=1)
 
         # ------------------------------------------------------- command center
         cmd_card, cmd_body = self._card(left, "Command Center", "Natural-language control")
@@ -588,48 +628,6 @@ class JarvisHudApp:
             c.pack(side="left", padx=(0, 6))
         cmd_card.grid(row=0, column=0, sticky="ew", padx=12, pady=(12, 8))
 
-        # --------------------------------------------------------- system metrics
-        met_card, met_body = self._card(left, "System Metrics", "Live CPU · RAM · NET · GPU · DISK")
-        met_body.columnconfigure(0, weight=1)
-        sparks = tk.Frame(met_body, bg=PANEL_2)
-        sparks.grid(row=0, column=0, sticky="ew")
-        for i in range(5):
-            sparks.columnconfigure(i, weight=1)
-        self.cpu_canvas = tk.Canvas(sparks, bg=CANVAS, width=96, height=64, highlightthickness=0)
-        self.ram_canvas = tk.Canvas(sparks, bg=CANVAS, width=96, height=64, highlightthickness=0)
-        self.net_canvas = tk.Canvas(sparks, bg=CANVAS, width=96, height=64, highlightthickness=0)
-        self.gpu_canvas = tk.Canvas(sparks, bg=CANVAS, width=96, height=64, highlightthickness=0)
-        self.disk_canvas = tk.Canvas(sparks, bg=CANVAS, width=96, height=64, highlightthickness=0)
-        for i, (name, cv) in enumerate(
-            [
-                ("CPU", self.cpu_canvas),
-                ("RAM", self.ram_canvas),
-                ("NET", self.net_canvas),
-                ("GPU", self.gpu_canvas),
-                ("DISK", self.disk_canvas),
-            ]
-        ):
-            tk.Label(sparks, text=name, bg=PANEL_2, fg=TEXT, font=("JetBrains Mono", 8, "bold")).grid(
-                row=0, column=i, sticky="w", padx=(0, 2), pady=(2, 0)
-            )
-            cv.grid(row=1, column=i, sticky="ew", padx=(0, 4))
-        ring_row = tk.Frame(met_body, bg=PANEL_2)
-        ring_row.grid(row=1, column=0, sticky="ew", pady=(8, 0))
-        ring_row.columnconfigure(1, weight=1)
-        self.metrics_canvas = tk.Canvas(ring_row, bg=CANVAS, height=120, width=250, highlightthickness=0, bd=0)
-        self.metrics_canvas.grid(row=0, column=0, sticky="w")
-        diag_strip = tk.Frame(ring_row, bg=INNER, highlightbackground=STROKE, highlightthickness=1)
-        diag_strip.grid(row=0, column=1, sticky="nsew", padx=(10, 0))
-        diag_strip.columnconfigure(1, weight=1)
-        tk.Label(diag_strip, text="DIAGNOSIS", bg=INNER, fg=MUTED, font=("JetBrains Mono", 8, "bold")).grid(
-            row=0, column=0, sticky="w", padx=(8, 6), pady=(6, 2)
-        )
-        self.diag_info = tk.Label(diag_strip, text="Idle", bg=INNER, fg=MUTED, font=("JetBrains Mono", 9, "bold"), anchor="w")
-        self.diag_info.grid(row=0, column=1, sticky="ew", padx=(0, 8), pady=(6, 2))
-        self.diag_detail = tk.Label(diag_strip, text="No issues detected", bg=INNER, fg=MUTED, font=("JetBrains Mono", 8), anchor="w", justify="left")
-        self.diag_detail.grid(row=1, column=0, columnspan=2, sticky="ew", padx=8, pady=(0, 6))
-        met_card.grid(row=1, column=0, sticky="ew", padx=12, pady=(0, 8))
-
         # ---------------------------------------------------------- activity feed
         feed_card, feed_body = self._card(left, "Activity Feed", "Commands, agents and scheduler events")
         feed_head = tk.Frame(feed_body, bg=PANEL_2)
@@ -654,7 +652,7 @@ class JarvisHudApp:
         self.feed_text.configure(state=tk.DISABLED)
         for tag, color in [("feed_cmd", CYAN), ("feed_ok", GREEN), ("feed_pending", AMBER), ("feed_err", RED), ("feed_sys", MUTED)]:
             self.feed_text.tag_configure(tag, foreground=color)
-        feed_card.grid(row=2, column=0, sticky="ew", padx=12, pady=(0, 8))
+        feed_card.grid(row=1, column=0, sticky="ew", padx=12, pady=(0, 8))
 
         # ----------------------------------------------------------- live terminal
         term_card, term_body = self._card(left, "Live Terminal", "Command, agent and scheduler logs")
@@ -682,7 +680,7 @@ class JarvisHudApp:
         self.terminal.configure(state=tk.DISABLED)
         for tag, color in [("ts", MUTED), ("cmd", CYAN), ("ok", GREEN), ("pending", AMBER), ("err", RED), ("sys", INDIGO)]:
             self.terminal.tag_configure(tag, foreground=color)
-        term_card.grid(row=3, column=0, sticky="nsew", padx=12, pady=(0, 12))
+        term_card.grid(row=2, column=0, sticky="nsew", padx=12, pady=(0, 12))
 
         # ------------------------------------------------------------ AI assistant
         mid = self._make_panel(self.body, PANEL)
@@ -869,8 +867,6 @@ class JarvisHudApp:
         self.scene.bind("<Configure>", self._reset_scene)
         scene_card.grid(row=4, column=0, sticky="ew", padx=12, pady=(0, 12))
 
-        self._draw_resource_panels()
-
     def _on_body_resize(self, event: tk.Event) -> None:
         scene = getattr(self, "scene", None)
         if scene is None:
@@ -898,85 +894,6 @@ class JarvisHudApp:
             if not hidden:
                 scene.grid_remove()
                 self._scene_hidden = True
-
-    def _draw_resource_panels(self) -> None:
-        for c in [getattr(self, "cpu_canvas", None), getattr(self, "ram_canvas", None), getattr(self, "net_canvas", None),
-                  getattr(self, "gpu_canvas", None), getattr(self, "disk_canvas", None)]:
-            if c is None:
-                return
-
-        chart = self._monitor.chart()
-        cpu_history = chart["cpu_history"]
-        mem_history = chart["memory_history"]
-
-        def _spark(canvas: tk.Canvas, line_color: str, values: list[float], unit: str = "%",
-                   bars: bool = False, scale: float = 100.0) -> None:
-            canvas.delete("all")
-            w = max(10, canvas.winfo_width())
-            h = max(10, canvas.winfo_height())
-            canvas.create_rectangle(0, 0, w, h, fill=CANVAS, outline="")
-            if not values:
-                canvas.create_text(w // 2, h // 2, text="sampling...", fill=MUTED, font=("JetBrains Mono", 8))
-                return
-            if bars:
-                bw = max(5, w // max(1, len(values)))
-                x = 3
-                for v in values[-16:]:
-                    vh = max(4, int((v / scale) * (h - 16)))
-                    canvas.create_rectangle(x, h - 8 - vh, x + bw, h - 8, fill=CYAN, outline="")
-                    x += bw + 2
-            else:
-                pts: list[float] = []
-                step = max(1.0, w / max(1, (len(values) - 1)))
-                for i, v in enumerate(values):
-                    y = (h - 8) - ((v / scale) * (h - 20))
-                    pts.extend([4 + i * step, y])
-                if len(pts) >= 4:
-                    canvas.create_line(pts, fill=line_color, width=2, smooth=True)
-                canvas.create_line(0, h - 8, w, h - 8, fill=STROKE, width=1)
-            latest = values[-1] if values else 0.0
-            canvas.create_text(w - 6, 10, anchor="ne", text=f"{latest:.0f}{unit}", fill=CYAN, font=("JetBrains Mono", 9, "bold"))
-
-        _spark(self.cpu_canvas, CYAN, cpu_history, "%")
-        _spark(self.ram_canvas, INDIGO, mem_history, "%", bars=True)
-        net_sent = [chart["net_sent_kbps"]]
-        net_recv = [chart["net_recv_kbps"]]
-        net_values = net_sent + net_recv if len(net_sent) < 2 else (net_sent + net_recv)[-60:]
-        _spark(self.net_canvas, CYAN, net_values, "kb/s")
-
-        try:
-            gpu_pct = float(str(get_gpu_status().get("utilization") or 0))
-        except Exception:
-            gpu_pct = 0.0
-        self._gpu_history = (getattr(self, "_gpu_history", []) + [gpu_pct])[-60:]
-        _spark(self.gpu_canvas, INDIGO, self._gpu_history, "%")
-
-        try:
-            disk_pct = float(psutil.disk_usage("/").percent)
-        except Exception:
-            disk_pct = 0.0
-        _spark(self.disk_canvas, AMBER, [disk_pct], "%", bars=True)
-
-        self.metrics_canvas.delete("all")
-        sample = self._monitor.snapshot()
-        h = max(100, self.metrics_canvas.winfo_height())
-        cx, cy, r = 44, h // 2, 34
-        self.metrics_canvas.create_oval(cx - r, cy - r, cx + r, cy + r, outline=STROKE, width=7)
-        cpu_extent = max(0, min(360, int((sample.cpu_percent / 100.0) * 360)))
-        self.metrics_canvas.create_arc(cx - r, cy - r, cx + r, cy + r, start=90, extent=-cpu_extent, outline=CYAN, style=tk.ARC, width=7)
-        self.metrics_canvas.create_text(cx, cy, text=f"{sample.cpu_percent:.0f}%", fill=CYAN, font=("JetBrains Mono", 11, "bold"))
-        try:
-            gpu_pct = float(str(get_gpu_status().get("utilization") or 0))
-        except Exception:
-            gpu_pct = 0.0
-        tx = cx + r + 14
-        self.metrics_canvas.create_text(tx, cy - 26, anchor="w", text=f"MEM {sample.memory_percent:.0f}%", fill=AMBER, font=("JetBrains Mono", 9, "bold"))
-        self.metrics_canvas.create_text(tx, cy, anchor="w", text=f"GPU {gpu_pct:.0f}%", fill=INDIGO, font=("JetBrains Mono", 9, "bold"))
-        self.metrics_canvas.create_text(
-            tx, cy + 26, anchor="w",
-            text=f"NET {sample.net_sent_kbps:.0f}/{sample.net_recv_kbps:.0f}",
-            fill=MUTED, font=("JetBrains Mono", 9, "bold"),
-        )
 
     def _append_terminal(self, kind: str, text: str) -> None:
         self.terminal.configure(state=tk.NORMAL)
@@ -1985,10 +1902,6 @@ class JarvisHudApp:
         if len(pts) >= 4:
             self.wave_canvas.create_line(pts, fill=color, width=2, smooth=True)
         self.wave_canvas.create_text(10, 10, anchor="nw", text=f"VOICE {phase}", fill=color, font=("JetBrains Mono", 9, "bold"))
-        now = time.monotonic()
-        if now - getattr(self, "_last_resource_draw", 0.0) >= 1.0:
-            self._last_resource_draw = now
-            self._draw_resource_panels()
         self.root.after(50, self._animate_wave)
 
     def _refresh_approvals(self) -> None:
@@ -2002,8 +1915,8 @@ class JarvisHudApp:
         threading.Thread(target=worker, daemon=True).start()
 
     def _diagnose_system(self) -> None:
-        """Run diagnose_system tool off the UI thread and update the panel."""
-        self.diag_info.config(text="Diagnosing\u2026", fg=AMBER)
+        """Run diagnose_system tool off the UI thread and report to the terminal."""
+        self._append_terminal("SYS", "Running system diagnosis\u2026")
 
         def worker() -> None:
             try:
@@ -2021,24 +1934,17 @@ class JarvisHudApp:
             explanation = payload.get("explanation", "")
             raw_metrics = payload.get("raw_metrics", {})
             if diagnosis.get("root_cause"):
-                self.diag_info.config(text="Issue detected", fg=AMBER)
-                self.diag_detail.config(text=diagnosis["root_cause"])
+                self._append_terminal("SYS", f"Diagnosis: issue detected \u2014 {diagnosis['root_cause']}")
             else:
-                self.diag_info.config(text="No issues detected", fg=GREEN)
-                self.diag_detail.config(text="")
-            self._append_terminal("SYS", f"Diagnosis: {explanation}")
+                self._append_terminal("SYS", f"Diagnosis: no issues detected \u2014 {explanation}")
             if raw_metrics:
                 cpu = raw_metrics.get("cpu_percent", "N/A")
                 mem = raw_metrics.get("memory_percent", "N/A")
                 self._append_terminal("SYS", f"  CPU: {cpu}% \u2022 RAM: {mem}%")
         else:
-            self.diag_info.config(text="Diagnosis unavailable", fg=RED)
-            self.diag_detail.config(text=payload.get("explanation", "unknown"))
             self._append_terminal("WARN", f"Diagnosis not available: {payload.get('explanation', 'unknown')}")
 
     def _handle_diagnosis_error(self, message: str) -> None:
-        self.diag_info.config(text="Diagnosis error", fg=RED)
-        self.diag_detail.config(text=message)
         self._append_terminal("ERR", f"Diagnosis failed: {message}")
 
     def _render_approval_cards(self, items: list[dict[str, Any]]) -> None:
