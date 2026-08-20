@@ -3,7 +3,9 @@ from __future__ import annotations
 import hashlib
 import math
 import re
-from typing import Protocol
+from collections import OrderedDict
+from threading import Lock
+from typing import Any, Protocol
 
 import requests
 
@@ -44,6 +46,43 @@ def _hash_token(token: str) -> int:
     return int.from_bytes(hashlib.md5(token.encode("utf-8", errors="ignore")).digest()[:6], "big")
 
 
+class CachedEmbedder:
+    """Thread-safe, bounded LRU cache over a slow embedder.
+
+    Identical text (e.g. repeated retrieval queries) is embedded once and served
+    from memory afterwards, eliminating redundant network/LLM calls. The cache is
+    content-addressed by SHA-256 and capped to avoid unbounded growth.
+    """
+
+    def __init__(self, inner: Embedder, max_entries: int = 1024) -> None:
+        self._inner = inner
+        self._max_entries = max(1, max_entries)
+        self._cache: OrderedDict[str, list[float]] = OrderedDict()
+        self._lock = Lock()
+        self._hits = 0
+        self._misses = 0
+
+    def embed(self, text: str) -> list[float]:
+        key = hashlib.sha256((text or "").encode("utf-8", errors="ignore")).hexdigest()
+        with self._lock:
+            cached = self._cache.pop(key, None)
+            if cached is not None:
+                self._cache[key] = cached
+                self._hits += 1
+                return cached
+            self._misses += 1
+        vector = self._inner.embed(text)
+        with self._lock:
+            self._cache[key] = vector
+            if len(self._cache) > self._max_entries:
+                self._cache.popitem(last=False)
+            return vector
+
+    def stats(self) -> dict[str, Any]:
+        with self._lock:
+            return {"hits": self._hits, "misses": self._misses, "size": len(self._cache)}
+
+
 class HashedEmbedder:
     """Deterministic, network-free bag-of-shingles embedder.
 
@@ -70,5 +109,5 @@ class HashedEmbedder:
 
 def create_embedder(settings: Settings) -> Embedder:
     if settings.rag_embeddings_enabled:
-        return OllamaEmbedder(settings)
+        return CachedEmbedder(OllamaEmbedder(settings))
     return HashedEmbedder()

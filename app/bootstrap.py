@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import time
 from dataclasses import dataclass
 
 from app.agents.code_agent import CodeAgent
@@ -50,16 +51,28 @@ class Runtime:
 
 
 def build_runtime(events: EventHub | None = None) -> Runtime:
+    started_at = time.perf_counter()
+    timings: list[tuple[str, float]] = []
+
+    def _step(label: str, start: float) -> None:
+        timings.append((label, (time.perf_counter() - start) * 1000))
+
+    step = time.perf_counter()
     settings = get_settings()
     memory = MemoryStore(settings.database_path)
     memory.prune(settings.db_retention_days)
     rag = RagIndex(settings) if settings.rag_enabled else None
     registry = ToolRegistry()
+    _step("settings+memory+rag", step)
 
+    step = time.perf_counter()
     approvals = ApprovalManager()
     planner = wrap_planner_with_rag(create_planner(settings), rag)
     reasoning_planner = wrap_planner_with_rag(create_planner(settings, for_agent=True), rag)
     router = DirectCommandRouter()
+    _step("planners+router", step)
+
+    step = time.perf_counter()
     executor = ActionExecutor(registry=registry, approvals=approvals, settings=settings)
     agent = AutonomousAgent(
         settings=settings,
@@ -84,10 +97,16 @@ def build_runtime(events: EventHub | None = None) -> Runtime:
         events=events,
         task_engine=task_engine,
     )
+    _step("executor+agents+orchestrator", step)
+
+    step = time.perf_counter()
     voice = VoiceController(settings=settings, orchestrator=orchestrator)
     job_agent = get_job_agent(settings=settings, memory=memory)
     scheduler = Scheduler(settings=settings, memory=memory, orchestrator=orchestrator)
     calendar = CalendarStore(settings.calendar_path)
+    _step("voice+job_agent+scheduler+calendar", step)
+
+    step = time.perf_counter()
     # Resource monitor for system intelligence (Phase L)
     monitor = ResourceMonitor(history_size=60, interval=1.0)
     monitor.start()
@@ -102,6 +121,8 @@ def build_runtime(events: EventHub | None = None) -> Runtime:
         task_engine=task_engine,
         monitor=monitor,
     )
+    _step("monitor+tool registration", step)
+
     reminder_speaker = Speaker(enabled=settings.tts_enabled)
 
     def _announce_scheduled_run(job: dict, status: str, text: str) -> None:
@@ -113,6 +134,7 @@ def build_runtime(events: EventHub | None = None) -> Runtime:
 
     scheduler.on_run = _announce_scheduled_run
 
+    step = time.perf_counter()
     if rag is not None:
         try:
             indexed = rag.index_notes_dir()
@@ -120,6 +142,11 @@ def build_runtime(events: EventHub | None = None) -> Runtime:
                 logger.info("indexed %d file(s) from notes dir", indexed)
         except Exception:
             logger.warning("notes dir indexing failed", exc_info=True)
+    _step("notes indexing", step)
+
+    total_ms = (time.perf_counter() - started_at) * 1000
+    breakdown = ", ".join(f"{label}={ms:.1f}ms" for label, ms in timings)
+    logger.info("runtime build complete in %.1fms | %s", total_ms, breakdown)
 
     return Runtime(
         settings=settings,
