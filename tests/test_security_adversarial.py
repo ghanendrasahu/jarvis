@@ -11,6 +11,7 @@ from app.core.executor import ActionExecutor
 from app.core.safe_paths import resolve_safe_path
 from app.models.schemas import Action
 from app.tools.browser_action import BrowserActionError, BrowserActionTool
+from app.tools.browser_session import BrowserSession
 from app.tools.registry import ToolRegistry
 from app.tools.shell_tools import _rejected_by_policy
 
@@ -198,6 +199,7 @@ def test_approval_reject_clears_pending(tmp_path):
     executor = ActionExecutor(registry, approvals, _risk_settings(tmp_path))
     result = executor.execute("cmd", Action(tool="med_tool", risk="medium"))
     assert result.status == "pending"
+    assert result.pending_approval_id is not None
     assert approvals.reject(result.pending_approval_id) is True
     assert not approvals.list_pending()
     assert approvals.approve(result.pending_approval_id) is None
@@ -227,7 +229,10 @@ class _StubPage:
     pass
 
 
-class _StubSession:
+class _StubSession(BrowserSession):
+    def __init__(self) -> None:
+        pass  # never touches Playwright; only stubbed methods are called
+
     def ensure_page(self, url, hints):
         return _StubPage()
 

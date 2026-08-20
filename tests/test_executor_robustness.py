@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import threading
 import time
+from typing import Any
 
 from app.config import Settings
 from app.core.approvals import ApprovalManager
@@ -12,7 +13,7 @@ from app.models.schemas import Action
 from app.tools.registry import ToolRegistry
 
 
-def _settings(tmp_path, **kwargs) -> Settings:
+def _settings(tmp_path, **kwargs: Any) -> Settings:
     base = {
         "workspace_root": str(tmp_path),
         "database_path": str(tmp_path / "robust.db"),
@@ -95,6 +96,7 @@ def test_rag_query_embedding_cached_when_semantic_enabled(tmp_path, monkeypatch)
     assert after_first_query == after_index + 1
     # Repeating the query must not re-hit the embedder.
     assert calls["n"] == after_first_query
+    assert isinstance(rag.embedder, CachedEmbedder)
     assert rag.embedder.stats()["hits"] >= 1
 
 

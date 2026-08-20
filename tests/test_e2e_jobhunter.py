@@ -139,6 +139,7 @@ def test_e2e_jobhunter_scenario(runtime):
     assert pending.pending_approval_id
     approved = rt.orchestrator.approve(pending.pending_approval_id)
     assert approved.status == "approved"
+    assert approved.execution is not None
     assert approved.execution.status == "completed"
 
     rejected = rt.executor.execute(
