@@ -80,7 +80,7 @@ def test_code_agent_reports_failed_verification(tmp_path):
 
 def test_code_agent_skips_verification_when_no_code_touched(tmp_path):
     agent, _, _ = _harness(tmp_path, "def test_ok():\n    assert True\n", rounds=1)
-    agent.agent.results = [
+    agent.agent.results = [  # type: ignore[attr-defined]
         AgentRunResult(command="c", status="completed", final_response="nothing to change", iterations=1, actions_total=0, results=[])
     ]
     result = agent.run("fix nothing")
@@ -100,7 +100,7 @@ def test_code_agent_resume_path(tmp_path):
         "last_summary": "",
     }
     outcome = ToolExecutionResult(tool="edit_file", status="completed", output={"replaced": 1})
-    agent.agent.resume_results = [_edit_result("fix x")]
+    agent.agent.resume_results = [_edit_result("fix x")]  # type: ignore[attr-defined]
     result = agent.resume("abc", outcome)
     assert result is not None
     assert result.stopped_reason == "verified"

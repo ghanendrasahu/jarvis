@@ -13,6 +13,8 @@ from typing import Any
 import psutil
 
 from app.config import Settings
+from app.core.diagnoser import DiagnosisToolHandler, SystemDiagnoser
+from app.core.monitor import ResourceMonitor
 from app.tools.registry import ToolRegistry
 
 APP_ALIASES = {
@@ -47,7 +49,7 @@ PROTECTED_PROCESSES = {
 }
 
 
-def register_system_tools(registry: ToolRegistry, settings: Settings) -> None:
+def register_system_tools(registry: ToolRegistry, settings: Settings, monitor: ResourceMonitor | None = None) -> None:
     def _shell_open(target: str) -> bool:
         if os.name != "nt":
             return False
@@ -276,6 +278,19 @@ def register_system_tools(registry: ToolRegistry, settings: Settings) -> None:
             "uptime_seconds": int(datetime.now().timestamp() - psutil.boot_time()),
         }
 
+    def gpu_status(_: dict[str, Any]) -> dict[str, Any]:
+        from app.core.gpu import get_gpu_status
+
+        status = get_gpu_status()
+        return {
+            "name": status.get("name", "Unknown GPU"),
+            "available": status.get("available", False),
+            "utilization": status.get("utilization"),
+            "memory_used_mb": status.get("memory_used_mb"),
+            "memory_total_mb": status.get("memory_total_mb"),
+            "unavailable_reason": status.get("unavailable_reason"),
+        }
+
     def get_current_time(_: dict[str, Any]) -> dict[str, Any]:
         now = datetime.now()
         return {
@@ -387,4 +402,27 @@ def register_system_tools(registry: ToolRegistry, settings: Settings) -> None:
         risk="low",
         parameters={},
         handler=list_known_apps,
+    )
+
+    # Diagnosis tool registration. Wired to the shared ResourceMonitor when one is
+    # available (bootstrap always provides it); falls back to an informational stub
+    # otherwise so the registry stays consistent in minimal/test setups.
+    if monitor is not None:
+        diagnose_handler = DiagnosisToolHandler(SystemDiagnoser(monitor, settings)).handle
+    else:
+
+        def diagnose_handler(_: dict[str, Any]) -> dict[str, Any]:
+            return {
+                "status": "info",
+                "explanation": "System diagnosis requires the resource monitor to be active. Use 'system_status' for current metrics.",
+                "diagnosis": None,
+                "raw_metrics": None,
+            }
+
+    registry.register(
+        name="diagnose_system",
+        description="Diagnose system issues (high CPU, RAM, disk, GPU) with reasoning and suggested actions. Never auto-kills.",
+        risk="low",
+        parameters={},
+        handler=diagnose_handler,
     )

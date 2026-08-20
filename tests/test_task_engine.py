@@ -94,10 +94,10 @@ def test_approval_pending_then_resume_after_approval(tmp_path):
     assert pending is not None
     outcome = executor.execute(pending.command, pending.action, auto_approve=True)
     assert engine.resume_after_approval(step.pending_approval_id, outcome) is True
-    task = engine.get(task.id)
-    assert task is not None
-    assert task.status == "completed"
-    assert task.steps[0].status == "completed"
+    refetched = engine.get(task.id)
+    assert refetched is not None
+    assert refetched.status == "completed"
+    assert refetched.steps[0].status == "completed"
 
 
 def test_cancel_marks_remaining_steps(tmp_path):
@@ -121,12 +121,12 @@ def test_cancel_marks_remaining_steps(tmp_path):
     assert engine.cancel(task.id) is True
     gate.set()
     thread.join(timeout=5)
-    task = engine.get(task.id)
-    assert task is not None
-    assert task.status == "canceled"
-    assert task.steps[0].status == "completed"
-    assert task.steps[1].status == "canceled"
-    assert task.steps[2].status == "canceled"
+    refetched = engine.get(task.id)
+    assert refetched is not None
+    assert refetched.status == "canceled"
+    assert refetched.steps[0].status == "completed"
+    assert refetched.steps[1].status == "canceled"
+    assert refetched.steps[2].status == "canceled"
 
 
 def test_resume_reruns_failed_steps(tmp_path):
@@ -233,7 +233,16 @@ def test_orchestrator_executes_plan_via_task_engine(tmp_path):
     engine = TaskEngine(executor, memory, settings)
 
     class FakePlanner:
-        def plan(self, command, tool_catalog, history, **kwargs):
+        def plan(
+            self,
+            command: str,
+            tool_catalog: list[dict],
+            history: list[dict],
+            agent_context: str = "",
+            tool_history: list[dict] | None = None,
+            known_facts: dict | None = None,
+            rag_context: str = "",
+        ) -> Plan:
             return Plan(summary="s", actions=[Action(tool="orch_echo", args={"x": 1})], final_response="done")
 
     orch = JarvisOrchestrator(

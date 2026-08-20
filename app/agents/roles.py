@@ -64,7 +64,9 @@ SYSTEM_ROLE = _role_prompt(
 Use system_status, list_processes, and get_current_time to gather facts, then reason
 about the most likely cause of the reported problem. Explain the diagnosis in plain
 language and recommend the safest next action. Never kill processes or run shell
-commands without approval; those are permission-gated and will pause for the user.""",
+commands without approval; those are permission-gated and will pause for the user.
+You can also use diagnose_system to get a full diagnosis including GPU status,
+correlated process analysis, and suggested actions with approval gates.""",
 )
 
 VISION_ROLE = _role_prompt(

@@ -33,6 +33,7 @@ TOOL_META: dict[str, ToolMeta] = {
     "list_known_apps": ToolMeta("desktop", "read"),
     "list_processes": ToolMeta("desktop", "read"),
     "system_status": ToolMeta("desktop", "read"),
+    "diagnose_system": ToolMeta("desktop", "read"),
     "get_current_time": ToolMeta("desktop", "read"),
     "list_windows": ToolMeta("desktop", "read"),
     "focus_window": ToolMeta("desktop", "execute", external_action=True, timeout_seconds=10),
@@ -71,6 +72,10 @@ TOOL_META: dict[str, ToolMeta] = {
     "analyze_screen": ToolMeta("vision", "read", external_action=True, timeout_seconds=90),
     "ocr_screen": ToolMeta("vision", "read", external_action=True, timeout_seconds=60),
     "ocr_image": ToolMeta("vision", "read", external_action=True, timeout_seconds=60),
+    "detect_window": ToolMeta("vision", "read", external_action=True, timeout_seconds=60),
+    "detect_errors": ToolMeta("vision", "read", external_action=True, timeout_seconds=60),
+    "analyze_with_context": ToolMeta("vision", "read", external_action=True, timeout_seconds=120),
+    "analyze_screen_with_context": ToolMeta("vision", "read", external_action=True, timeout_seconds=120),
     # ---- jobs -------------------------------------------------------------------
     "job_apply": ToolMeta("jobs", "execute", external_action=True, timeout_seconds=3600, cancellation="abort"),
     "job_status": ToolMeta("jobs", "read"),
@@ -112,6 +117,9 @@ TOOL_META: dict[str, ToolMeta] = {
     "suggest_next": ToolMeta("proactive", "read"),
     "idle_time": ToolMeta("proactive", "read"),
     "idle_status": ToolMeta("proactive", "read"),
+    # ---- planner --------------------------------------------------------------
+    "plan": ToolMeta("planner", "write"),
+    "plan_status": ToolMeta("planner", "read"),
 }
 
 

@@ -5,6 +5,7 @@ from typing import Any
 from app.config import Settings
 from app.core.calendar import CalendarStore
 from app.core.memory import MemoryStore
+from app.core.monitor import ResourceMonitor
 from app.core.rag import RagIndex
 from app.core.scheduler import Scheduler
 from app.tools.agent_tools import register_agent_tools
@@ -17,6 +18,7 @@ from app.tools.job_tools import register_job_tools
 from app.tools.memory_tools import register_memory_tools
 from app.tools.meta import apply_tool_meta
 from app.tools.metrics_tools import register_metrics_tools
+from app.tools.planner_tools import register_task_planner_tools
 from app.tools.proactive_tools import register_proactive_tools
 from app.tools.productivity_tools import register_productivity_tools
 from app.tools.rag_tools import register_rag_tools
@@ -36,8 +38,9 @@ def register_all_tools(
     scheduler: Scheduler | None = None,
     calendar: CalendarStore | None = None,
     task_engine: Any | None = None,
+    monitor: ResourceMonitor | None = None,
 ) -> None:
-    register_system_tools(registry, settings)
+    register_system_tools(registry, settings, monitor=monitor)
     register_file_tools(registry, settings)
     register_browser_tools(registry, settings)
     register_browser_action(registry, settings)
@@ -58,4 +61,12 @@ def register_all_tools(
         register_scheduler_tools(registry, scheduler)
     if task_engine is not None:
         register_task_tools(registry, settings, task_engine)
+    register_task_planner_tools(
+        registry,
+        settings,
+        task_engine=task_engine,
+        scheduler=scheduler,
+        calendar=calendar,
+        memory=memory,
+    )
     apply_tool_meta(registry)

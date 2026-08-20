@@ -22,9 +22,8 @@ def register_proactive_tools(
         return str(activity.get("last_command") or "")
 
     def suggest_next(args: dict[str, Any]) -> dict[str, Any]:
-        limit = int(args.get("limit", 3))
         last = str(args.get("last_command", "")).strip() or _last_command(memory)
-        items = suggestions.suggest(last, limit=limit)
+        items = suggestions.suggest(last)
         return {"count": len(items), "suggestions": items, "result_text": " - ".join(items)}
 
     def idle_time(_: dict[str, Any]) -> dict[str, Any]:

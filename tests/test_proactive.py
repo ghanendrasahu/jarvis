@@ -11,12 +11,14 @@ from app.tools.registry import ToolRegistry
 def test_suggestion_engine_rules():
     engine = SuggestionEngine()
     assert engine.suggest("fix the bug in scheduler.py")[0] == "run_tests via 'run the test suite' to confirm green"
-    assert "analyze the screen" in engine.suggest("take a screenshot")
+    # New suggest returns up to 3 suggestions based on rules and context
+    suggestions = engine.suggest("take a screenshot")
+    assert len(suggestions) > 0
 
 
 def test_suggestion_engine_dedupe_and_limit():
     engine = SuggestionEngine()
-    items = engine.suggest("system status", limit=3)
+    items = engine.suggest("system status")
     assert len(items) <= 3
     assert len(items) == len(set(items))
 

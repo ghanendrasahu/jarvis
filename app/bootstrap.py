@@ -8,10 +8,12 @@ from app.config import Settings, get_settings
 from app.core.agent import AutonomousAgent
 from app.core.approvals import ApprovalManager
 from app.core.calendar import CalendarStore
+from app.core.diagnoser import SystemDiagnoser
 from app.core.events import EventHub
 from app.core.executor import ActionExecutor
 from app.core.logging import get_logger
 from app.core.memory import MemoryStore
+from app.core.monitor import ResourceMonitor
 from app.core.orchestrator import JarvisOrchestrator
 from app.core.rag import RagIndex
 from app.core.retrieval_planner import wrap_planner_with_rag
@@ -42,6 +44,9 @@ class Runtime:
     job_agent: JobAgent
     scheduler: Scheduler
     rag: RagIndex | None
+    calendar: CalendarStore
+    monitor: ResourceMonitor
+    diagnoser: SystemDiagnoser
 
 
 def build_runtime(events: EventHub | None = None) -> Runtime:
@@ -83,6 +88,10 @@ def build_runtime(events: EventHub | None = None) -> Runtime:
     job_agent = get_job_agent(settings=settings, memory=memory)
     scheduler = Scheduler(settings=settings, memory=memory, orchestrator=orchestrator)
     calendar = CalendarStore(settings.calendar_path)
+    # Resource monitor for system intelligence (Phase L)
+    monitor = ResourceMonitor(history_size=60, interval=1.0)
+    monitor.start()
+    diagnoser = SystemDiagnoser(monitor, settings)
     register_all_tools(
         registry,
         settings,
@@ -91,6 +100,7 @@ def build_runtime(events: EventHub | None = None) -> Runtime:
         scheduler=scheduler,
         calendar=calendar,
         task_engine=task_engine,
+        monitor=monitor,
     )
     reminder_speaker = Speaker(enabled=settings.tts_enabled)
 
@@ -125,4 +135,7 @@ def build_runtime(events: EventHub | None = None) -> Runtime:
         job_agent=job_agent,
         scheduler=scheduler,
         rag=rag,
+        calendar=calendar,
+        monitor=monitor,
+        diagnoser=diagnoser,
     )

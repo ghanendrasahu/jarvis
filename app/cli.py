@@ -138,6 +138,10 @@ def run_console(enable_voice: bool = False) -> None:
         print(json.dumps(result.model_dump(), indent=2))
 
     runtime.voice.stop()
+    try:
+        runtime.monitor.stop()
+    except Exception:
+        pass
 
 
 def main() -> None:

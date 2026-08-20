@@ -29,7 +29,7 @@ class ResearchResult:
         self.confidence = confidence
         self.timestamp = datetime.now(UTC).isoformat()
 
-    def __dict__(self) -> dict[str, Any]:
+    def to_dict(self) -> dict[str, Any]:
         return {
             "answer": self.answer,
             "sources": self.sources,

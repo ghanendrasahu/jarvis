@@ -78,7 +78,7 @@ def test_tool_meta_enriches_every_registered_tool():
         assert item["category"] in {
             "app_launch", "desktop", "system", "files", "browser", "code",
             "knowledge", "vision", "jobs", "productivity", "scheduler", "tasks", "memory", "agent",
-            "metrics", "proactive", "general",
+            "metrics", "proactive", "general", "planner",
         }
         assert item["read_write"] in {"read", "write", "execute"}
 

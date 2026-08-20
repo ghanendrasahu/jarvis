@@ -23,21 +23,27 @@ def test_classify_knowledge():
     role = classify_intent("what do you know about my JobHunter project")
     assert role is not None
     assert role.id == "knowledge"
-    assert classify_intent("remember that my wife's birthday is in June").id == "knowledge"
+    remembered = classify_intent("remember that my wife's birthday is in June")
+    assert remembered is not None
+    assert remembered.id == "knowledge"
 
 
 def test_classify_research():
     role = classify_intent("research the latest SBI recruitment")
     assert role is not None
     assert role.id == "research"
-    assert classify_intent("search the web for battery chargers").id == "research"
+    searched = classify_intent("search the web for battery chargers")
+    assert searched is not None
+    assert searched.id == "research"
 
 
 def test_classify_system():
     role = classify_intent("why is my laptop so slow")
     assert role is not None
     assert role.id == "system"
-    assert classify_intent("diagnose the high ram usage").id == "system"
+    diagnosed = classify_intent("diagnose the high ram usage")
+    assert diagnosed is not None
+    assert diagnosed.id == "system"
 
 
 def test_classify_vision():
@@ -50,7 +56,9 @@ def test_classify_productivity():
     role = classify_intent("plan my day")
     assert role is not None
     assert role.id == "productivity"
-    assert classify_intent("what am I forgetting").id == "productivity"
+    forgot = classify_intent("what am I forgetting")
+    assert forgot is not None
+    assert forgot.id == "productivity"
 
 
 def test_classify_monitoring():
