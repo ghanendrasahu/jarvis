@@ -14,7 +14,7 @@ from app.tools.registry import ToolRegistry
 
 
 def _settings(tmp_path, **kwargs: Any) -> Settings:
-    base = {
+    base: dict[str, Any] = {
         "workspace_root": str(tmp_path),
         "database_path": str(tmp_path / "robust.db"),
     }
