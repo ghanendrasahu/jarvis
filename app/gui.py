@@ -2357,6 +2357,10 @@ def _enable_dpi_awareness() -> None:
 
 def main() -> None:
     _enable_dpi_awareness()
+    from app.core.single_instance import SingleInstance
+
+    if not SingleInstance("hud").acquire():
+        return  # another HUD instance is already running; exit silently
     JarvisHudApp().run()
 
 
