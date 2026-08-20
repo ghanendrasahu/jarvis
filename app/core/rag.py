@@ -142,8 +142,8 @@ class RagIndex:
         chunks = _chunk_text(safe_content, self.chunk_chars, self.overlap_chars)
         if not chunks:
             raise ValueError("Document content is empty.")
-        title = title.strip()[:500] or "Untitled"
-        source = source.strip()[:1000]
+        title = redact_text(title.strip()[:500]) or "Untitled"
+        source = redact_text(source.strip()[:1000])
         created_at = time.strftime("%Y-%m-%dT%H:%M:%S")
         with self._lock:
             conn = self._conn
