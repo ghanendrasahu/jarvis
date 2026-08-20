@@ -152,16 +152,74 @@ class JarvisHudApp:
         self.root.after(5000, self._job_tick)
 
     def _make_panel(self, parent: tk.Misc, bg_color: str = PANEL) -> tk.Frame:
-        frame = tk.Frame(parent, bg=bg_color, highlightbackground=STROKE, highlightthickness=1, bd=0)
-        c = tk.Canvas(frame, bg=bg_color, highlightthickness=0, bd=0, width=14, height=14)
-        c.place(x=0, y=0)
-        c.create_line(0, 12, 0, 0, fill=CYAN, width=1)
-        c.create_line(0, 0, 12, 0, fill=CYAN, width=1)
-        c2 = tk.Canvas(frame, bg=bg_color, highlightthickness=0, bd=0, width=14, height=14)
-        c2.place(relx=1, rely=1, anchor="se")
-        c2.create_line(14, 2, 14, 14, fill=INDIGO, width=1)
-        c2.create_line(14, 14, 2, 14, fill=INDIGO, width=1)
-        return frame
+        return tk.Frame(parent, bg=bg_color, highlightbackground=STROKE, highlightthickness=1, bd=0)
+
+    def _hover_color(self, bg_color: str) -> str:
+        try:
+            return self._blend(bg_color, "#ffffff", 0.14)
+        except Exception:
+            return bg_color
+
+    def _bind_hover(self, btn: tk.Button, base: str, hover: str) -> None:
+        def _enter(_e: tk.Event, b: tk.Button = btn, c: str = hover) -> None:
+            b.configure(bg=c)
+
+        def _leave(_e: tk.Event, b: tk.Button = btn, c: str = base) -> None:
+            b.configure(bg=c)
+
+        btn.bind("<Enter>", _enter)
+        btn.bind("<Leave>", _leave)
+
+    def _header_chip(self, parent: tk.Misc, text: str, command, hover: bool = True) -> tk.Button:
+        btn = tk.Button(
+            parent,
+            text=text,
+            command=command,
+            bg=CHIP,
+            fg=TEXT,
+            activebackground=CHIP_HI,
+            activeforeground=TEXT,
+            bd=0,
+            relief=tk.FLAT,
+            cursor="hand2",
+            font=("JetBrains Mono", 9, "bold"),
+            padx=10,
+            pady=5,
+        )
+        if hover:
+            self._bind_hover(btn, CHIP, CHIP_HI)
+        return btn
+
+    def _primary_button(self, parent: tk.Misc, text: str, command, padx: int = 12, pady: int = 6) -> tk.Button:
+        btn = tk.Button(
+            parent,
+            text=text,
+            command=command,
+            bg=CYAN,
+            fg="#021018",
+            activebackground=self._hover_color(CYAN),
+            activeforeground="#021018",
+            relief=tk.FLAT,
+            bd=0,
+            cursor="hand2",
+            font=("JetBrains Mono", 9, "bold"),
+            padx=padx,
+            pady=pady,
+        )
+        self._bind_hover(btn, CYAN, self._hover_color(CYAN))
+        return btn
+
+    def _card(self, parent: tk.Misc, title: str, subtitle: str = "") -> tuple[tk.Frame, tk.Frame]:
+        card = tk.Frame(parent, bg=PANEL_2, highlightbackground=STROKE, highlightthickness=1, bd=0)
+        head = tk.Frame(card, bg=PANEL_2)
+        head.pack(fill="x", padx=10, pady=(7, 3))
+        tk.Label(head, text=title.upper(), bg=PANEL_2, fg=TEXT, font=("JetBrains Mono", 9, "bold")).pack(side="left")
+        if subtitle:
+            tk.Label(head, text=subtitle, bg=PANEL_2, fg=MUTED, font=("JetBrains Mono", 8)).pack(side="right", padx=(8, 0))
+        tk.Frame(card, bg=STROKE, height=1).pack(fill="x", padx=10)
+        body = tk.Frame(card, bg=PANEL_2)
+        body.pack(fill="both", expand=True, padx=10, pady=(8, 10))
+        return card, body
 
     def _chip(self, parent: tk.Misc, text: str, command) -> tk.Button:
         return tk.Button(
@@ -202,6 +260,30 @@ class JarvisHudApp:
                 lightcolor=CYAN,
                 darkcolor=CYAN,
             )
+            style.configure(
+                "Jarvis.Vertical.TScrollbar",
+                troughcolor=BG,
+                background=CHIP,
+                bordercolor=STROKE,
+                arrowcolor=TEXT,
+                lightcolor=CHIP,
+                darkcolor=CHIP,
+                gripcount=0,
+                relief="flat",
+            )
+            style.map("Jarvis.Vertical.TScrollbar", background=[("active", CHIP_HI)])
+            style.configure(
+                "Jarvis.Horizontal.TScrollbar",
+                troughcolor=BG,
+                background=CHIP,
+                bordercolor=STROKE,
+                arrowcolor=TEXT,
+                lightcolor=CHIP,
+                darkcolor=CHIP,
+                gripcount=0,
+                relief="flat",
+            )
+            style.map("Jarvis.Horizontal.TScrollbar", background=[("active", CHIP_HI)])
             if getattr(self, "job_progress", None) is not None:
                 self.job_progress.configure(style="Jarvis.Horizontal.TProgressbar")
         except Exception:
@@ -373,256 +455,255 @@ class JarvisHudApp:
         self._open_backgrounds()
 
     def _build_ui(self) -> None:
+        self._scene_hidden = False
         self.root.columnconfigure(0, weight=1)
         self.root.rowconfigure(1, weight=1)
 
+        self.root.option_add("*Menu*background", PANEL_2)
+        self.root.option_add("*Menu*foreground", TEXT)
+        self.root.option_add("*Menu*activeBackground", SEL)
+        self.root.option_add("*Menu*activeForeground", "#ffffff")
+        self.root.option_add("*Menu*font", ("JetBrains Mono", 9))
+
+        # ------------------------------------------------------------- header
         top = tk.Frame(self.root, bg=BG)
         self._top_frame = top
-        top.grid(row=0, column=0, sticky="ew", padx=16, pady=(14, 8))
+        top.grid(row=0, column=0, sticky="ew", padx=16, pady=(12, 10))
         top.columnconfigure(1, weight=1)
-        tk.Label(top, text="JARVIS", bg=BG, fg=TEXT, font=("JetBrains Mono", 22, "bold")).grid(
-            row=0, column=0, sticky="w"
-        )
-        dock = tk.Frame(top, bg=BG)
-        dock.grid(row=0, column=1, sticky="e")
-        for i, (label, cmd) in enumerate([("Play/Pause", "youtube pause"), ("Next", "youtube next"), ("Apps", "list apps")]):
-            btn = self._chip(dock, label, lambda c=cmd: self._run_preset(c))
-            btn.grid(row=0, column=i, padx=(0, 8))
-            self._tooltips.append(Tooltip(btn, f"Run: {cmd}"))
-        mini_btn = self._chip(dock, "MINI", self.mini.toggle)
-        mini_btn.grid(row=0, column=3, padx=(0, 8))
-        self._tooltips.append(Tooltip(mini_btn, "Show/hide the floating mini HUD"))
-        self.auto_start_button = self._chip(dock, "AUTOSTART", self._toggle_auto_start)
-        self.auto_start_button.grid(row=0, column=4, padx=(0, 8))
-        self._tooltips.append(Tooltip(self.auto_start_button, "Toggle auto-start when this project opens / Windows login"))
-        help_btn = self._chip(dock, "HELP", self._open_help)
-        help_btn.grid(row=0, column=5, padx=(0, 8))
-        self._tooltips.append(Tooltip(help_btn, "Show all commands and tools"))
-        self.tray_button = self._chip(dock, "TRAY", self._toggle_tray)
-        self.tray_button.grid(row=0, column=6, padx=(0, 8))
-        self._tooltips.append(Tooltip(self.tray_button, "Minimize to system tray  /  Ctrl+Shift+J summons the mini HUD"))
-        recap_btn = self._chip(dock, "RECAP", self._recap)
-        recap_btn.grid(row=0, column=7, padx=(0, 8))
-        self._tooltips.append(Tooltip(recap_btn, "What happened while you were away"))
-        diagnose_btn = self._chip(dock, "DIAGNOSE", self._diagnose_system)
-        diagnose_btn.grid(row=0, column=8, padx=(0, 8))
-        self._tooltips.append(Tooltip(diagnose_btn, "Run full system diagnosis (CPU/RAM/GPU + process analysis)"))
-        sched_btn = self._chip(dock, "SCHED", self._open_scheduler)
-        sched_btn.grid(row=0, column=9, padx=(0, 8))
-        self._tooltips.append(Tooltip(sched_btn, "Manage scheduled recurring commands"))
-        hist_btn = self._chip(dock, "HISTORY", self._open_history)
-        hist_btn.grid(row=0, column=10, padx=(0, 8))
-        self._tooltips.append(Tooltip(hist_btn, "Recent commands, tool activity and metrics"))
-        tasks_btn = self._chip(dock, "TASKS", self._open_tasks)
-        tasks_btn.grid(row=0, column=11, padx=(0, 8))
-        self._tooltips.append(Tooltip(tasks_btn, "Tracked multi-step tasks and progress"))
-        mem_btn = self._chip(dock, "MEMORY", self._open_memory)
-        mem_btn.grid(row=0, column=12, padx=(0, 8))
-        self._tooltips.append(Tooltip(mem_btn, "Episodic memory and knowledge base"))
-        self.gfx_button = self._chip(dock, "GFX", self._toggle_gfx)
-        self.gfx_button.grid(row=0, column=13, padx=(0, 8))
-        self._tooltips.append(Tooltip(self.gfx_button, "Toggle Lite / Full graphics effects"))
-        self.theme_button = self._chip(dock, "THEME", self._cycle_theme)
-        self.theme_button.grid(row=0, column=14, padx=(0, 8))
-        self._tooltips.append(Tooltip(self.theme_button, "Cycle Aurora / Cyber / Light themes"))
-        bg_btn = self._chip(dock, "BACKGROUNDS", self._open_backgrounds)
-        bg_btn.grid(row=0, column=15, padx=(0, 8))
-        self._tooltips.append(Tooltip(bg_btn, "Aurora scene, gradient, or static image background"))
 
+        brand = tk.Frame(top, bg=BG)
+        brand.grid(row=0, column=0, sticky="w")
+        tk.Label(brand, text="JARVIS", bg=BG, fg=TEXT, font=("JetBrains Mono", 20, "bold")).pack(side="left")
         self.online_label = tk.Label(
-            top, text="STATUS: OPERATIONAL", bg=STATUS, fg=GREEN, font=("JetBrains Mono", 10, "bold"), padx=10, pady=5
+            brand, text="STATUS: ONLINE", bg=STATUS, fg=GREEN, font=("JetBrains Mono", 9, "bold"), padx=10, pady=4
         )
-        self.online_label.grid(row=0, column=2, sticky="e")
+        self.online_label.pack(side="left", padx=(12, 0))
+
+        bar = tk.Frame(top, bg=BG)
+        bar.grid(row=0, column=2, sticky="e")
+
+        def _group() -> tk.Frame:
+            g = tk.Frame(bar, bg=BG)
+            g.pack(side="left", padx=(0, 8))
+            return g
+
+        def _divider() -> None:
+            tk.Frame(bar, bg=STROKE, width=1).pack(side="left", padx=2, fill="y")
+
+        transport = _group()
+        for txt, cmd_text, tip in [
+            ("▶", "youtube pause", "Toggle YouTube play/pause"),
+            ("⏭", "youtube next", "Go to next YouTube video"),
+            ("APPS", "list apps", "Show apps in the launcher panel"),
+        ]:
+            b = self._header_chip(transport, txt, lambda c=cmd_text: self._run_preset(c))
+            b.pack(side="left", padx=(0, 4))
+            self._tooltips.append(Tooltip(b, tip))
+
+        _divider()
+        primary = _group()
+        for txt, cmd_fn, tip in [
+            ("MINI", self.mini.toggle, "Show/hide the floating mini HUD"),
+            ("DIAGNOSE", self._diagnose_system, "Run full system diagnosis (CPU/RAM/GPU + process analysis)"),
+            ("RECAP", self._recap, "What happened while you were away"),
+        ]:
+            b = self._header_chip(primary, txt, cmd_fn)
+            b.pack(side="left", padx=(0, 4))
+            self._tooltips.append(Tooltip(b, tip))
+
+        _divider()
+        toggles = _group()
+        self.auto_start_button = self._header_chip(toggles, "AUTOSTART", self._toggle_auto_start, hover=False)
+        self.auto_start_button.pack(side="left", padx=(0, 4))
+        self._tooltips.append(Tooltip(self.auto_start_button, "Toggle auto-start when this project opens / Windows login"))
+        self.tray_button = self._header_chip(toggles, "TRAY", self._toggle_tray, hover=False)
+        self.tray_button.pack(side="left", padx=(0, 4))
+        self._tooltips.append(Tooltip(self.tray_button, "Minimize to system tray  /  Ctrl+Shift+J summons the mini HUD"))
+        self.gfx_button = self._header_chip(toggles, "GFX", self._toggle_gfx, hover=False)
+        self.gfx_button.pack(side="left", padx=(0, 4))
+        self._tooltips.append(Tooltip(self.gfx_button, "Toggle Lite / Full graphics effects"))
+        self.theme_button = self._header_chip(toggles, f"THEME {self._theme.upper()}", self._cycle_theme, hover=False)
+        self.theme_button.pack(side="left", padx=(0, 4))
+        self._tooltips.append(Tooltip(self.theme_button, "Cycle Aurora / Cyber / Light themes"))
+
+        _divider()
+        more_menu = tk.Menu(top, tearoff=0)
+        more_menu.add_command(label="HELP  (F1)", command=self._open_help)
+        more_menu.add_command(label="SCHEDULER", command=self._open_scheduler)
+        more_menu.add_command(label="HISTORY", command=self._open_history)
+        more_menu.add_command(label="TASKS", command=self._open_tasks)
+        more_menu.add_command(label="MEMORY", command=self._open_memory)
+        more_menu.add_separator()
+        more_menu.add_command(label="BACKGROUNDS", command=self._open_backgrounds)
+
+        def _show_more() -> None:
+            try:
+                x = more_btn.winfo_rootx()
+                y = more_btn.winfo_rooty() + more_btn.winfo_height()
+                more_menu.tk_popup(x, y)
+            finally:
+                more_menu.grab_release()
+
+        more_btn = self._header_chip(bar, "MORE ▾", _show_more)
+        more_btn.pack(side="left", padx=(0, 4))
+        self._tooltips.append(Tooltip(more_btn, "Scheduler, history, tasks, memory, backgrounds and help"))
 
         self.body = tk.Frame(self.root, bg=BG)
-        self.body.grid(row=1, column=0, sticky="nsew", padx=16, pady=(0, 16))
-        self.body.columnconfigure(0, weight=11)
+        self.body.grid(row=1, column=0, sticky="nsew", padx=16, pady=(0, 14))
+        self.body.columnconfigure(0, weight=5)
         self.body.columnconfigure(1, weight=4)
         self.body.columnconfigure(2, weight=4)
         self.body.rowconfigure(0, weight=1)
+        self.body.bind("<Configure>", self._on_body_resize)
 
         left = self._make_panel(self.body, PANEL)
         left.grid(row=0, column=0, sticky="nsew", padx=(0, 10))
         left.columnconfigure(0, weight=1)
-        left.rowconfigure(4, weight=1)
+        left.rowconfigure(3, weight=1)
 
-        dock_panel = self._make_panel(left, PANEL_2)
-        dock_panel.grid(row=0, column=0, sticky="ew", padx=14, pady=(12, 8))
-        dock_panel.columnconfigure(1, weight=1)
-        tk.Label(dock_panel, text="DOCK", bg=PANEL_2, fg=TEXT, font=("JetBrains Mono", 12, "bold")).grid(row=0, column=0, sticky="w", padx=10, pady=8)
-        dock_buttons = tk.Frame(dock_panel, bg=PANEL_2)
-        dock_buttons.grid(row=0, column=1, sticky="w", padx=(6, 8))
-        for i, (txt, cmd_text, tip) in enumerate(
-            [
-                ("▶", "youtube pause", "Toggle YouTube play/pause"),
-                ("⏭", "youtube next", "Go to next YouTube video"),
-                ("APPS", "list apps", "Show apps in the launcher panel"),
-            ]
-        ):
-            b = self._chip(dock_buttons, txt, lambda c=cmd_text: self._run_preset(c))
-            b.grid(row=0, column=i, padx=(0, 8))
-            self._tooltips.append(Tooltip(b, tip))
-
-        cmd_panel = tk.Frame(left, bg=PANEL)
-        cmd_panel.grid(row=1, column=0, sticky="ew", padx=14, pady=(0, 8))
-        cmd_panel.columnconfigure(1, weight=1)
-        tk.Label(cmd_panel, text="COMMAND BAR", bg=PANEL, fg=MUTED, font=("JetBrains Mono", 10, "bold")).grid(row=0, column=0, sticky="w", padx=(0, 10))
-        self.entry_wrap = tk.Frame(cmd_panel, bg=SEL, padx=1, pady=1)
-        self.entry_wrap.grid(row=0, column=1, sticky="ew")
+        # ------------------------------------------------------- command center
+        cmd_card, cmd_body = self._card(left, "Command Center", "Natural-language control")
+        cmd_body.columnconfigure(0, weight=1)
+        self.entry_wrap = tk.Frame(cmd_body, bg=SEL, padx=1, pady=1)
+        self.entry_wrap.grid(row=0, column=0, sticky="ew")
         self.command_entry = tk.Entry(
-            self.entry_wrap, bg=ENTRY, fg=TEXT, insertbackground=CYAN, relief=tk.FLAT, bd=0, font=("JetBrains Mono", 11)
+            self.entry_wrap, bg=ENTRY, fg=TEXT, insertbackground=CYAN, relief=tk.FLAT, bd=0, font=("JetBrains Mono", 12)
         )
-        self.command_entry.pack(fill="x", ipady=6)
+        self.command_entry.pack(fill="x", ipady=7)
         self.command_entry.bind("<Return>", lambda _: self._run_command())
         self.command_entry.bind("<Up>", lambda _: self._history_step(-1))
         self.command_entry.bind("<Down>", lambda _: self._history_step(1))
-        self.run_button = tk.Button(cmd_panel, text="EXECUTE", command=self._run_command, bg=CYAN, fg="#021018", relief=tk.FLAT, bd=0, padx=12, pady=7)
-        self.run_button.grid(row=0, column=2, padx=(10, 0))
-        chips_row = tk.Frame(cmd_panel, bg=PANEL)
-        chips_row.grid(row=1, column=0, columnspan=3, sticky="w", pady=(6, 0))
-        for label, cmd in [
+        self.run_button = self._primary_button(cmd_body, "EXECUTE", self._run_command)
+        self.run_button.grid(row=0, column=1, padx=(10, 0))
+        chips_row = tk.Frame(cmd_body, bg=PANEL_2)
+        chips_row.grid(row=1, column=0, columnspan=2, sticky="w", pady=(8, 0))
+        for label, cmd_str in [
             ("system status", "system status"),
             ("metrics", "metrics"),
             ("list schedules", "list schedules"),
             ("job status", "job status"),
             ("time", "get current time"),
         ]:
-            c = self._chip(chips_row, label, lambda c=cmd: self._run_preset(c))
+            c = self._header_chip(chips_row, label, lambda c=cmd_str: self._run_preset(c))
             c.pack(side="left", padx=(0, 6))
-            c.configure(font=("JetBrains Mono", 8, "bold"), padx=8, pady=4)
+        cmd_card.grid(row=0, column=0, sticky="ew", padx=12, pady=(12, 8))
 
-        resources = self._make_panel(left, PANEL_2)
-        resources.grid(row=2, column=0, sticky="ew", padx=14, pady=(0, 8))
-        for col_idx in range(5):
-            resources.columnconfigure(col_idx, weight=1)
-        tk.Label(resources, text="RESOURCES", bg=PANEL_2, fg=TEXT, font=("JetBrains Mono", 11, "bold")).grid(
-            row=0, column=0, sticky="w", padx=10, pady=(8, 2), columnspan=5
+        # --------------------------------------------------------- system metrics
+        met_card, met_body = self._card(left, "System Metrics", "Live CPU · RAM · NET · GPU · DISK")
+        met_body.columnconfigure(0, weight=1)
+        sparks = tk.Frame(met_body, bg=PANEL_2)
+        sparks.grid(row=0, column=0, sticky="ew")
+        for i in range(5):
+            sparks.columnconfigure(i, weight=1)
+        self.cpu_canvas = tk.Canvas(sparks, bg=CANVAS, width=96, height=64, highlightthickness=0)
+        self.ram_canvas = tk.Canvas(sparks, bg=CANVAS, width=96, height=64, highlightthickness=0)
+        self.net_canvas = tk.Canvas(sparks, bg=CANVAS, width=96, height=64, highlightthickness=0)
+        self.gpu_canvas = tk.Canvas(sparks, bg=CANVAS, width=96, height=64, highlightthickness=0)
+        self.disk_canvas = tk.Canvas(sparks, bg=CANVAS, width=96, height=64, highlightthickness=0)
+        for i, (name, cv) in enumerate(
+            [
+                ("CPU", self.cpu_canvas),
+                ("RAM", self.ram_canvas),
+                ("NET", self.net_canvas),
+                ("GPU", self.gpu_canvas),
+                ("DISK", self.disk_canvas),
+            ]
+        ):
+            tk.Label(sparks, text=name, bg=PANEL_2, fg=TEXT, font=("JetBrains Mono", 8, "bold")).grid(
+                row=0, column=i, sticky="w", padx=(0, 2), pady=(2, 0)
+            )
+            cv.grid(row=1, column=i, sticky="ew", padx=(0, 4))
+        ring_row = tk.Frame(met_body, bg=PANEL_2)
+        ring_row.grid(row=1, column=0, sticky="ew", pady=(8, 0))
+        ring_row.columnconfigure(1, weight=1)
+        self.metrics_canvas = tk.Canvas(ring_row, bg=CANVAS, height=120, width=250, highlightthickness=0, bd=0)
+        self.metrics_canvas.grid(row=0, column=0, sticky="w")
+        diag_strip = tk.Frame(ring_row, bg=INNER, highlightbackground=STROKE, highlightthickness=1)
+        diag_strip.grid(row=0, column=1, sticky="nsew", padx=(10, 0))
+        diag_strip.columnconfigure(1, weight=1)
+        tk.Label(diag_strip, text="DIAGNOSIS", bg=INNER, fg=MUTED, font=("JetBrains Mono", 8, "bold")).grid(
+            row=0, column=0, sticky="w", padx=(8, 6), pady=(6, 2)
         )
-        self.cpu_canvas = tk.Canvas(resources, bg=CANVAS, height=64, highlightthickness=0)
-        self.ram_canvas = tk.Canvas(resources, bg=CANVAS, height=64, highlightthickness=0)
-        self.net_canvas = tk.Canvas(resources, bg=CANVAS, height=64, highlightthickness=0)
-        self.gpu_canvas = tk.Canvas(resources, bg=CANVAS, height=64, highlightthickness=0)
-        self.disk_canvas = tk.Canvas(resources, bg=CANVAS, height=64, highlightthickness=0)
-        tk.Label(resources, text="CPU", bg=PANEL_2, fg=TEXT, font=("JetBrains Mono", 9, "bold")).grid(row=1, column=0, sticky="w", padx=10)
-        tk.Label(resources, text="RAM", bg=PANEL_2, fg=TEXT, font=("JetBrains Mono", 9, "bold")).grid(row=1, column=1, sticky="w", padx=10)
-        tk.Label(resources, text="NET", bg=PANEL_2, fg=TEXT, font=("JetBrains Mono", 9, "bold")).grid(row=1, column=2, sticky="w", padx=10)
-        tk.Label(resources, text="GPU", bg=PANEL_2, fg=TEXT, font=("JetBrains Mono", 9, "bold")).grid(row=1, column=3, sticky="w", padx=10)
-        tk.Label(resources, text="DISK", bg=PANEL_2, fg=TEXT, font=("JetBrains Mono", 9, "bold")).grid(row=1, column=4, sticky="w", padx=10)
-        self.cpu_canvas.grid(row=2, column=0, sticky="ew", padx=(10, 4), pady=(2, 10))
-        self.ram_canvas.grid(row=2, column=1, sticky="ew", padx=4, pady=(2, 10))
-        self.net_canvas.grid(row=2, column=2, sticky="ew", padx=4, pady=(2, 10))
-        self.gpu_canvas.grid(row=2, column=3, sticky="ew", padx=4, pady=(2, 10))
-        self.disk_canvas.grid(row=2, column=4, sticky="ew", padx=(4, 10), pady=(2, 10))
+        self.diag_info = tk.Label(diag_strip, text="Idle", bg=INNER, fg=MUTED, font=("JetBrains Mono", 9, "bold"), anchor="w")
+        self.diag_info.grid(row=0, column=1, sticky="ew", padx=(0, 8), pady=(6, 2))
+        self.diag_detail = tk.Label(diag_strip, text="No issues detected", bg=INNER, fg=MUTED, font=("JetBrains Mono", 8), anchor="w", justify="left")
+        self.diag_detail.grid(row=1, column=0, columnspan=2, sticky="ew", padx=8, pady=(0, 6))
+        met_card.grid(row=1, column=0, sticky="ew", padx=12, pady=(0, 8))
 
-        # Diagnosis panel
-        diag_shell = self._make_panel(left, PANEL_2)
-        diag_shell.grid(row=3, column=0, sticky="ew", padx=14, pady=(0, 8))
-        diag_shell.columnconfigure(0, weight=1)
-        tk.Label(diag_shell, text="SYSTEM DIAGNOSIS", bg=PANEL_2, fg=TEXT, font=("JetBrains Mono", 10, "bold")).grid(
-            row=0, column=0, sticky="w", padx=10, pady=(6, 2)
-        )
-        self.diag_info = tk.Label(diag_shell, text="Idle — no issues detected", bg=INNER, fg=MUTED, font=("JetBrains Mono", 9, "bold"), anchor="w", justify="left")
-        self.diag_info.grid(row=1, column=0, sticky="ew", padx=10, pady=2)
-        self.diag_detail = tk.Label(diag_shell, text="", bg=INNER, fg=MUTED, font=("JetBrains Mono", 8), anchor="w", justify="left", wraplength=300)
-        self.diag_detail.grid(row=2, column=0, sticky="ew", padx=10, pady=(0, 6))
-
-        feed_shell = self._make_panel(left, PANEL_2)
-        feed_shell.grid(row=3, column=0, sticky="ew", padx=14, pady=(0, 8))
-        feed_shell.columnconfigure(0, weight=1)
-        feed_row = tk.Frame(feed_shell, bg=PANEL_2)
-        feed_row.grid(row=0, column=0, sticky="ew", columnspan=2, padx=8, pady=(6, 2))
-        feed_row.columnconfigure(0, weight=1)
-        tk.Label(feed_row, text="ACTIVITY FEED", bg=PANEL_2, fg=MUTED, font=("JetBrains Mono", 9, "bold")).grid(
-            row=0, column=0, sticky="w"
-        )
+        # ---------------------------------------------------------- activity feed
+        feed_card, feed_body = self._card(left, "Activity Feed", "Commands, agents and scheduler events")
+        feed_head = tk.Frame(feed_body, bg=PANEL_2)
+        feed_head.pack(fill="x", pady=(0, 4))
+        feed_head.columnconfigure(0, weight=1)
         tk.Button(
-            feed_row, text="CLEAR", command=self._clear_feed, bg=BTN2, fg=TEXT,
-            relief=tk.FLAT, bd=0, padx=8, pady=2, font=("JetBrains Mono", 7, "bold"), cursor="hand2",
+            feed_head, text="CLEAR", command=self._clear_feed, bg=BTN2, fg=TEXT, activebackground=CHIP_HI,
+            relief=tk.FLAT, bd=0, padx=8, pady=3, font=("JetBrains Mono", 8, "bold"), cursor="hand2",
         ).grid(row=0, column=1, sticky="e")
-        self.feed_text = tk.Text(feed_shell, bg=TERM, fg=TEXT, relief=tk.FLAT, bd=0, height=7, font=("Consolas", 9))
-        self.feed_text.grid(row=1, column=0, sticky="nsew", padx=(8, 0), pady=(0, 8))
-        feed_sb = tk.Scrollbar(feed_shell, command=self.feed_text.yview, bg=PANEL, troughcolor=TERM, activebackground=STROKE)
-        feed_sb.grid(row=1, column=1, sticky="ns", padx=(0, 8), pady=(0, 8))
+        feed_scroll = tk.Frame(feed_body, bg=TERM, highlightbackground=STROKE, highlightthickness=1)
+        feed_scroll.pack(fill="both", expand=True)
+        feed_scroll.columnconfigure(0, weight=1)
+        feed_scroll.rowconfigure(0, weight=1)
+        self.feed_text = tk.Text(
+            feed_scroll, bg=TERM, fg=TEXT, relief=tk.FLAT, bd=0, width=46, height=7, font=("JetBrains Mono", 9),
+            wrap="word", padx=8, pady=6,
+        )
+        self.feed_text.grid(row=0, column=0, sticky="nsew")
+        feed_sb = ttk.Scrollbar(feed_scroll, orient="vertical", command=self.feed_text.yview, style="Jarvis.Vertical.TScrollbar")
+        feed_sb.grid(row=0, column=1, sticky="ns")
         self.feed_text.configure(yscrollcommand=feed_sb.set)
         self.feed_text.configure(state=tk.DISABLED)
         for tag, color in [("feed_cmd", CYAN), ("feed_ok", GREEN), ("feed_pending", AMBER), ("feed_err", RED), ("feed_sys", MUTED)]:
             self.feed_text.tag_configure(tag, foreground=color)
+        feed_card.grid(row=2, column=0, sticky="ew", padx=12, pady=(0, 8))
 
-        term_shell = self._make_panel(left, PANEL_2)
-        term_shell.grid(row=4, column=0, sticky="nsew", padx=14, pady=(0, 14))
-        term_shell.rowconfigure(1, weight=1)
-        term_shell.columnconfigure(0, weight=1)
-        term_row = tk.Frame(term_shell, bg=PANEL_2)
-        term_row.grid(row=0, column=0, sticky="ew", columnspan=2, padx=8, pady=(8, 4))
-        term_row.columnconfigure(0, weight=1)
-        tk.Label(term_row, text="LIVE TERMINAL", bg=PANEL_2, fg=MUTED, font=("JetBrains Mono", 9, "bold")).grid(
+        # ----------------------------------------------------------- live terminal
+        term_card, term_body = self._card(left, "Live Terminal", "Command, agent and scheduler logs")
+        term_head = tk.Frame(term_body, bg=PANEL_2)
+        term_head.pack(fill="x", pady=(0, 4))
+        term_head.columnconfigure(0, weight=1)
+        tk.Label(term_head, text="ALL EVENTS STREAM HERE", bg=PANEL_2, fg=MUTED, font=("JetBrains Mono", 8)).grid(
             row=0, column=0, sticky="w"
         )
         tk.Button(
-            term_row, text="CLEAR", command=self._clear_terminal, bg=BTN2, fg=TEXT,
-            relief=tk.FLAT, bd=0, padx=8, pady=2, font=("JetBrains Mono", 7, "bold"), cursor="hand2",
+            term_head, text="CLEAR", command=self._clear_terminal, bg=BTN2, fg=TEXT, activebackground=CHIP_HI,
+            relief=tk.FLAT, bd=0, padx=8, pady=3, font=("JetBrains Mono", 8, "bold"), cursor="hand2",
         ).grid(row=0, column=1, sticky="e")
-        self.terminal = tk.Text(term_shell, bg=TERM, fg=TEXT, relief=tk.FLAT, bd=0, wrap="word", font=("Fira Code", 10))
-        self.terminal.grid(row=1, column=0, sticky="nsew", padx=(8, 0), pady=(0, 8))
-        term_sb = tk.Scrollbar(term_shell, command=self.terminal.yview, bg=PANEL, troughcolor=TERM, activebackground=STROKE)
-        term_sb.grid(row=1, column=1, sticky="ns", padx=(0, 8), pady=(0, 8))
+        term_scroll = tk.Frame(term_body, bg=TERM, highlightbackground=STROKE, highlightthickness=1)
+        term_scroll.pack(fill="both", expand=True)
+        term_scroll.columnconfigure(0, weight=1)
+        term_scroll.rowconfigure(0, weight=1)
+        self.terminal = tk.Text(
+            term_scroll, bg=TERM, fg=TEXT, relief=tk.FLAT, bd=0, width=60, wrap="word", font=("JetBrains Mono", 10), padx=10, pady=8
+        )
+        self.terminal.grid(row=0, column=0, sticky="nsew")
+        term_sb = ttk.Scrollbar(term_scroll, orient="vertical", command=self.terminal.yview, style="Jarvis.Vertical.TScrollbar")
+        term_sb.grid(row=0, column=1, sticky="ns")
         self.terminal.configure(yscrollcommand=term_sb.set)
         self.terminal.configure(state=tk.DISABLED)
         for tag, color in [("ts", MUTED), ("cmd", CYAN), ("ok", GREEN), ("pending", AMBER), ("err", RED), ("sys", INDIGO)]:
             self.terminal.tag_configure(tag, foreground=color)
+        term_card.grid(row=3, column=0, sticky="nsew", padx=12, pady=(0, 12))
 
+        # ------------------------------------------------------------ AI assistant
         mid = self._make_panel(self.body, PANEL)
         mid.grid(row=0, column=1, sticky="nsew", padx=(0, 10))
         mid.columnconfigure(0, weight=1)
-        mid.rowconfigure(6, weight=1)
-        mid.rowconfigure(8, weight=1)
+        mid.rowconfigure(0, weight=1)
 
-        tk.Label(mid, text="VOICE ENGINE", bg=PANEL, fg=MUTED, font=("JetBrains Mono", 10, "bold")).grid(row=0, column=0, sticky="w", padx=12, pady=(10, 6))
-        wave_wrap = self._make_panel(mid, INNER)
-        wave_wrap.grid(row=1, column=0, sticky="ew", padx=12, pady=(0, 10))
-        self.wave_canvas = tk.Canvas(wave_wrap, height=90, bg=CANVAS, highlightthickness=0, bd=0, cursor="hand2")
-        self.wave_canvas.pack(fill="both", expand=True, padx=6, pady=6)
-        self.wave_canvas.bind("<Button-1>", lambda _: self._toggle_voice())
-        self.voice_switch_button = tk.Button(mid, text="VOICE OFF", command=self._toggle_voice, bg=BTN2, fg=TEXT, relief=tk.FLAT, bd=0, padx=10, pady=6)
-        self.voice_switch_button.grid(row=1, column=0, sticky="e", padx=20, pady=(0, 6))
-
-        tk.Label(mid, text="AGENTIVE STATUS", bg=PANEL, fg=MUTED, font=("JetBrains Mono", 10, "bold")).grid(row=2, column=0, sticky="w", padx=12)
-        self._approval_badge = tk.Label(mid, text="0", bg=AMBER, fg="#021018", font=("JetBrains Mono", 9, "bold"), padx=6, pady=1)
-        self._approval_badge.grid(row=2, column=0, sticky="e", padx=12)
-
-        approval_shell = self._make_panel(mid, INNER)
-        approval_shell.grid(row=3, column=0, sticky="nsew", padx=12, pady=(6, 10))
-        approval_shell.columnconfigure(0, weight=1)
-        approval_shell.rowconfigure(0, weight=1)
-        self.approval_canvas = tk.Canvas(approval_shell, bg=CANVAS, highlightthickness=0, bd=0)
-        self.approval_canvas.grid(row=0, column=0, sticky="nsew")
-        approval_sb = tk.Scrollbar(approval_shell, command=self.approval_canvas.yview, bg=PANEL, troughcolor=CANVAS, activebackground=STROKE)
-        approval_sb.grid(row=0, column=1, sticky="ns")
-        self.approval_canvas.configure(yscrollcommand=approval_sb.set)
-        self.approval_inner = tk.Frame(self.approval_canvas, bg=CANVAS)
-        self.approval_window_id = self.approval_canvas.create_window((0, 0), window=self.approval_inner, anchor="nw")
-        self.approval_inner.bind("<Configure>", lambda _e: self.approval_canvas.configure(scrollregion=self.approval_canvas.bbox("all")))
-
-        tk.Label(mid, text="METRICS & INSIGHTS", bg=PANEL, fg=MUTED, font=("JetBrains Mono", 10, "bold")).grid(row=4, column=0, sticky="w", padx=12, pady=(0, 4))
-        insights = self._make_panel(mid, INNER)
-        insights.grid(row=5, column=0, sticky="ew", padx=12, pady=(0, 8))
-        insights.columnconfigure(0, weight=1)
-        insights.rowconfigure(0, weight=1)
-        self.metrics_canvas = tk.Canvas(insights, bg=CANVAS, height=120, highlightthickness=0, bd=0)
-        self.metrics_canvas.grid(row=0, column=0, sticky="nsew", padx=6, pady=6)
-
-        tk.Label(mid, text="AI BOT", bg=PANEL, fg=MUTED, font=("JetBrains Mono", 10, "bold")).grid(row=6, column=0, sticky="w", padx=12, pady=(0, 6))
-        chat_box = self._make_panel(mid, INNER)
-        chat_box.grid(row=7, column=0, sticky="nsew", padx=12, pady=(0, 6))
-        chat_box.columnconfigure(0, weight=1)
-        chat_box.rowconfigure(1, weight=1)
-        tk.Label(chat_box, text="AI BOT // ASK ANYTHING", bg=INNER, fg=CYAN, font=("JetBrains Mono", 8, "bold")).grid(
-            row=0, column=0, sticky="ew", padx=8, pady=(6, 2)
+        ai_card, ai_body = self._card(mid, "AI Assistant", "Jarvis plans, executes and streams answers")
+        ai_card.grid(row=0, column=0, sticky="nsew", padx=12, pady=12)
+        ai_body.columnconfigure(0, weight=1)
+        ai_body.rowconfigure(0, weight=1)
+        chat_scroll = tk.Frame(ai_body, bg=CANVAS, highlightbackground=STROKE, highlightthickness=1)
+        chat_scroll.grid(row=0, column=0, sticky="nsew")
+        chat_scroll.columnconfigure(0, weight=1)
+        chat_scroll.rowconfigure(0, weight=1)
+        self.chat_text = tk.Text(
+            chat_scroll, bg=CANVAS, fg=TEXT, relief=tk.FLAT, bd=0, width=38, wrap="word", font=("Fira Code", 10), padx=12, pady=10
         )
-        self.chat_text = tk.Text(chat_box, bg=CANVAS, fg=TEXT, relief=tk.FLAT, bd=0, wrap="word", font=("Fira Code", 9), height=8)
-        self.chat_text.grid(row=1, column=0, sticky="nsew", padx=(6, 0), pady=(0, 6))
-        chat_sb = tk.Scrollbar(chat_box, command=self.chat_text.yview, bg=PANEL, troughcolor=CANVAS, activebackground=STROKE)
-        chat_sb.grid(row=1, column=1, sticky="ns", padx=(0, 6), pady=(0, 6))
+        self.chat_text.grid(row=0, column=0, sticky="nsew")
+        chat_sb = ttk.Scrollbar(chat_scroll, orient="vertical", command=self.chat_text.yview, style="Jarvis.Vertical.TScrollbar")
+        chat_sb.grid(row=0, column=1, sticky="ns")
         self.chat_text.configure(yscrollcommand=chat_sb.set)
         self.chat_text.configure(state=tk.DISABLED)
         self.chat_text.tag_configure("chat_user_label", foreground=CYAN, font=("JetBrains Mono", 8, "bold"))
@@ -630,87 +711,193 @@ class JarvisHudApp:
         self.chat_text.tag_configure("chat_ai_label", foreground=INDIGO, font=("JetBrains Mono", 8, "bold"))
         self.chat_text.tag_configure("chat_ai", foreground=TEXT)
         self.chat_text.tag_configure("chat_stream", foreground=TEXT)
-        chat_input = tk.Frame(mid, bg=PANEL)
-        chat_input.grid(row=8, column=0, sticky="ew", padx=12, pady=(0, 12))
-        chat_input.columnconfigure(0, weight=1)
-        shell = tk.Frame(chat_input, bg=SHELL, padx=1, pady=1)
+        inp = tk.Frame(ai_body, bg=PANEL_2)
+        inp.grid(row=1, column=0, sticky="ew", pady=(10, 0))
+        inp.columnconfigure(0, weight=1)
+        shell = tk.Frame(inp, bg=SHELL, padx=1, pady=1)
         shell.grid(row=0, column=0, sticky="ew")
         shell.columnconfigure(0, weight=1)
-        self.chat_entry = tk.Entry(shell, bg=CANVAS, fg=TEXT, insertbackground=CYAN, relief=tk.FLAT, bd=0, font=("JetBrains Mono", 10))
-        self.chat_entry.grid(row=0, column=0, sticky="ew", ipady=7)
+        self.chat_entry = tk.Entry(shell, bg=CANVAS, fg=TEXT, insertbackground=CYAN, relief=tk.FLAT, bd=0, font=("JetBrains Mono", 11))
+        self.chat_entry.grid(row=0, column=0, sticky="ew", ipady=8)
         self.chat_entry.bind("<Return>", lambda _: self._ask_chatbot())
-        tk.Button(chat_input, text="ASK", command=self._ask_chatbot, bg=INDIGO, fg="#05101b", relief=tk.FLAT, bd=0, padx=10, pady=6).grid(row=0, column=1, padx=(8, 0))
+        ask_btn = self._primary_button(inp, "ASK", self._ask_chatbot)
+        ask_btn.grid(row=0, column=1, padx=(10, 0))
 
+        # ----------------------------------------------------------- right column
         right = self._make_panel(self.body, PANEL)
         right.grid(row=0, column=2, sticky="nsew")
         right.columnconfigure(0, weight=1)
-        right.rowconfigure(5, weight=1)
-        tk.Label(right, text="JOB AGENT", bg=PANEL, fg=MUTED, font=("JetBrains Mono", 10, "bold")).grid(row=0, column=0, sticky="w", padx=12, pady=(10, 8))
-        job_panel = self._make_panel(right, INNER)
-        job_panel.grid(row=1, column=0, sticky="ew", padx=12, pady=(0, 8))
-        job_panel.columnconfigure(0, weight=1)
+        right.rowconfigure(0, weight=1)
+
+        right_canvas = tk.Canvas(right, bg=PANEL, highlightthickness=0, bd=0)
+        right_canvas.grid(row=0, column=0, sticky="nsew")
+        right_sb = ttk.Scrollbar(right, orient="vertical", command=right_canvas.yview, style="Jarvis.Vertical.TScrollbar")
+        right_sb.grid(row=0, column=1, sticky="ns")
+        right_canvas.configure(yscrollcommand=right_sb.set)
+        self.right_inner = tk.Frame(right_canvas, bg=PANEL)
+        self.right_window_id = right_canvas.create_window((0, 0), window=self.right_inner, anchor="nw")
+        self.right_inner.bind("<Configure>", lambda _e: right_canvas.configure(scrollregion=right_canvas.bbox("all")))
+        right_canvas.bind("<Configure>", lambda e: right_canvas.itemconfigure(self.right_window_id, width=e.width))
+        self.right_inner.columnconfigure(0, weight=1)
+
+        # -------------------------------------------------------------- job agent
+        job_card, job_body = self._card(self.right_inner, "Job Agent", "Autonomous job-application hunter")
+        job_body.columnconfigure(0, weight=1)
         self.job_status_label = tk.Label(
-            job_panel, text="No job-application task running.", bg=INNER, fg=MUTED,
-            font=("JetBrains Mono", 8), justify="left", anchor="w", wraplength=280,
+            job_body, text="No job-application task running.", bg=INNER, fg=MUTED,
+            font=("JetBrains Mono", 9), justify="left", anchor="w", wraplength=320, padx=8, pady=4,
         )
-        self.job_status_label.grid(row=0, column=0, sticky="ew", padx=8, pady=(6, 2))
-        job_stats = tk.Frame(job_panel, bg=INNER)
-        job_stats.grid(row=1, column=0, sticky="ew", padx=8)
+        self.job_status_label.grid(row=0, column=0, sticky="ew")
+        job_stats = tk.Frame(job_body, bg=PANEL_2)
+        job_stats.grid(row=1, column=0, sticky="ew", pady=(4, 0))
         self.job_stat_labels: dict[str, tk.Label] = {}
-        for i, (name, col) in enumerate([("APPLIED", GREEN), ("SKIPPED", AMBER), ("FAILED", RED)]):
-            lbl = tk.Label(job_stats, text=f"{name} 0", bg=INNER, fg=col, font=("JetBrains Mono", 8, "bold"))
-            lbl.grid(row=0, column=i, padx=(0, 12), sticky="w")
-            self.job_stat_labels[name] = lbl
-        for i, (name, col) in enumerate([("INTERVIEW", CYAN), ("OFFER", GREEN), ("REJECTED", RED)]):
-            lbl = tk.Label(job_stats, text=f"{name} 0", bg=INNER, fg=col, font=("JetBrains Mono", 8, "bold"))
-            lbl.grid(row=1, column=i, padx=(0, 12), sticky="w")
-            self.job_stat_labels[name] = lbl
-        job_ctrl = tk.Frame(job_panel, bg=INNER)
-        job_ctrl.grid(row=3, column=0, sticky="ew", padx=8, pady=(4, 6))
+        stat_colors = {
+            "APPLIED": GREEN, "SKIPPED": AMBER, "FAILED": RED,
+            "INTERVIEW": CYAN, "OFFER": GREEN, "REJECTED": RED,
+        }
+        for row_i, names in enumerate([("APPLIED", "SKIPPED", "FAILED"), ("INTERVIEW", "OFFER", "REJECTED")]):
+            for i, name in enumerate(names):
+                lbl = tk.Label(job_stats, text=f"{name} 0", bg=PANEL_2, fg=stat_colors[name], font=("JetBrains Mono", 9, "bold"))
+                lbl.grid(row=row_i, column=i, padx=(0, 14), sticky="w")
+                self.job_stat_labels[name] = lbl
+        self.job_progress = ttk.Progressbar(job_body, maximum=100, mode="determinate")
+        self.job_progress.grid(row=2, column=0, sticky="ew", pady=(8, 0))
+        job_ctrl = tk.Frame(job_body, bg=PANEL_2)
+        job_ctrl.grid(row=3, column=0, sticky="ew", pady=(8, 0))
         job_ctrl.columnconfigure(0, weight=1)
-        self.job_progress = ttk.Progressbar(job_panel, maximum=100, mode="determinate")
-        self.job_progress.grid(row=2, column=0, sticky="ew", padx=8)
-        self.job_query_entry = tk.Entry(
-            job_ctrl, bg=CANVAS, fg=TEXT, insertbackground=CYAN, relief=tk.FLAT, bd=0, font=("JetBrains Mono", 9)
-        )
-        self.job_query_entry.grid(row=0, column=0, sticky="ew", ipady=4)
+        shell2 = tk.Frame(job_ctrl, bg=SHELL, padx=1, pady=1)
+        shell2.grid(row=0, column=0, sticky="ew")
+        shell2.columnconfigure(0, weight=1)
+        self.job_query_entry = tk.Entry(shell2, bg=CANVAS, fg=TEXT, insertbackground=CYAN, relief=tk.FLAT, bd=0, font=("JetBrains Mono", 9))
+        self.job_query_entry.grid(row=0, column=0, sticky="ew", ipady=5)
         self.job_query_entry.bind("<Return>", lambda _: self._start_job_apply())
-        tk.Button(
-            job_ctrl, text="APPLY", command=self._start_job_apply, bg=CYAN, fg="#021018", relief=tk.FLAT, bd=0,
-            padx=8, pady=4, font=("JetBrains Mono", 8, "bold"), cursor="hand2",
-        ).grid(row=0, column=1, padx=(6, 0))
-        tk.Button(
-            job_ctrl, text="STATUS", command=self._refresh_job_status, bg=BTN2, fg=TEXT, relief=tk.FLAT, bd=0,
-            padx=8, pady=4, font=("JetBrains Mono", 8, "bold"), cursor="hand2",
-        ).grid(row=0, column=2, padx=(6, 0))
-        tk.Button(
-            job_ctrl, text="CANCEL", command=self._cancel_job, bg=DANGER, fg=RED, relief=tk.FLAT, bd=0,
-            padx=8, pady=4, font=("JetBrains Mono", 8, "bold"), cursor="hand2",
-        ).grid(row=0, column=3, padx=(6, 0))
-        tk.Button(
-            job_ctrl, text="RESUME", command=self._resume_job, bg=OK, fg=GREEN, relief=tk.FLAT, bd=0,
-            padx=8, pady=4, font=("JetBrains Mono", 8, "bold"), cursor="hand2",
-        ).grid(row=0, column=4, padx=(6, 0))
-        tk.Label(job_panel, text="RECENT APPLICATIONS", bg=INNER, fg=MUTED, font=("JetBrains Mono", 7, "bold")).grid(
-            row=4, column=0, sticky="w", padx=8, pady=(0, 2)
+        apply_btn = self._primary_button(job_ctrl, "APPLY", self._start_job_apply, padx=10)
+        apply_btn.grid(row=0, column=1, padx=(8, 0))
+        ctrl2 = tk.Frame(job_body, bg=PANEL_2)
+        ctrl2.grid(row=4, column=0, sticky="ew", pady=(6, 0))
+        for txt, cmd_fn, kind in [
+            ("STATUS", self._refresh_job_status, "secondary"),
+            ("CANCEL", self._cancel_job, "danger"),
+            ("RESUME", self._resume_job, "success"),
+        ]:
+            if kind == "danger":
+                b = tk.Button(ctrl2, text=txt, command=cmd_fn, bg=DANGER, fg=RED, activebackground=CHIP_HI, relief=tk.FLAT, bd=0,
+                              padx=8, pady=4, font=("JetBrains Mono", 8, "bold"), cursor="hand2")
+            elif kind == "success":
+                b = tk.Button(ctrl2, text=txt, command=cmd_fn, bg=OK, fg=GREEN, activebackground=CHIP_HI, relief=tk.FLAT, bd=0,
+                              padx=8, pady=4, font=("JetBrains Mono", 8, "bold"), cursor="hand2")
+            else:
+                b = tk.Button(ctrl2, text=txt, command=cmd_fn, bg=BTN2, fg=TEXT, activebackground=CHIP_HI, relief=tk.FLAT, bd=0,
+                              padx=8, pady=4, font=("JetBrains Mono", 8, "bold"), cursor="hand2")
+                self._bind_hover(b, BTN2, CHIP_HI)
+            b.pack(side="left", padx=(0, 6))
+        tk.Label(job_body, text="RECENT APPLICATIONS", bg=PANEL_2, fg=MUTED, font=("JetBrains Mono", 8, "bold")).grid(
+            row=5, column=0, sticky="w", pady=(8, 2)
         )
-        self.recent_list = tk.Listbox(job_panel, bg=CANVAS, fg=TEXT, relief=tk.FLAT, bd=0, height=3, font=("Consolas", 8))
-        self.recent_list.grid(row=5, column=0, sticky="ew", padx=8, pady=(0, 6))
-        tk.Label(right, text="AVAILABLE APPS  (ALT+1..ALT+9)", bg=PANEL, fg=MUTED, font=("JetBrains Mono", 9, "bold")).grid(row=2, column=0, sticky="w", padx=12, pady=(4, 6))
+        self.recent_list = tk.Listbox(
+            job_body, bg=CANVAS, fg=TEXT, relief=tk.FLAT, bd=0, height=4, font=("JetBrains Mono", 9),
+            highlightthickness=1, highlightbackground=STROKE, selectbackground=SEL, selectforeground=TEXT,
+        )
+        self.recent_list.grid(row=6, column=0, sticky="ew")
+        job_card.grid(row=0, column=0, sticky="ew", padx=12, pady=(12, 8))
+
+        # ------------------------------------------------------------ voice engine
+        voice_card, voice_body = self._card(self.right_inner, "Voice Engine", "Click the wave to toggle")
+        voice_body.columnconfigure(0, weight=1)
+        wave_wrap = tk.Frame(voice_body, bg=INNER, highlightbackground=STROKE, highlightthickness=1)
+        wave_wrap.grid(row=0, column=0, sticky="ew")
+        self.wave_canvas = tk.Canvas(wave_wrap, width=320, height=64, bg=CANVAS, highlightthickness=0, bd=0, cursor="hand2")
+        self.wave_canvas.pack(fill="both", expand=True, padx=4, pady=4)
+        self.wave_canvas.bind("<Button-1>", lambda _: self._toggle_voice())
+        self.voice_switch_button = tk.Button(
+            voice_body, text="VOICE OFF", command=self._toggle_voice, bg=BTN2, fg=TEXT, activebackground=CHIP_HI,
+            relief=tk.FLAT, bd=0, padx=10, pady=5, font=("JetBrains Mono", 9, "bold"), cursor="hand2",
+        )
+        self.voice_switch_button.grid(row=1, column=0, sticky="ew", pady=(6, 0))
+        voice_card.grid(row=1, column=0, sticky="ew", padx=12, pady=(0, 8))
+
+        # --------------------------------------------------------- agentive status
+        agent_card, agent_body = self._card(self.right_inner, "Agent Status", "Pending approval requests")
+        agent_body.columnconfigure(0, weight=1)
+        agent_body.rowconfigure(0, weight=1)
+        agent_head = tk.Frame(agent_body, bg=PANEL_2)
+        agent_head.grid(row=0, column=0, sticky="ew", pady=(0, 4))
+        agent_head.columnconfigure(0, weight=1)
+        tk.Label(agent_head, text="PENDING APPROVALS", bg=PANEL_2, fg=MUTED, font=("JetBrains Mono", 8, "bold")).grid(
+            row=0, column=0, sticky="w"
+        )
+        self._approval_badge = tk.Label(agent_head, text="0", bg=BTN2, fg=TEXT, font=("JetBrains Mono", 8, "bold"), padx=6, pady=1)
+        self._approval_badge.grid(row=0, column=1, sticky="e")
+        approval_shell = tk.Frame(agent_body, bg=CANVAS, highlightbackground=STROKE, highlightthickness=1)
+        approval_shell.grid(row=1, column=0, sticky="nsew")
+        approval_shell.columnconfigure(0, weight=1)
+        approval_shell.rowconfigure(0, weight=1)
+        self.approval_canvas = tk.Canvas(approval_shell, bg=CANVAS, width=320, height=120, highlightthickness=0, bd=0)
+        self.approval_canvas.grid(row=0, column=0, sticky="nsew")
+        approval_sb = ttk.Scrollbar(approval_shell, orient="vertical", command=self.approval_canvas.yview, style="Jarvis.Vertical.TScrollbar")
+        approval_sb.grid(row=0, column=1, sticky="ns")
+        self.approval_canvas.configure(yscrollcommand=approval_sb.set)
+        self.approval_inner = tk.Frame(self.approval_canvas, bg=CANVAS)
+        self.approval_window_id = self.approval_canvas.create_window((0, 0), window=self.approval_inner, anchor="nw")
+        self.approval_inner.bind("<Configure>", lambda _e: self.approval_canvas.configure(scrollregion=self.approval_canvas.bbox("all")))
+        agent_card.grid(row=2, column=0, sticky="ew", padx=12, pady=(0, 8))
+
+        # ---------------------------------------------------------- available apps
+        apps_card, apps_body = self._card(self.right_inner, "Available Apps", "Alt+1..9 to launch")
+        apps_body.columnconfigure(0, weight=1)
         self.app_filter_var = tk.StringVar()
         self.app_filter_var.trace_add("write", lambda *_: self._apply_app_filter())
-        tk.Entry(right, textvariable=self.app_filter_var, bg=LIST, fg=TEXT, relief=tk.FLAT, bd=0, font=("JetBrains Mono", 9)).grid(
-            row=2, column=0, sticky="e", padx=12, ipady=4
+        filt = tk.Frame(apps_body, bg=SHELL, padx=1, pady=1)
+        filt.grid(row=0, column=0, sticky="ew", pady=(0, 6))
+        filt.columnconfigure(0, weight=1)
+        tk.Entry(filt, textvariable=self.app_filter_var, bg=CANVAS, fg=TEXT, insertbackground=CYAN, relief=tk.FLAT, bd=0,
+                 font=("JetBrains Mono", 9)).grid(row=0, column=0, sticky="ew", ipady=4)
+        self.app_listbox = tk.Listbox(
+            apps_body, bg=LIST, fg=TEXT, relief=tk.FLAT, bd=0, height=5, font=("JetBrains Mono", 9),
+            highlightthickness=1, highlightbackground=STROKE, selectbackground=SEL, selectforeground=TEXT,
         )
-        self.app_listbox = tk.Listbox(right, bg=LIST, fg=TEXT, relief=tk.FLAT, bd=0, font=("Consolas", 10), height=8)
-        self.app_listbox.grid(row=3, column=0, sticky="nsew", padx=12, pady=(0, 8))
+        self.app_listbox.grid(row=1, column=0, sticky="nsew")
         self.app_listbox.bind("<Double-Button-1>", lambda _: self._open_selected_app())
         self.app_listbox.bind("<Return>", lambda _: self._open_selected_app())
-        tk.Label(right, text="SCENE VIEWER", bg=PANEL, fg=MUTED, font=("JetBrains Mono", 10, "bold")).grid(row=4, column=0, sticky="w", padx=12)
-        self.scene = tk.Canvas(right, bg=SCENE, highlightthickness=0, bd=0)
-        self.scene.grid(row=5, column=0, sticky="nsew", padx=12, pady=(0, 12))
+        apps_card.grid(row=3, column=0, sticky="ew", padx=12, pady=(0, 8))
+
+        # ------------------------------------------------------------- scene viewer
+        scene_card, scene_body = self._card(self.right_inner, "Scene Viewer", "Aurora · Gradient · Image")
+        scene_body.columnconfigure(0, weight=1)
+        self.scene = tk.Canvas(scene_body, bg=SCENE, highlightthickness=0, bd=0, width=1, height=120)
+        self.scene.grid(row=0, column=0, sticky="nsew")
         self.scene.bind("<Configure>", self._reset_scene)
+        scene_card.grid(row=4, column=0, sticky="ew", padx=12, pady=(0, 12))
+
         self._draw_resource_panels()
+
+    def _on_body_resize(self, event: tk.Event) -> None:
+        scene = getattr(self, "scene", None)
+        if scene is None:
+            return
+        w = int(event.width)
+        hidden = getattr(self, "_scene_hidden", False)
+        if w >= 1560:
+            self.body.columnconfigure(0, weight=5)
+            self.body.columnconfigure(1, weight=4)
+            self.body.columnconfigure(2, weight=4)
+            if hidden:
+                scene.grid()
+                self._scene_hidden = False
+        elif w >= 1360:
+            self.body.columnconfigure(0, weight=6)
+            self.body.columnconfigure(1, weight=5)
+            self.body.columnconfigure(2, weight=4)
+            if hidden:
+                scene.grid()
+                self._scene_hidden = False
+        else:
+            self.body.columnconfigure(0, weight=6)
+            self.body.columnconfigure(1, weight=5)
+            self.body.columnconfigure(2, weight=3)
+            if not hidden:
+                scene.grid_remove()
+                self._scene_hidden = True
 
     def _draw_resource_panels(self) -> None:
         for c in [getattr(self, "cpu_canvas", None), getattr(self, "ram_canvas", None), getattr(self, "net_canvas", None),
@@ -725,8 +912,8 @@ class JarvisHudApp:
         def _spark(canvas: tk.Canvas, line_color: str, values: list[float], unit: str = "%",
                    bars: bool = False, scale: float = 100.0) -> None:
             canvas.delete("all")
-            w = max(120, canvas.winfo_reqwidth())
-            h = max(64, canvas.winfo_reqheight())
+            w = max(10, canvas.winfo_width())
+            h = max(10, canvas.winfo_height())
             canvas.create_rectangle(0, 0, w, h, fill=CANVAS, outline="")
             if not values:
                 canvas.create_text(w // 2, h // 2, text="sampling...", fill=MUTED, font=("JetBrains Mono", 8))
@@ -772,13 +959,21 @@ class JarvisHudApp:
 
         self.metrics_canvas.delete("all")
         sample = self._monitor.snapshot()
-        self.metrics_canvas.create_oval(12, 16, 108, 112, outline=STROKE, width=12)
+        h = max(100, self.metrics_canvas.winfo_height())
+        cx, cy, r = 44, h // 2, 34
+        self.metrics_canvas.create_oval(cx - r, cy - r, cx + r, cy + r, outline=STROKE, width=7)
         cpu_extent = max(0, min(360, int((sample.cpu_percent / 100.0) * 360)))
-        self.metrics_canvas.create_arc(12, 16, 108, 112, start=90, extent=-cpu_extent, outline=CYAN, style=tk.ARC, width=12)
-        self.metrics_canvas.create_text(130, 36, anchor="w", text=f"CPU {sample.cpu_percent:.0f}%", fill=CYAN, font=("JetBrains Mono", 9, "bold"))
-        self.metrics_canvas.create_text(130, 58, anchor="w", text=f"MEM {sample.memory_percent:.0f}%", fill=AMBER, font=("JetBrains Mono", 9, "bold"))
+        self.metrics_canvas.create_arc(cx - r, cy - r, cx + r, cy + r, start=90, extent=-cpu_extent, outline=CYAN, style=tk.ARC, width=7)
+        self.metrics_canvas.create_text(cx, cy, text=f"{sample.cpu_percent:.0f}%", fill=CYAN, font=("JetBrains Mono", 11, "bold"))
+        try:
+            gpu_pct = float(str(get_gpu_status().get("utilization") or 0))
+        except Exception:
+            gpu_pct = 0.0
+        tx = cx + r + 14
+        self.metrics_canvas.create_text(tx, cy - 26, anchor="w", text=f"MEM {sample.memory_percent:.0f}%", fill=AMBER, font=("JetBrains Mono", 9, "bold"))
+        self.metrics_canvas.create_text(tx, cy, anchor="w", text=f"GPU {gpu_pct:.0f}%", fill=INDIGO, font=("JetBrains Mono", 9, "bold"))
         self.metrics_canvas.create_text(
-            130, 80, anchor="w",
+            tx, cy + 26, anchor="w",
             text=f"NET {sample.net_sent_kbps:.0f}/{sample.net_recv_kbps:.0f}",
             fill=MUTED, font=("JetBrains Mono", 9, "bold"),
         )
@@ -1865,7 +2060,7 @@ class JarvisHudApp:
             detail = str(item.get("reason") or item.get("summary") or item.get("description") or "")
             if detail:
                 tk.Label(
-                    card, text=detail[:140], bg=INNER, fg=MUTED, font=("JetBrains Mono", 7),
+                    card, text=detail[:140], bg=INNER, fg=MUTED, font=("JetBrains Mono", 8),
                     anchor="w", justify="left", wraplength=240,
                 ).pack(fill="x", padx=6)
             actions = tk.Frame(card, bg=INNER)
@@ -1880,11 +2075,11 @@ class JarvisHudApp:
 
             tk.Button(
                 actions, text="APPROVE", command=_make_approve(approval_id), bg=OK, fg=GREEN,
-                relief=tk.FLAT, bd=0, padx=8, pady=2, font=("JetBrains Mono", 7, "bold"), cursor="hand2",
+                relief=tk.FLAT, bd=0, padx=8, pady=2, font=("JetBrains Mono", 8, "bold"), cursor="hand2",
             ).pack(side="left", padx=(0, 6))
             tk.Button(
                 actions, text="REJECT", command=_make_reject(approval_id), bg=DANGER, fg=RED,
-                relief=tk.FLAT, bd=0, padx=8, pady=2, font=("JetBrains Mono", 7, "bold"), cursor="hand2",
+                relief=tk.FLAT, bd=0, padx=8, pady=2, font=("JetBrains Mono", 8, "bold"), cursor="hand2",
             ).pack(side="left")
             self._approval_cards[approval_id] = card
         if self._approval_badge is not None:
@@ -2020,17 +2215,17 @@ class JarvisHudApp:
     def _append_chat(self, role: str, text: str) -> None:
         self.chat_text.configure(state=tk.NORMAL)
         if role == "user":
-            self.chat_text.insert(tk.END, "You\n", ("chat_user_label",))
+            self.chat_text.insert(tk.END, "YOU\n", ("chat_user_label",))
             self.chat_text.insert(tk.END, text + "\n\n", ("chat_user",))
         else:
-            self.chat_text.insert(tk.END, "AI Bot\n", ("chat_ai_label",))
+            self.chat_text.insert(tk.END, "JARVIS\n", ("chat_ai_label",))
             self.chat_text.insert(tk.END, text + "\n\n", ("chat_ai",))
         self.chat_text.see(tk.END)
         self.chat_text.configure(state=tk.DISABLED)
 
     def _start_chat_stream(self) -> None:
         self.chat_text.configure(state=tk.NORMAL)
-        self.chat_text.insert(tk.END, "AI Bot\n", ("chat_ai_label",))
+        self.chat_text.insert(tk.END, "JARVIS\n", ("chat_ai_label",))
         self.chat_text.configure(state=tk.DISABLED)
         self._chat_streaming = True
 
