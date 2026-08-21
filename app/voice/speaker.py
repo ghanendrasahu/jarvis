@@ -31,17 +31,30 @@ class Speaker:
         self._audio_outputs_ts: float = 0.0
 
         if enabled and self._mode != "kokoro":
-            try:
-                import pyttsx3
+            # When mode is None (default), JARVIS configures tts_engine=kokoro
+            # Attempt Kokoro initialization first since it's the configured default
+            if mode is None:
+                try:
+                    from kokoro import KPipeline
+                    self._kokoro_pipeline = KPipeline(lang_code=self._kokoro_lang_code)
+                    self._engine_name = "kokoro"
+                    self._mode = "kokoro"
+                except Exception as kokoro_exc:
+                    self._last_error = f"kokoro_init_failed: {kokoro_exc}"
+                    self._kokoro_pipeline = None
+            # Fall back to original SAPI/pyttsx3 initialization if Kokoro not available
+            if self._mode != "kokoro":
+                try:
+                    import pyttsx3
 
-                self._engine = pyttsx3.init()
-                self._engine.setProperty("rate", 190)
-                self._engine_name = "pyttsx3"
-            except Exception as exc:
-                self._last_error = f"pyttsx3_init_failed: {exc}"
-                self._engine = None
-                self._engine_name = "windows_sapi_fallback"
-                self._mode = "sapi"
+                    self._engine = pyttsx3.init()
+                    self._engine.setProperty("rate", 190)
+                    self._engine_name = "pyttsx3"
+                except Exception as exc:
+                    self._last_error = f"pyttsx3_init_failed: {exc}"
+                    self._engine = None
+                    self._engine_name = "windows_sapi_fallback"
+                    self._mode = "sapi"
 
     def _init_kokoro(self) -> None:
         try:
