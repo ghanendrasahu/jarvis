@@ -2,13 +2,17 @@ from __future__ import annotations
 
 import importlib.util
 import json
+import time
 from typing import Any, Protocol
 
 import requests
 
 from app.config import Settings
+from app.core.logging import get_logger
 from app.core.prompts import JARVIS_IDENTITY_PROMPT, build_planner_prompt
 from app.models.schemas import Action, Plan, RiskLevel
+
+logger = get_logger("planner")
 
 
 class BasePlanner(Protocol):
@@ -141,6 +145,7 @@ class OpenAIPlanner:
                 {"role": "user", "content": user_prompt},
             ],
             response_format={"type": "json_object"},
+            tool_choice="none",
             temperature=0.1,
         )
         content = completion.choices[0].message.content or "{}"
@@ -197,6 +202,103 @@ class GroqPlanner:
                 {"role": "user", "content": user_prompt},
             ],
             response_format={"type": "json_object"},
+            tool_choice="none",
+            temperature=0.1,
+        )
+        message = completion.choices[0].message
+        content = _message_content(message)
+        payload = _extract_json(content)
+        return _to_plan(payload)
+
+
+class CerebrasPlanner:
+    """Cerebras inference — free tier with 60K TPM (7.5x more than Groq)."""
+
+    def __init__(self, settings: Settings, model: str | None = None) -> None:
+        self.settings = settings
+        self.model = model or settings.cerebras_model
+        from openai import OpenAI
+
+        self.client = OpenAI(
+            api_key=settings.cerebras_api_key,
+            base_url=settings.cerebras_base_url,
+        )
+
+    def plan(
+        self,
+        command: str,
+        tool_catalog: list[dict],
+        history: list[dict],
+        agent_context: str = "",
+        tool_history: list[dict] | None = None,
+        known_facts: dict | None = None,
+        rag_context: str = "",
+    ) -> Plan:
+        user_prompt = build_planner_prompt(
+            command=command,
+            tool_catalog=tool_catalog,
+            history=history,
+            agent_context=agent_context,
+            tool_history=tool_history,
+            known_facts=known_facts,
+            rag_context=rag_context,
+        )
+        completion = self.client.chat.completions.create(
+            model=self.model,
+            messages=[
+                {"role": "system", "content": JARVIS_IDENTITY_PROMPT},
+                {"role": "user", "content": user_prompt},
+            ],
+            response_format={"type": "json_object"},
+            tool_choice="none",
+            temperature=0.1,
+        )
+        message = completion.choices[0].message
+        content = _message_content(message)
+        payload = _extract_json(content)
+        return _to_plan(payload)
+
+
+class OpenRouterPlanner:
+    """OpenRouter — 20+ free models, single API key, auto-failover."""
+
+    def __init__(self, settings: Settings, model: str | None = None) -> None:
+        self.settings = settings
+        self.model = model or settings.openrouter_model
+        from openai import OpenAI
+
+        self.client = OpenAI(
+            api_key=settings.openrouter_api_key,
+            base_url=settings.openrouter_base_url,
+        )
+
+    def plan(
+        self,
+        command: str,
+        tool_catalog: list[dict],
+        history: list[dict],
+        agent_context: str = "",
+        tool_history: list[dict] | None = None,
+        known_facts: dict | None = None,
+        rag_context: str = "",
+    ) -> Plan:
+        user_prompt = build_planner_prompt(
+            command=command,
+            tool_catalog=tool_catalog,
+            history=history,
+            agent_context=agent_context,
+            tool_history=tool_history,
+            known_facts=known_facts,
+            rag_context=rag_context,
+        )
+        completion = self.client.chat.completions.create(
+            model=self.model,
+            messages=[
+                {"role": "system", "content": JARVIS_IDENTITY_PROMPT},
+                {"role": "user", "content": user_prompt},
+            ],
+            response_format={"type": "json_object"},
+            tool_choice="none",
             temperature=0.1,
         )
         message = completion.choices[0].message
@@ -304,14 +406,163 @@ class LiteLLMPlanner:
         return _to_plan(payload)
 
 
+# ---------------------------------------------------------------------------
+# Error classification helpers
+# ---------------------------------------------------------------------------
+
+# Errors that mean "try a different provider" (not worth retrying same provider).
+_PROVIDER_SWITCH_ERRORS = {"413", "400"}
+# Errors that mean "retry with backoff" (transient).
+_RETRYABLE_ERRORS = {"429", "500", "502", "503", "timeout", "connection"}
+
+
+def _classify_error(exc: Exception) -> str:
+    """Return a short error code for classification."""
+    exc_str = str(exc).lower()
+    if "413" in exc_str or "payload too large" in exc_str or "tpm" in exc_str:
+        return "413"
+    if "429" in exc_str or "rate limit" in exc_str or "too many requests" in exc_str:
+        return "429"
+    if "400" in exc_str or "bad request" in exc_str:
+        return "400"
+    if "500" in exc_str or "502" in exc_str or "503" in exc_str or "internal server" in exc_str:
+        return "500"
+    if "timeout" in exc_str:
+        return "timeout"
+    if "connection" in exc_str or "connect" in exc_str:
+        return "connection"
+    return "unknown"
+
+
+def _user_friendly_error(code: str, provider: str) -> str:
+    """Return a human-readable error message."""
+    if code == "413":
+        return f"Prompt too large for {provider}. Try a shorter command."
+    if code == "429":
+        return f"Rate limited by {provider}. Try again in a few seconds."
+    if code == "400":
+        return f"Invalid request to {provider}. Try a different command."
+    if code in {"500", "timeout", "connection"}:
+        return f"{provider} is temporarily unavailable. Trying next provider..."
+    return f"{provider} returned an error. Trying next provider..."
+
+
+# ---------------------------------------------------------------------------
+# FallbackPlanner — tries primary provider, then fallbacks in order
+# ---------------------------------------------------------------------------
+
+class FallbackPlanner:
+    """Wraps a primary planner with automatic fallback to other providers.
+
+    When the primary planner fails with a retryable or provider-switch error,
+    the FallbackPlanner tries the next provider in the fallback chain. Each
+    provider gets ``max_retries`` attempts with exponential backoff for transient
+    errors (429, 500, timeout). Permanent errors (413, 400) immediately skip to
+    the next provider.
+    """
+
+    def __init__(
+        self,
+        primary: BasePlanner,
+        fallbacks: list[BasePlanner],
+        max_retries: int = 2,
+        retry_base_delay: float = 1.0,
+    ) -> None:
+        self._primary = primary
+        self._fallbacks = fallbacks
+        self._max_retries = max_retries
+        self._retry_base_delay = retry_base_delay
+        self._last_provider: str = ""
+        self._last_error: str = ""
+
+    def plan(
+        self,
+        command: str,
+        tool_catalog: list[dict],
+        history: list[dict],
+        agent_context: str = "",
+        tool_history: list[dict] | None = None,
+        known_facts: dict | None = None,
+        rag_context: str = "",
+    ) -> Plan:
+        providers = [self._primary] + self._fallbacks
+        last_exc: Exception | None = None
+
+        for provider_idx, planner in enumerate(providers):
+            provider_name = type(planner).__name__
+            attempts = self._max_retries + 1 if provider_idx > 0 else 1
+
+            for attempt in range(attempts):
+                try:
+                    result = planner.plan(
+                        command=command,
+                        tool_catalog=tool_catalog,
+                        history=history,
+                        agent_context=agent_context,
+                        tool_history=tool_history,
+                        known_facts=known_facts,
+                        rag_context=rag_context,
+                    )
+                    if result.actions or result.final_response:
+                        self._last_provider = provider_name
+                        self._last_error = ""
+                        if provider_idx > 0:
+                            logger.info("fallback succeeded: %s (attempt %d)", provider_name, attempt + 1)
+                        return result
+                    # Empty result — try next provider
+                    logger.warning("empty plan from %s, trying next provider", provider_name)
+                    break
+                except Exception as exc:
+                    last_exc = exc
+                    code = _classify_error(exc)
+                    logger.warning(
+                        "planner %s failed (attempt %d/%d, code=%s): %s",
+                        provider_name, attempt + 1, attempts, code, exc,
+                    )
+
+                    if code in _PROVIDER_SWITCH_ERRORS:
+                        # Don't retry — skip to next provider immediately
+                        break
+
+                    if code in _RETRYABLE_ERRORS and attempt < attempts - 1:
+                        # Transient error — retry with backoff
+                        delay = self._retry_base_delay * (2 ** attempt)
+                        logger.info("retrying %s in %.1fs...", provider_name, delay)
+                        time.sleep(delay)
+                        continue
+
+                    # Non-retryable or exhausted retries — try next provider
+                    break
+
+        # All providers failed
+        error_msg = _user_friendly_error(
+            _classify_error(last_exc) if last_exc else "unknown",
+            self._last_provider or "all providers",
+        )
+        self._last_error = error_msg
+        logger.error("all planners failed: %s", last_exc)
+        return Plan(
+            summary="All LLM providers failed",
+            actions=[],
+            final_response=error_msg,
+        )
+
+    @property
+    def last_provider(self) -> str:
+        return self._last_provider
+
+    @property
+    def last_error(self) -> str:
+        return self._last_error
+
+
 def _agent_provider(settings: Settings) -> str:
     agent_provider = (settings.agent_llm_provider or "").strip().lower()
     return agent_provider or settings.llm_provider.lower().strip()
 
 
-def create_planner(settings: Settings, for_agent: bool = False) -> BasePlanner:
-    provider = _agent_provider(settings) if for_agent else settings.llm_provider.lower().strip()
-
+def _create_single_planner(settings: Settings, provider: str, for_agent: bool = False) -> BasePlanner:
+    """Create a single planner for the given provider name. Returns NullPlanner on failure."""
     if provider == "openai":
         if not settings.openai_api_key:
             return NullPlanner("OPENAI_API_KEY is not set.")
@@ -338,6 +589,26 @@ def create_planner(settings: Settings, for_agent: bool = False) -> BasePlanner:
         except Exception as exc:
             return NullPlanner(f"Groq init failed: {exc}")
 
+    if provider == "cerebras":
+        if not settings.cerebras_api_key:
+            return NullPlanner("CEREBRAS_API_KEY is not set.")
+        try:
+            return CerebrasPlanner(settings)
+        except ImportError:
+            return NullPlanner("openai package is not installed.")
+        except Exception as exc:
+            return NullPlanner(f"Cerebras init failed: {exc}")
+
+    if provider == "openrouter":
+        if not settings.openrouter_api_key:
+            return NullPlanner("OPENROUTER_API_KEY is not set.")
+        try:
+            return OpenRouterPlanner(settings)
+        except ImportError:
+            return NullPlanner("openai package is not installed.")
+        except Exception as exc:
+            return NullPlanner(f"OpenRouter init failed: {exc}")
+
     if provider == "litellm":
         if not importlib.util.find_spec("litellm"):
             return NullPlanner(
@@ -351,4 +622,44 @@ def create_planner(settings: Settings, for_agent: bool = False) -> BasePlanner:
         except Exception as exc:
             return NullPlanner(f"LiteLLM init failed: {exc}")
 
-    return NullPlanner(f"Unsupported llm_provider: {provider}")
+    return NullPlanner(f"Unsupported provider: {provider}")
+
+
+def create_planner(settings: Settings, for_agent: bool = False) -> BasePlanner:
+    provider = _agent_provider(settings) if for_agent else settings.llm_provider.lower().strip()
+
+    primary = _create_single_planner(settings, provider, for_agent=for_agent)
+
+    # Build fallback chain (only for non-agent planner to avoid complexity in agent loops)
+    if for_agent:
+        return primary
+
+    fallback_names = settings.llm_fallback_providers
+    if not fallback_names:
+        return primary
+
+    fallbacks: list[BasePlanner] = []
+    for fb_name in fallback_names:
+        fb_name = fb_name.strip().lower()
+        if fb_name == provider:
+            continue  # skip duplicate
+        fb = _create_single_planner(settings, fb_name, for_agent=False)
+        if isinstance(fb, NullPlanner):
+            logger.debug("fallback %s skipped: %s", fb_name, fb.reason)
+            continue
+        fallbacks.append(fb)
+
+    if not fallbacks:
+        return primary
+
+    logger.info(
+        "planner chain: primary=%s, fallbacks=%s",
+        type(primary).__name__,
+        [type(f).__name__ for f in fallbacks],
+    )
+    return FallbackPlanner(
+        primary=primary,
+        fallbacks=fallbacks,
+        max_retries=settings.llm_max_retries,
+        retry_base_delay=settings.llm_retry_base_delay,
+    )

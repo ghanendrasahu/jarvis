@@ -44,8 +44,9 @@ def register_all_tools(
 ) -> None:
     register_system_tools(registry, settings, monitor=monitor)
     register_file_tools(registry, settings)
-    register_browser_tools(registry, settings)
-    register_browser_action(registry, settings)
+    if settings.browser_enabled:
+        register_browser_tools(registry, settings)
+        register_browser_action(registry, settings)
     register_interaction_tools(registry, settings)
     register_shell_tools(registry, settings)
     register_agent_tools(registry, settings)

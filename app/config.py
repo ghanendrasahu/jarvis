@@ -48,6 +48,23 @@ class Settings(BaseSettings):
     ollama_base_url: str = "http://localhost:11434"
     ollama_model: str = "llama3.1:8b"
 
+    # LLM fallback chain: tried in order when primary provider fails (413/429/500).
+    # Provider names: openai, groq, ollama, cerebras, openrouter, litellm
+    llm_fallback_providers: Annotated[list[str], NoDecode] = Field(default_factory=list)
+    llm_max_retries: int = 2
+    llm_retry_base_delay: float = 1.0
+    llm_timeout_seconds: int = 30
+
+    # Cerebras (free, 60K TPM — 7.5x more than Groq's free tier).
+    cerebras_api_key: str | None = None
+    cerebras_base_url: str = "https://api.cerebras.ai/v1"
+    cerebras_model: str = "llama-3.3-70b"
+
+    # OpenRouter (free, 20+ models, single API key).
+    openrouter_api_key: str | None = None
+    openrouter_base_url: str = "https://openrouter.ai/api/v1"
+    openrouter_model: str = "meta-llama/llama-3.3-70b-instruct:free"
+
     # Fast-planner result cache (repeat commands skip the LLM call entirely).
     llm_cache_enabled: bool = True
     llm_cache_ttl_days: int = 7
@@ -87,10 +104,13 @@ class Settings(BaseSettings):
 
     approval_policy: str = "medium_and_high"
     auto_approve_low_risk: bool = True
-    max_history_items: int = 40
+    max_history_items: int = 20
     tool_retry_attempts: int = 1
     tool_retry_backoff_seconds: float = 0.4
     db_retention_days: int = 60
+
+    # Browser automation toggle (set false to skip Playwright tools when unavailable).
+    browser_enabled: bool = True
 
     # RAG / knowledge memory.
     rag_enabled: bool = False
@@ -152,7 +172,7 @@ class Settings(BaseSettings):
     )
     allowed_roots: Annotated[list[str], NoDecode] = Field(default_factory=list)
 
-    @field_validator("allowed_shell_commands", "allowed_roots", "job_target_sites", mode="before")
+    @field_validator("allowed_shell_commands", "allowed_roots", "job_target_sites", "llm_fallback_providers", mode="before")
     @classmethod
     def _coerce_csv_lists(cls, value: Any) -> list[str]:
         return _parse_csv(value)
@@ -195,6 +215,8 @@ def get_settings() -> Settings:
     redact.register_secrets(
         settings.openai_api_key,
         settings.groq_api_key,
+        settings.cerebras_api_key,
+        settings.openrouter_api_key,
         settings.litellm_api_key,
         settings.smtp_password,
     )
