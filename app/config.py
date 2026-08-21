@@ -58,12 +58,12 @@ class Settings(BaseSettings):
     # Cerebras (free, 60K TPM — 7.5x more than Groq's free tier).
     cerebras_api_key: str | None = None
     cerebras_base_url: str = "https://api.cerebras.ai/v1"
-    cerebras_model: str = "llama-3.3-70b"
+    cerebras_model: str = "gpt-oss-120b"
 
     # OpenRouter (free, 20+ models, single API key).
     openrouter_api_key: str | None = None
     openrouter_base_url: str = "https://openrouter.ai/api/v1"
-    openrouter_model: str = "meta-llama/llama-3.3-70b-instruct:free"
+    openrouter_model: str = "google/gemma-4-31b-it:free"
 
     # Fast-planner result cache (repeat commands skip the LLM call entirely).
     llm_cache_enabled: bool = True
