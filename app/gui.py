@@ -8,7 +8,6 @@ import random
 import shutil
 import sys
 import threading
-import time
 from collections.abc import Callable
 from datetime import datetime
 from pathlib import Path
@@ -471,9 +470,9 @@ class JarvisHudApp(QMainWindow):
         self.runtime.scheduler.start()
         self._job_tick()
 
-        # Auto-start voice if enabled in config
-        if self.runtime.settings.voice_enabled:
-            QTimer.singleShot(2000, self._auto_start_voice)
+        # Voice auto-start disabled — start manually via VOICE button
+        # if self.runtime.settings.voice_enabled:
+        #     QTimer.singleShot(2000, self._auto_start_voice)
 
     def _auto_start_voice(self) -> None:
         try:

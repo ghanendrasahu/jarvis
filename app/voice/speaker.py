@@ -154,6 +154,7 @@ class Speaker:
             text=True,
             timeout=20,
             check=False,
+            creationflags=subprocess.CREATE_NO_WINDOW,
         )
         if completed.returncode != 0:
             self._last_error = f"sapi_fallback_failed: {completed.stderr.strip()}"

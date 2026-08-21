@@ -33,7 +33,6 @@ switch ($Command.ToLower()) {
 
   "run" {
     $py = Get-Python
-    Write-Host "Starting JARVIS... (close this window to stop)"
     & $py -m app.gui
   }
 
