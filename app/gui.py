@@ -33,6 +33,7 @@ from PySide6.QtWidgets import (
     QDialog,
     QFileDialog,
     QFrame,
+    QGridLayout,
     QGroupBox,
     QHBoxLayout,
     QLabel,
@@ -684,19 +685,30 @@ class JarvisHudApp(QMainWindow):
         splitter.addWidget(ai_card)
 
         # ------------------------------------------------------- right column
+        right_scroll = QScrollArea()
+        right_scroll.setWidgetResizable(True)
+        right_scroll.setFrameShape(QFrame.Shape.NoFrame)
+        right_scroll.setHorizontalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAlwaysOff)
+        right_scroll.setStyleSheet("QScrollArea { border: none; background: transparent; }")
+
         right = QWidget()
         right_lay = QVBoxLayout(right)
         right_lay.setContentsMargins(0, 0, 0, 0)
         right_lay.setSpacing(10)
 
-        voice_card, voice_body = self._make_card("Voice Engine", "Click the wave to toggle")
+        voice_card, voice_body = self._make_card("Voice Engine", "Click to toggle voice")
         voice_lay = QVBoxLayout(voice_body)
         voice_lay.setContentsMargins(0, 0, 0, 0)
         voice_lay.setSpacing(8)
-        self.wave_canvas = WaveWidget(self._toggle_voice)
-        voice_lay.addWidget(self.wave_canvas)
-        self.voice_switch_button = self._chip("VOICE OFF", self._toggle_voice)
+        self.voice_switch_button = QPushButton("VOICE OFF")
+        self.voice_switch_button.setObjectName("Primary")
+        self.voice_switch_button.setFixedHeight(40)
+        self.voice_switch_button.setCursor(Qt.CursorShape.PointingHandCursor)
+        self.voice_switch_button.clicked.connect(self._toggle_voice)
         voice_lay.addWidget(self.voice_switch_button)
+        self.voice_status_label = QLabel("IDLE")
+        self.voice_status_label.setStyleSheet(f"color: {MUTED}; font-size: 11px; text-align: center;")
+        voice_lay.addWidget(self.voice_status_label)
         right_lay.addWidget(voice_card)
 
         job_card, job_body = self._make_card("Job Agent", "Autonomous job-application hunter")
@@ -707,16 +719,17 @@ class JarvisHudApp(QMainWindow):
         self.job_status_label.setWordWrap(True)
         self.job_status_label.setStyleSheet(f"color: {MUTED}; font-size: 11px;")
         job_lay.addWidget(self.job_status_label)
-        job_stats = QHBoxLayout()
+        job_stats = QGridLayout()
+        job_stats.setSpacing(4)
         self.job_stat_labels: dict[str, QLabel] = {}
         stat_colors = {
             "APPLIED": GREEN, "SKIPPED": AMBER, "FAILED": RED,
             "INTERVIEW": CYAN, "OFFER": GREEN, "REJECTED": RED,
         }
-        for name in ("APPLIED", "SKIPPED", "FAILED", "INTERVIEW", "OFFER", "REJECTED"):
+        for i, name in enumerate(("APPLIED", "SKIPPED", "FAILED", "INTERVIEW", "OFFER", "REJECTED")):
             lbl = QLabel(f"{name} 0")
-            lbl.setStyleSheet(f"color: {stat_colors[name]}; font-weight: 700; font-size: 11px;")
-            job_stats.addWidget(lbl)
+            lbl.setStyleSheet(f"color: {stat_colors[name]}; font-weight: 700; font-size: 10px;")
+            job_stats.addWidget(lbl, i // 3, i % 3)
             self.job_stat_labels[name] = lbl
         job_lay.addLayout(job_stats)
         self.job_progress = QProgressBar()
@@ -784,7 +797,8 @@ class JarvisHudApp(QMainWindow):
         right_lay.addWidget(apps_card)
 
         right_lay.addStretch(1)
-        splitter.addWidget(right)
+        right_scroll.setWidget(right)
+        splitter.addWidget(right_scroll)
 
         splitter.setSizes([480, 480, 400])
         root_lay.addWidget(splitter, 1)
@@ -1101,7 +1115,9 @@ class JarvisHudApp(QMainWindow):
         except Exception:
             status = {}
         phase, color, amp, speed = voice_phase(status)
-        self.wave_canvas.update_status(phase, color, amp, speed)
+        if hasattr(self, "voice_status_label"):
+            self.voice_status_label.setText(phase)
+            self.voice_status_label.setStyleSheet(f"color: {color}; font-size: 11px; font-weight: 600;")
         if running:
             self.voice_switch_button.setText("VOICE ON")
             self.voice_switch_button.setStyleSheet(f"color: {GREEN}; background: {_rgba(OK, 220)};")
