@@ -470,9 +470,9 @@ class JarvisHudApp(QMainWindow):
         self.runtime.scheduler.start()
         self._job_tick()
 
-        # Voice auto-start disabled — start manually via VOICE button
-        # if self.runtime.settings.voice_enabled:
-        #     QTimer.singleShot(2000, self._auto_start_voice)
+        # Auto-start voice if enabled in config
+        #if self.runtime.settings.voice_enabled:
+        #    QTimer.singleShot(2000, self._auto_start_voice)
 
     def _auto_start_voice(self) -> None:
         try:

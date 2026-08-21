@@ -33,6 +33,7 @@ class VoiceController:
         )
         self._stop_event = threading.Event()
         self._thread: threading.Thread | None = None
+        self._lifecycle_lock = threading.Lock()
         self._state_lock = threading.Lock()
         self._started_at: str | None = None
         self._last_activity_at: str | None = None
@@ -57,40 +58,43 @@ class VoiceController:
         return self._thread is not None and self._thread.is_alive()
 
     def start(self) -> bool:
-        if self.is_running():
-            return False
-        self._stop_event.clear()
-        with self._state_lock:
-            self._started_at = datetime.now(UTC).isoformat()
-            self._last_activity_at = self._started_at
-            self._last_transcript = ""
-            self._last_command = ""
-            self._last_error = None
-            self._listen_attempts = 0
-            self._recognized_count = 0
-            self._timeout_count = 0
-            self._unknown_audio_count = 0
-            self._request_error_count = 0
-            self._followup_until = 0.0
-            self._sticky_followup_active = False
-            self._pending_whatsapp_confirmation = None
-        self._thread = threading.Thread(target=self._run_loop, daemon=True, name="jarvis-voice-loop")
-        self._thread.start()
-        return True
+        with self._lifecycle_lock:
+            if self.is_running():
+                return False
+            self._stop_event.clear()
+            with self._state_lock:
+                self._started_at = datetime.now(UTC).isoformat()
+                self._last_activity_at = self._started_at
+                self._last_transcript = ""
+                self._last_command = ""
+                self._last_error = None
+                self._listen_attempts = 0
+                self._recognized_count = 0
+                self._timeout_count = 0
+                self._unknown_audio_count = 0
+                self._request_error_count = 0
+                self._followup_until = 0.0
+                self._sticky_followup_active = False
+                self._pending_whatsapp_confirmation = None
+            self._thread = threading.Thread(target=self._run_loop, daemon=True, name="jarvis-voice-loop")
+            self._thread.start()
+            return True
 
     def stop(self) -> bool:
-        if not self.is_running():
-            return False
-        self._stop_event.set()
-        assert self._thread is not None
-        wait_seconds = 3
-        self._thread.join(timeout=wait_seconds)
-        if self._thread.is_alive():
-            with self._state_lock:
-                self._last_error = "stop_timeout: listener still shutting down"
-            return False
-        self._thread = None
-        return True
+        with self._lifecycle_lock:
+            if not self.is_running():
+                return False
+            self._stop_event.set()
+            assert self._thread is not None
+            thread = self._thread
+            wait_seconds = 3
+            thread.join(timeout=wait_seconds)
+            if thread.is_alive():
+                with self._state_lock:
+                    self._last_error = "stop_timeout: listener still shutting down"
+                return False
+            self._thread = None
+            return True
 
     def status(self) -> dict[str, Any]:
         with self._state_lock:
