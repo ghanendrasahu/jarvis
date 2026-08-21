@@ -101,7 +101,20 @@ class DirectCommandRouter:
                         tool="open_youtube_video",
                         args={"query": query, "prefer_first_result": True},
                         risk="low",
-                        reason="Play requested YouTube video by query",
+                    reason="Play requested YouTube video by query",
+                )
+            ]
+
+        match = re.match(r"^(?:open\s+)?youtube(?:\s+and)?\s+play\s+(.+)$", normalized, flags=re.IGNORECASE)
+        if match:
+            query = match.group(1).strip()
+            if query:
+                return [
+                    Action(
+                        tool="open_youtube_video",
+                        args={"query": query, "prefer_first_result": True},
+                        risk="low",
+                        reason="Open YouTube and play requested video by query",
                     )
                 ]
 

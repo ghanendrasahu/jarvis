@@ -141,6 +141,12 @@ def _first_youtube_video_url(query: str) -> tuple[str | None, str]:
     return None, search_url
 
 
+def _looks_like_youtube_watch_url(url: str) -> bool:
+    parsed = urllib.parse.urlparse(url)
+    host = (parsed.netloc or "").lower()
+    return "youtube.com" in host or "youtu.be" in host
+
+
 def _focus_window(title_hints: list[str]) -> str | None:
     import pygetwindow as gw
 
@@ -204,16 +210,25 @@ class _PlaywrightAutomation:
             if prefer_first:
                 resolved_video_id, target_url = _first_youtube_video_url(query)
                 if resolved_video_id is None:
-                    target_url = f"https://www.youtube.com/results?search_query={encoded}"
+                    target_url = f"https://www.youtube.com/results?search_query={encoded}&sp=EgIQAQ%253D%253D"
                 else:
                     target_url = _append_start_time(target_url, start_seconds)
             else:
-                target_url = f"https://www.youtube.com/results?search_query={encoded}"
+                target_url = f"https://www.youtube.com/results?search_query={encoded}&sp=EgIQAQ%253D%253D"
 
         page = self._ensure_page(target_url, ["youtube.com", "youtu.be"])
 
-        if resolved_video_id is not None:
+        if resolved_video_id is not None or _looks_like_youtube_watch_url(page.url):
             page.wait_for_selector("video, #movie_player", timeout=self._timeout_ms)
+            try:
+                page.locator("button[aria-label*='Play' i], .ytp-large-play-button, .ytp-play-button").first.click(
+                    timeout=3000
+                )
+            except Exception:
+                try:
+                    page.keyboard.press("k")
+                except Exception:
+                    pass
 
         return {
             "opened": page.url,
@@ -491,7 +506,7 @@ def register_browser_tools(registry: ToolRegistry, settings: Settings) -> None:
     def open_youtube_video(args: dict[str, Any]) -> dict[str, Any]:
         try:
             return automation.open_youtube_video(args)
-        except Exception:
+        except Exception as exc:
             raw_url = str(args.get("url", "")).strip()
             query = str(args.get("query", "")).strip()
             start_seconds = max(0, safe_int(args.get("start_seconds", 0), 0))
@@ -518,6 +533,7 @@ def register_browser_tools(registry: ToolRegistry, settings: Settings) -> None:
                 "resolved_video_id": resolved_video_id,
                 "start_seconds": start_seconds,
                 "engine": "webbrowser_fallback",
+                "error": str(exc),
             }
 
     def control_youtube(args: dict[str, Any]) -> dict[str, Any]:

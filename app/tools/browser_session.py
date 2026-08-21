@@ -65,13 +65,18 @@ class BrowserSession:
                     args=["--disable-notifications", "--start-maximized"],
                 )
             except Exception as exc:
+                message = str(exc).lower()
+                if "browser" in message and ("install" in message or "executable" in message or "not found" in message):
+                    detail = "Playwright browser executable is missing. Run: playwright install chromium"
+                else:
+                    detail = f"Failed to start Playwright browser context: {exc}"
                 try:
                     self._playwright.stop()
                 except Exception:
                     pass
                 self._playwright = None
                 self._context = None
-                raise RuntimeError(f"Failed to start Playwright browser context: {exc}") from exc
+                raise RuntimeError(detail) from exc
             logger.info("playwright browser context started")
             return self._context
 

@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import os
+import re
 import threading
 import time
 from collections.abc import Iterable
@@ -68,6 +69,7 @@ class VoiceListener:
         self._last_ambient_adjust_at: float | None = None
         self._vad = _VadGate()
         self._groq_client: Any = None
+        self._last_listen_end_at: float = 0.0
 
         # Wake-word detector: real model not available, use phrase-matching
         # as a partial fallback, wrapped in VadAwareDetector so silence
@@ -200,125 +202,97 @@ class VoiceListener:
         import speech_recognition as sr
 
         recognizer = self._get_recognizer()
-
-        with self._mic_lock:
-            if self._device_index is None:
-                try:
-                    names = self.list_microphones()
-                    self._device_index = self._auto_pick_microphone(names)
-                except Exception:
-                    self._device_index = None
-
-            mic = sr.Microphone(device_index=self._device_index)
-
-            try:
-                source = mic.__enter__()
-            except Exception:
-                return ListenResult(
-                    transcript=None,
-                    issue="microphone_init_failed",
-                )
-
-            try:
-                if stop_event is not None and stop_event.is_set():
-                    return ListenResult(
-                        transcript=None,
-                        issue="stopped",
-                    )
-
-                now = time.time()
-                interval = max(
-                    3,
-                    int(self.settings.speech_ambient_adjust_interval_seconds),
-                )
-                should_adjust = self._last_ambient_adjust_at is None or (now - self._last_ambient_adjust_at) >= interval
-
-                if should_adjust:
-                    recognizer.adjust_for_ambient_noise(
-                        source,
-                        duration=max(
-                            0.05,
-                            float(self.settings.speech_ambient_adjust_duration_seconds),
-                        ),
-                    )
-                    self._last_ambient_adjust_at = now
-
-                if stop_event is not None and stop_event.is_set():
-                    return ListenResult(
-                        transcript=None,
-                        issue="stopped",
-                    )
-
-                try:
-                    audio = recognizer.listen(
-                        source,
-                        timeout=min(self.settings.speech_timeout_seconds, 2),
-                        phrase_time_limit=self.settings.phrase_time_limit_seconds,
-                    )
-                except sr.WaitTimeoutError:
-                    if stop_event is not None and stop_event.is_set():
-                        return ListenResult(
-                            transcript=None,
-                            issue="stopped",
-                        )
-                    return ListenResult(
-                        transcript=None,
-                        issue="timeout",
-                    )
-            finally:
-                try:
-                    mic.__exit__(None, None, None)
-                except Exception:
-                    pass
-
-        if not self._vad.has_speech(audio):
-            return ListenResult(
-                transcript=None,
-                issue="no_speech",
-            )
-
+        audio = None
         try:
+            with self._mic_lock:
+                if stop_event is not None and stop_event.is_set():
+                    return ListenResult(transcript=None, issue="stopped")
+                if self._device_index is None:
+                    try:
+                        names = self.list_microphones()
+                        self._device_index = self._auto_pick_microphone(names)
+                    except Exception:
+                        self._device_index = None
+
+                mic = sr.Microphone(device_index=self._device_index)
+
+                try:
+                    source = mic.__enter__()
+                except Exception:
+                    return ListenResult(transcript=None, issue="microphone_init_failed")
+
+                try:
+                    if stop_event is not None and stop_event.is_set():
+                        return ListenResult(transcript=None, issue="stopped")
+
+                    now = time.time()
+                    interval = max(3, int(self.settings.speech_ambient_adjust_interval_seconds))
+                    should_adjust = self._last_ambient_adjust_at is None or (now - self._last_ambient_adjust_at) >= interval
+                    if should_adjust:
+                        recognizer.adjust_for_ambient_noise(
+                            source,
+                            duration=max(0.05, float(self.settings.speech_ambient_adjust_duration_seconds)),
+                        )
+                        self._last_ambient_adjust_at = now
+
+                    if stop_event is not None and stop_event.is_set():
+                        return ListenResult(transcript=None, issue="stopped")
+
+                    try:
+                        audio = recognizer.listen(
+                            source,
+                            timeout=min(self.settings.speech_timeout_seconds, 2),
+                            phrase_time_limit=self.settings.phrase_time_limit_seconds,
+                        )
+                    except sr.WaitTimeoutError:
+                        if stop_event is not None and stop_event.is_set():
+                            return ListenResult(transcript=None, issue="stopped")
+                        return ListenResult(transcript=None, issue="timeout")
+                finally:
+                    try:
+                        mic.__exit__(None, None, None)
+                    except Exception:
+                        pass
+
+            if not self._vad.has_speech(audio):
+                return ListenResult(transcript=None, issue="no_speech")
+
             if self.settings.groq_api_key:
-                transcript = self._transcribe_groq(audio)
-                return ListenResult(
-                    transcript=transcript.strip(),
-                    issue=None,
-                )
+                transcript = self._transcribe_groq(audio).strip()
+            elif self.settings.openai_api_key and hasattr(recognizer, "recognize_whisper_api"):
+                transcript = recognizer.recognize_whisper_api(audio, api_key=self.settings.openai_api_key).strip()
+            else:
+                transcript = recognizer.recognize_google(audio).strip()
 
-            if self.settings.openai_api_key and hasattr(
-                recognizer,
-                "recognize_whisper_api",
-            ):
-                transcript = recognizer.recognize_whisper_api(
-                    audio,
-                    api_key=self.settings.openai_api_key,
-                )
-                return ListenResult(
-                    transcript=transcript.strip(),
-                    issue=None,
-                )
-
-            transcript = recognizer.recognize_google(audio)
-            return ListenResult(
-                transcript=transcript.strip(),
-                issue=None,
-            )
+            if not self._is_transcript_plausible(transcript, self.settings.voice_min_transcript_chars):
+                return ListenResult(transcript=None, issue="garbled_transcript")
+            return ListenResult(transcript=transcript, issue=None)
 
         except sr.UnknownValueError:
-            return ListenResult(
-                transcript=None,
-                issue="unknown_audio",
-            )
+            return ListenResult(transcript=None, issue="unknown_audio")
         except sr.RequestError as exc:
-            return ListenResult(
-                transcript=None,
-                issue=f"request_error: {exc}",
-            )
+            return ListenResult(transcript=None, issue=f"request_error: {exc}")
         except Exception as exc:
-            return ListenResult(
-                transcript=None,
-                issue=f"listener_error: {exc}",
-            )
+            return ListenResult(transcript=None, issue=f"listener_error: {exc}")
+        finally:
+            self._last_listen_end_at = time.time()
+
+    @staticmethod
+    def _is_transcript_plausible(transcript: str, min_chars: int = 2) -> bool:
+        text = " ".join(transcript.split()).strip()
+        if len(text) < max(1, min_chars):
+            return False
+        words = [word for word in re.findall(r"[A-Za-z0-9']+", text)]
+        if len(words) == 0:
+            return False
+        if len(words) == 1 and len(words[0]) < 4:
+            return False
+        alpha = sum(1 for ch in text if ch.isalpha())
+        if alpha < max(2, len(text) // 4):
+            return False
+        if len(text) > 4 and len(words) <= 1 and not re.search(r"\d", text):
+            return False
+        return True
 
     def _transcribe_groq(self, audio) -> str:
         """Transcribe via Groq's free-tier Whisper (OpenAI-compatible endpoint)."""

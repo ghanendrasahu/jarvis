@@ -47,6 +47,7 @@ class VoiceController:
         self._request_error_count: int = 0
         self._followup_until: float = 0.0
         self._sticky_followup_active: bool = False
+        self._tts_block_until: float = 0.0
         self._pending_whatsapp_confirmation: dict[str, str] | None = None
         # Wake-word detector — partial phrase-matching fallback;
         # a real hotword model should replace PhraseMatchingDetectorForIntegration.
@@ -75,6 +76,7 @@ class VoiceController:
                 self._request_error_count = 0
                 self._followup_until = 0.0
                 self._sticky_followup_active = False
+                self._tts_block_until = 0.0
                 self._pending_whatsapp_confirmation = None
             self._thread = threading.Thread(target=self._run_loop, daemon=True, name="jarvis-voice-loop")
             self._thread.start()
@@ -118,12 +120,14 @@ class VoiceController:
                 "request_error_count": self._request_error_count,
                 "followup_window_active": time.time() <= self._followup_until,
                 "sticky_followup_active": self._sticky_followup_active,
+                "tts_block_active": time.time() <= self._tts_block_until,
                 "pending_whatsapp_confirmation": bool(self._pending_whatsapp_confirmation),
             }
 
     def _speak_async(self, text: str) -> None:
         if not text or not self.speaker.enabled:
             return
+        self._tts_block_until = time.time() + 2.5
 
         def _safe_speak() -> None:
             try:
@@ -170,6 +174,11 @@ class VoiceController:
         command = transcript[index + len(self._wake_word.wake_phrase) :].strip(" ,.:")
         return command, True
 
+    def _should_ignore_transcript(self, transcript: str) -> bool:
+        if time.time() <= self._tts_block_until:
+            return True
+        return not self.listener._is_transcript_plausible(transcript, self.settings.voice_min_transcript_chars)
+
     def _run_loop(self) -> None:
         model = self.settings.groq_model
         self._speak_async(f"Hello Boss Sahu, running on {model}. How can I help you?")
@@ -193,6 +202,8 @@ class VoiceController:
                         self._timeout_count += 1
                     elif result.issue == "no_speech":
                         pass
+                    elif result.issue == "garbled_transcript":
+                        self._unknown_audio_count += 1
                     elif result.issue == "unknown_audio":
                         self._unknown_audio_count += 1
                     elif result.issue.startswith("request_error"):
@@ -205,7 +216,7 @@ class VoiceController:
             transcript = result.transcript or ""
             if not transcript:
                 continue
-            if len(transcript.strip()) < max(1, int(self.settings.voice_min_transcript_chars)):
+            if self._should_ignore_transcript(transcript):
                 continue
 
             with self._state_lock:
