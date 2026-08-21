@@ -23,9 +23,9 @@ This version adds all requested upgrades across five phases:
 
 1. Install dependencies:
 ```powershell
-.\jarvirun.ps1 setup
+.\jarvis_run.ps1 setup
 ```
-All versions live in `pyproject.toml`; `requirements.txt` is a thin `-e .[dev]` shim so `.\jarvirun.ps1 setup` stays simple.
+All versions live in `pyproject.toml`; `requirements.txt` is a thin `-e .[dev]` shim so `.\jarvis_run.ps1 setup` stays simple.
 
 2. Install Playwright browser runtime (required for full browser automation):
 ```powershell
@@ -39,12 +39,12 @@ All versions live in `pyproject.toml`; `requirements.txt` is a thin `-e .[dev]` 
 
 4. Run JARVIS (desktop HUD):
 ```powershell
-.\jarvirun.ps1 run
+.\jarvis_run.ps1 run
 ```
 
 Optional — interactive text CLI (voice device diagnostics, approvals, metrics):
 ```powershell
-.\jarvirun.ps1 cli   # or: python -m app.cli
+.\jarvis_run.ps1 cli   # or: python -m app.cli
 ```
 
 ## Auto-Start
@@ -57,9 +57,9 @@ The HUD can start itself automatically in two places:
 Turn it off/on anytime:
 
 - Click the **AUTOSTART ON / AUTOSTART OFF** chip in the HUD top bar, or
-- `.\jarvirun.ps1 autostart off` / `on` / `status`
+- `.\jarvis_run.ps1 autostart off` / `on` / `status`
 
-Disabled = the HUD does not auto-start until you re-enable it (manual `.\jarvirun.ps1 run` always works).
+Disabled = the HUD does not auto-start until you re-enable it (manual `.\jarvis_run.ps1 run` always works).
 
 ## Dashboard extras
 
@@ -207,7 +207,7 @@ Voice diagnostics in CLI:
 
 ## Desktop GUI
 
-`.\jarvirun.ps1 run` opens the JARVIS command HUD (`app/gui.py`):
+`.\jarvis_run.ps1 run` opens the JARVIS command HUD (`app/gui.py`):
 
 - **Command bar** with ↑/↓ history + `EXECUTE` button, plus quick preset chips (Play/Pause, Next, Apps, MINI, TRAY, RECAP)
 - **Live terminal + activity feed** — responses, tool statuses, and a scrolling ✓/⏳/✗ command feed (agent steps stream in live)
@@ -332,11 +332,11 @@ app/
 config/
   job_profile.yaml        # your identity/skills/form answers
   site_profiles.yaml      # job-board search + selector profiles
-jarvirun.ps1             # unified launcher (run|cli|setup|clean|autostart)
+jarvis_run.ps1             # unified launcher (run|cli|setup|clean|autostart)
 ```
 
 ## Maintenance
 
-- `.\jarvirun.ps1 clean` removes generated caches (`__pycache__`, ruff caches) and prunes
+- `.\jarvis_run.ps1 clean` removes generated caches (`__pycache__`, ruff caches) and prunes
   Chromium profile cache folders — it keeps your saved logins in `data/browser_profile`.
 - `data/`, `logs/`, and `.venv/` are gitignored runtime state.

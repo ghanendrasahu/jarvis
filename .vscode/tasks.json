@@ -10,7 +10,7 @@
         "-ExecutionPolicy",
         "Bypass",
         "-File",
-        "${workspaceFolder}/jarvirun.ps1",
+        "${workspaceFolder}/jarvis_run.ps1",
         "autostart",
         "run"
       ],
