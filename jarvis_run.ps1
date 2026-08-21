@@ -33,8 +33,7 @@ switch ($Command.ToLower()) {
 
   "run" {
     $py = Get-Python
-    & $py -m app.gui
-    exit $LASTEXITCODE
+    Start-Process -FilePath $py -ArgumentList "-m", "app.gui" -WorkingDirectory $root
   }
 
   "cli" {
