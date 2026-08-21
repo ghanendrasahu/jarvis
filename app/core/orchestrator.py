@@ -192,11 +192,11 @@ class JarvisOrchestrator:
             lines.append(f"Failures: {errors}.")
         return " ".join(lines).strip()
 
-    @staticmethod
-    def _instant_reply(command: str) -> str | None:
+    def _instant_reply(self, command: str) -> str | None:
         lowered = command.lower().strip()
         if lowered in {"hi", "hello", "hey", "yo", "jarvis"}:
-            return "Hello Boss Sahu, how can I help you?"
+            model = self._planner_model()
+            return f"Hello Boss Sahu, running on {model}. How can I help you?"
         if lowered in {"open", "start", "launch"}:
             return "Tell me what to open. Example: 'open chrome' or 'open whatsapp'."
         if lowered in {"close", "quit", "kill"}:

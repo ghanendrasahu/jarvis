@@ -167,7 +167,8 @@ class VoiceController:
         return command, True
 
     def _run_loop(self) -> None:
-        self._speak_async("Hello Boss Sahu, how can I help you?")
+        model = self.settings.groq_model
+        self._speak_async(f"Hello Boss Sahu, running on {model}. How can I help you?")
         while not self._stop_event.is_set():
             try:
                 result = self.listener.listen_once(stop_event=self._stop_event)
