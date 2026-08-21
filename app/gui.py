@@ -2540,7 +2540,12 @@ def main() -> None:
     app = QApplication(sys.argv)
     app.setApplicationName("JARVIS")
     window = JarvisHudApp(app)
-    window.run()
+    try:
+        window.run()
+    except Exception as exc:
+        import traceback
+        traceback.print_exc()
+        raise
 
 
 if __name__ == "__main__":
