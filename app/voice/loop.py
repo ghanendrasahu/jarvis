@@ -24,7 +24,13 @@ class VoiceController:
         self.settings = settings
         self.orchestrator = orchestrator
         self.listener = VoiceListener(settings)
-        self.speaker = Speaker(enabled=settings.tts_enabled)
+        self.speaker = Speaker(
+            enabled=settings.tts_enabled,
+            mode=settings.tts_engine,
+            kokoro_voice=settings.kokoro_voice,
+            kokoro_lang_code=settings.kokoro_lang_code,
+            kokoro_speed=settings.kokoro_speed,
+        )
         self._stop_event = threading.Event()
         self._thread: threading.Thread | None = None
         self._state_lock = threading.Lock()
@@ -115,12 +121,17 @@ class VoiceController:
             }
 
     def _speak_async(self, text: str) -> None:
-        if not text:
+        if not text or not self.speaker.enabled:
             return
 
+        def _safe_speak() -> None:
+            try:
+                self.speaker.speak(text)
+            except Exception:
+                pass
+
         thread = threading.Thread(
-            target=self.speaker.speak,
-            args=(text,),
+            target=_safe_speak,
             daemon=True,
             name="jarvis-voice-tts",
         )
@@ -159,7 +170,7 @@ class VoiceController:
         return command, True
 
     def _run_loop(self) -> None:
-        self._speak_async("Voice mode online.")
+        self._speak_async("Hello Boss Sahu, how can I help you?")
         while not self._stop_event.is_set():
             try:
                 result = self.listener.listen_once()

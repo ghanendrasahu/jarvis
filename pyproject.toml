@@ -36,6 +36,11 @@ dev = [
 litellm = [
     "litellm>=1.60.0",
 ]
+tts = [
+    "kokoro>=0.8.0",
+    "soundfile>=0.12.0",
+    "sounddevice>=0.4.0",
+]
 
 [tool.setuptools.packages.find]
 include = ["app*"]

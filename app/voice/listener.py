@@ -129,13 +129,36 @@ class VoiceListener:
         return score
 
     def _auto_pick_microphone(self, names: Iterable[str]) -> int | None:
+        import pyaudio
+
         scored = [(self._score_mic_name(name), index, name) for index, name in enumerate(names)]
         if not scored:
             return None
-        best_score, best_index, _ = max(scored)
-        if best_score < 10:
-            return None
-        return best_index
+        scored.sort(key=lambda x: x[0], reverse=True)
+        p = pyaudio.PyAudio()
+        try:
+            for _score, index, _name in scored:
+                if _score < 10:
+                    break
+                try:
+                    info = p.get_device_info_by_index(index)
+                    if int(info.get("maxInputChannels", 0)) <= 0:
+                        continue
+                    s = p.open(
+                        input_device_index=index,
+                        channels=1,
+                        format=pyaudio.paInt16,
+                        rate=16000,
+                        frames_per_buffer=1024,
+                        input=True,
+                    )
+                    s.close()
+                    return index
+                except Exception:
+                    continue
+        finally:
+            p.terminate()
+        return None
 
     def listen_once(self) -> ListenResult:
         import speech_recognition as sr
@@ -147,7 +170,12 @@ class VoiceListener:
                 self._device_index = self._auto_pick_microphone(names)
             except Exception:
                 self._device_index = None
-        with sr.Microphone(device_index=self._device_index) as source:
+        mic = sr.Microphone(device_index=self._device_index)
+        try:
+            source = mic.__enter__()
+        except Exception:
+            return ListenResult(transcript=None, issue="microphone_init_failed")
+        try:
             now = time.time()
             interval = max(3, int(self.settings.speech_ambient_adjust_interval_seconds))
             should_adjust = self._last_ambient_adjust_at is None or (now - self._last_ambient_adjust_at) >= interval
@@ -165,6 +193,11 @@ class VoiceListener:
                 )
             except sr.WaitTimeoutError:
                 return ListenResult(transcript=None, issue="timeout")
+        finally:
+            try:
+                mic.__exit__(None, None, None)
+            except Exception:
+                pass
 
         if not self._vad.has_speech(audio):
             return ListenResult(transcript=None, issue="no_speech")

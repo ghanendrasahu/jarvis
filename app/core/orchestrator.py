@@ -195,7 +195,7 @@ class JarvisOrchestrator:
     def _instant_reply(command: str) -> str | None:
         lowered = command.lower().strip()
         if lowered in {"hi", "hello", "hey", "yo", "jarvis"}:
-            return "Online and ready."
+            return "Hello Boss Sahu, how can I help you?"
         if lowered in {"open", "start", "launch"}:
             return "Tell me what to open. Example: 'open chrome' or 'open whatsapp'."
         if lowered in {"close", "quit", "kill"}:

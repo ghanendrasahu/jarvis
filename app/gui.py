@@ -324,29 +324,6 @@ class Backdrop(QWidget):
             p.setBrush(QColor(129, 140, 248, 150))
             p.drawEllipse(QPointF(part["x"], part["y"]), r, r)
 
-        # arc-reactor orb
-        cx, cy = int(w * 0.86), int(h * 0.84)
-        r1 = 90 + (3 * math.sin(self._angle))
-        r2 = 120 + (4 * math.cos(self._angle * 0.7))
-        p.setPen(QPen(QColor(INDIGO), 1))
-        p.setBrush(Qt.BrushStyle.NoBrush)
-        p.drawEllipse(QPointF(cx, cy), r1, r1)
-        p.drawEllipse(QPointF(cx, cy), r2, r2)
-        for i in range(12):
-            a = self._angle * 0.8 + i * math.pi / 6
-            tick = QColor(CYAN)
-            tick.setAlpha(160)
-            p.setPen(QPen(tick, 2))
-            x0 = cx + math.cos(a) * r1
-            y0 = cy + math.sin(a) * r1
-            x1 = cx + math.cos(a) * (r1 + 16)
-            y1 = cy + math.sin(a) * (r1 + 16)
-            p.drawLine(int(x0), int(y0), int(x1), int(y1))
-        p.setPen(Qt.PenStyle.NoPen)
-        p.setBrush(QColor(34, 211, 238, 70))
-        p.drawEllipse(QPointF(cx, cy), 40, 40)
-        p.setBrush(QColor(34, 211, 238, 160))
-        p.drawEllipse(QPointF(cx, cy), 18, 18)
         p.end()
 
     def _draw_blob(self, p: QPainter, x: float, y: float, radius: float, color: str, alpha: int) -> None:

@@ -7,15 +7,30 @@ from typing import Any
 
 
 class Speaker:
-    def __init__(self, enabled: bool = True) -> None:
+    def __init__(
+        self,
+        enabled: bool = True,
+        mode: str | None = None,
+        kokoro_voice: str = "af_bella",
+        kokoro_lang_code: str = "a",
+        kokoro_speed: float = 1.0,
+    ) -> None:
         self.enabled = enabled
         self._lock = Lock()
         self._engine = None
         self._engine_name = "disabled"
         self._last_error: str | None = None
-        self._mode: str = "sapi" if os.name == "nt" else "pyttsx3"
+        self._mode: str = mode or ("sapi" if os.name == "nt" else "pyttsx3")
         self._preferred_output_index: int | None = None
-        if enabled:
+        self._kokoro_pipeline = None
+        self._kokoro_voice = kokoro_voice
+        self._kokoro_lang_code = kokoro_lang_code
+        self._kokoro_speed = kokoro_speed
+
+        if self._mode == "kokoro":
+            self._init_kokoro()
+
+        if enabled and self._mode != "kokoro":
             try:
                 import pyttsx3
 
@@ -28,6 +43,21 @@ class Speaker:
                 self._engine_name = "windows_sapi_fallback"
                 self._mode = "sapi"
 
+    def _init_kokoro(self) -> None:
+        try:
+            from kokoro import KPipeline  # type: ignore[import-untyped]
+
+            self._kokoro_pipeline = KPipeline(lang_code=self._kokoro_lang_code)
+            self._engine_name = "kokoro"
+        except ImportError as exc:
+            self._last_error = f"kokoro_import_failed: {exc} (pip install -e .[tts] + espeak-ng)"
+            self._kokoro_pipeline = None
+            self._mode = "sapi"
+        except Exception as exc:
+            self._last_error = f"kokoro_init_failed: {exc}"
+            self._kokoro_pipeline = None
+            self._mode = "sapi"
+
     def status(self) -> dict[str, Any]:
         audio_info = self._audio_outputs()
         return {
@@ -38,12 +68,17 @@ class Speaker:
             "last_error": self._last_error,
             "audio_output_count": audio_info["count"],
             "audio_outputs": audio_info["devices"],
+            "kokoro_available": self._kokoro_pipeline is not None,
+            "kokoro_voice": self._kokoro_voice,
+            "kokoro_lang_code": self._kokoro_lang_code,
         }
 
     def set_mode(self, mode: str) -> dict[str, Any]:
         normalized = mode.strip().lower()
-        if normalized not in {"pyttsx3", "sapi"}:
-            raise ValueError("mode must be one of: pyttsx3, sapi")
+        if normalized not in {"pyttsx3", "sapi", "kokoro"}:
+            raise ValueError("mode must be one of: pyttsx3, sapi, kokoro")
+        if normalized == "kokoro" and self._kokoro_pipeline is None:
+            self._init_kokoro()
         self._mode = normalized
         return self.status()
 
@@ -115,10 +150,45 @@ class Speaker:
             except Exception:
                 pass
 
+    def _speak_kokoro(self, text: str) -> bool:
+        if self._kokoro_pipeline is None:
+            self._last_error = "kokoro_pipeline_not_initialized"
+            return False
+        try:
+            import numpy as np  # type: ignore[import-untyped]
+            import sounddevice as sd  # type: ignore[import-untyped]
+
+            audio_chunks: list[np.ndarray] = []
+            sample_rate = 24000
+            for _graphemes, _phonemes, audio in self._kokoro_pipeline(
+                text,
+                voice=self._kokoro_voice,
+                speed=self._kokoro_speed,
+            ):
+                if audio is None:
+                    continue
+                arr = np.asarray(audio)
+                audio_chunks.append(arr)
+            if not audio_chunks:
+                self._last_error = "kokoro_empty_audio"
+                return False
+            full_audio = np.concatenate(audio_chunks)
+            sd.play(full_audio, samplerate=sample_rate)
+            sd.wait()
+            self._last_error = None
+            self._engine_name = "kokoro"
+            return True
+        except Exception as exc:
+            self._last_error = f"kokoro_speak_failed: {exc}"
+            return False
+
     def speak(self, text: str) -> None:
         if not self.enabled or not text:
             return
         with self._lock:
+            if self._mode == "kokoro":
+                if self._speak_kokoro(text):
+                    return
             audio_info = self._audio_outputs()
             if audio_info["count"] == 0:
                 self._last_error = "no_audio_output_device_visible_to_runtime"

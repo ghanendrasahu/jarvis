@@ -108,7 +108,8 @@ def build_runtime(events: EventHub | None = None) -> Runtime:
 
     step = time.perf_counter()
     # Resource monitor for system intelligence (Phase L)
-    monitor = ResourceMonitor(history_size=60, interval=1.0)
+    # Reduced interval from 1s to 5s to lower CPU overhead
+    monitor = ResourceMonitor(history_size=60, interval=5.0)
     monitor.start()
     diagnoser = SystemDiagnoser(monitor, settings)
     register_all_tools(
@@ -124,7 +125,13 @@ def build_runtime(events: EventHub | None = None) -> Runtime:
     )
     _step("monitor+tool registration", step)
 
-    reminder_speaker = Speaker(enabled=settings.tts_enabled)
+    reminder_speaker = Speaker(
+        enabled=settings.tts_enabled,
+        mode=settings.tts_engine,
+        kokoro_voice=settings.kokoro_voice,
+        kokoro_lang_code=settings.kokoro_lang_code,
+        kokoro_speed=settings.kokoro_speed,
+    )
 
     def _announce_scheduled_run(job: dict, status: str, text: str) -> None:
         try:

@@ -72,6 +72,13 @@ class Settings(BaseSettings):
     speech_ambient_adjust_duration_seconds: float = 0.25
     speech_ambient_adjust_interval_seconds: int = 25
 
+    # Kokoro-82M TTS engine (pip install -e .[tts] + espeak-ng system package).
+    # Speaker mode: "sapi" | "pyttsx3" | "kokoro"
+    tts_engine: str = "kokoro"
+    kokoro_voice: str = "af_bella"
+    kokoro_lang_code: str = "a"  # a=American English, b=British, j=Japanese, z=Chinese, etc.
+    kokoro_speed: float = 1.0
+
     approval_policy: str = "medium_and_high"
     auto_approve_low_risk: bool = True
     max_history_items: int = 40
@@ -80,10 +87,10 @@ class Settings(BaseSettings):
     db_retention_days: int = 60
 
     # RAG / knowledge memory.
-    rag_enabled: bool = True
+    rag_enabled: bool = False
     rag_index_path: str = "data/rag.db"
     rag_notes_dir: str = "data/notes"
-    rag_embeddings_enabled: bool = True
+    rag_embeddings_enabled: bool = False
     rag_embed_model: str = "nomic-embed-text"
     rag_top_k: int = 5
     rag_chunk_chars: int = 512
