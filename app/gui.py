@@ -639,9 +639,9 @@ class JarvisHudApp(QMainWindow):
         term_lay.setContentsMargins(0, 0, 0, 0)
         term_lay.setSpacing(6)
         term_head = QHBoxLayout()
-        label = QLabel("ALL EVENTS STREAM HERE")
-        label.setStyleSheet(f"color: {MUTED}; font-size: 10px;")
-        term_head.addWidget(label, 1)
+        term_label = QLabel("ALL EVENTS STREAM HERE")
+        term_label.setStyleSheet(f"color: {MUTED}; font-size: 10px;")
+        term_head.addWidget(term_label, 1)
         term_head.addWidget(self._chip("CLEAR", self._clear_terminal))
         term_lay.addLayout(term_head)
         self.terminal = QTextEdit()
@@ -903,7 +903,7 @@ class JarvisHudApp(QMainWindow):
                 p.end()
                 sw.setPixmap(pix)
                 sw.setCursor(Qt.CursorShape.PointingHandCursor)
-                sw.mousePressEvent = lambda _e, idx=i: self._apply_background("gradient", str(idx))
+                sw.mousePressEvent = lambda _e, idx=i: self._apply_background("gradient", str(idx))  # type: ignore[method-assign, misc]
                 grid.addWidget(sw)
             body_lay.addLayout(grid)
         elif current_mode == "image":
@@ -1204,32 +1204,32 @@ class JarvisHudApp(QMainWindow):
 
     def _render_approval_cards(self, items: list[dict[str, Any]]) -> None:
         while self.approval_lay.count():
-            item = self.approval_lay.takeAt(0)
-            w = item.widget()
+            old = self.approval_lay.takeAt(0)
+            w = old.widget()
             if w is not None:
                 w.deleteLater()
         self._approval_cards.clear()
-        self._pending_ids = [str(item.get("id") or item.get("approval_id") or "") for item in items]
-        for item in items:
+        self._pending_ids = [str(a.get("id") or a.get("approval_id") or "") for a in items]
+        for a in items:
             card = QFrame()
             card.setObjectName("Card")
             card.setStyleSheet(f"background: {_rgba(INNER, 200)}; border: 1px solid {_rgba(STROKE, 180)}; border-radius: 10px;")
             lay = QVBoxLayout(card)
             lay.setContentsMargins(10, 8, 10, 8)
             lay.setSpacing(4)
-            prompt = str(item.get("prompt") or item.get("command") or "")
+            prompt = str(a.get("prompt") or a.get("command") or "")
             p = QLabel(prompt[:120] or "(no prompt)")
             p.setWordWrap(True)
             p.setStyleSheet(f"color: {TEXT}; font-size: 11px; font-weight: 700;")
             lay.addWidget(p)
-            detail = str(item.get("reason") or item.get("summary") or item.get("description") or "")
+            detail = str(a.get("reason") or a.get("summary") or a.get("description") or "")
             if detail:
                 d = QLabel(detail[:160])
                 d.setWordWrap(True)
                 d.setStyleSheet(f"color: {MUTED}; font-size: 10px;")
                 lay.addWidget(d)
             act = QHBoxLayout()
-            approval_id = str(item.get("id") or item.get("approval_id") or "")
+            approval_id = str(a.get("id") or a.get("approval_id") or "")
             approve = self._chip("APPROVE", lambda aid=approval_id: self._approve_id(aid))
             approve.setStyleSheet(f"color: {GREEN}; background: {_rgba(OK, 220)};")
             reject = self._chip("REJECT", lambda aid=approval_id: self._reject_id(aid))
@@ -1669,7 +1669,7 @@ class JarvisHudApp(QMainWindow):
         actions.addWidget(self._chip("DELETE", self._delete_schedule))
         lay.addLayout(actions)
 
-        self._sched_win = win
+        self._sched_win: QDialog | None = win
         self._sched_jobs: list[dict[str, Any]] = []
         self._scheduler_load()
         poll = QTimer(win)
@@ -1889,7 +1889,7 @@ class JarvisHudApp(QMainWindow):
         lay.addWidget(status)
         self._tasks_status = status
 
-        self._tasks_win = win
+        self._tasks_win: QDialog | None = win
         self._tasks_items: list[dict[str, Any]] = []
         self._tasks_load()
         poll = QTimer(win)

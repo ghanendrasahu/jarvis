@@ -56,7 +56,7 @@ class Toaster(QWidget):
         close = QLabel("✕", self.frame)
         close.setObjectName("ToastClose")
         close.setCursor(Qt.CursorShape.PointingHandCursor)
-        close.mousePressEvent = lambda _e: self._dismiss()
+        close.mousePressEvent = lambda _e: self._dismiss()  # type: ignore[method-assign]
         head.addWidget(close)
         lay.addLayout(head)
 

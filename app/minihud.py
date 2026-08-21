@@ -418,9 +418,10 @@ class MiniHud(QWidget):
         else:
             self.show()
 
-    def close(self) -> None:
+    def close(self) -> bool:
         self._save_position()
         self.hide()
+        return True
 
     def _animate_dot(self) -> None:
         self._wave_phase += 0.35
