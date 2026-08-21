@@ -5,6 +5,7 @@ from typing import Any
 
 from app.core.utils import parse_duration_to_seconds
 from app.models.schemas import Action
+from app.tools.system_tools import resolve_open_target
 
 _WORD_ALIASES = {
     "youutube": "youtube",
@@ -271,6 +272,20 @@ class DirectCommandRouter:
                         reason="Open desktop shortcut by name",
                     )
                 ]
+
+        if normalized.startswith("open "):
+            target_name = normalized[5:].strip()
+            if target_name:
+                resolved_target = resolve_open_target(target_name)
+                if resolved_target and resolved_target["kind"] == "url":
+                    return [
+                        Action(
+                            tool="open_url",
+                            args={"url": resolved_target["target"]},
+                            risk="low",
+                            reason="Open web app",
+                        )
+                    ]
 
         match = re.match(r"^(open|launch|start)\s+(.+)$", normalized)
         if match:

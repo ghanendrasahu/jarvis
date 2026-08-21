@@ -35,6 +35,7 @@ WEB_APP_ALIASES = {
     "youtube": "https://www.youtube.com",
     "whatsapp": "https://web.whatsapp.com",
     "gmail": "https://mail.google.com",
+    "github": "https://github.com",
     "google": "https://www.google.com",
     "chatgpt": "https://chatgpt.com",
 }
@@ -47,6 +48,24 @@ PROTECTED_PROCESSES = {
     "services.exe",
     "lsass.exe",
 }
+
+
+def resolve_open_target(name: str) -> dict[str, str] | None:
+    """Resolve a user-facing launch target into the best available launch strategy.
+
+    Returns a dict with:
+    - kind: app | app_shortcut | url
+    - target: executable path, shortcut path, or URL
+    - alias: normalized lookup key when a known alias matched
+    """
+    normalized = str(name or "").strip().lower()
+    if not normalized:
+        return None
+    if normalized in APP_ALIASES:
+        return {"kind": "app", "target": APP_ALIASES[normalized], "alias": normalized}
+    if normalized in WEB_APP_ALIASES:
+        return {"kind": "url", "target": WEB_APP_ALIASES[normalized], "alias": normalized}
+    return None
 
 
 def register_system_tools(registry: ToolRegistry, settings: Settings, monitor: ResourceMonitor | None = None) -> None:
@@ -186,6 +205,12 @@ def register_system_tools(registry: ToolRegistry, settings: Settings, monitor: R
         normalized = raw_name.lower().strip()
         if normalized in {"open", "start", "launch"}:
             raise ValueError("Application name is missing. Example: open chrome")
+
+        resolved_target = resolve_open_target(raw_name)
+        if resolved_target and resolved_target["kind"] == "url":
+            url = resolved_target["target"]
+            webbrowser.open(url, new=2)
+            return {"message": "Web app opened in browser.", "target": url, "kind": "url"}
 
         target = APP_ALIASES.get(normalized, raw_name)
         if target.startswith("http://") or target.startswith("https://"):
