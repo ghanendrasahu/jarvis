@@ -58,6 +58,27 @@ def _extract_json(raw_text: str) -> dict[str, Any]:
             return {}
 
 
+def _convert_tool_call_to_plan(failed_generation: str) -> dict[str, Any]:
+    """Convert a Groq tool_call response to our plan JSON format."""
+    try:
+        tc = json.loads(failed_generation)
+        tool_name = tc.get("name", "")
+        args = tc.get("arguments", {})
+        if tool_name == "run_tool":
+            actual_tool = args.get("tool", "")
+            actual_args = args.get("args", {})
+            return {
+                "summary": f"Execute {actual_tool}",
+                "actions": [{"tool": actual_tool, "args": actual_args}],
+            }
+        return {
+            "summary": f"Execute {tool_name}",
+            "actions": [{"tool": tool_name, "args": args}],
+        }
+    except (json.JSONDecodeError, AttributeError):
+        return {}
+
+
 def _to_plan(payload: dict[str, Any]) -> Plan:
     def normalize_risk(raw_value: Any) -> RiskLevel:
         value = str(raw_value or "medium").lower().strip()
@@ -145,7 +166,6 @@ class OpenAIPlanner:
                 {"role": "user", "content": user_prompt},
             ],
             response_format={"type": "json_object"},
-            tool_choice="none",
             temperature=0.1,
         )
         content = completion.choices[0].message.content or "{}"
@@ -195,20 +215,34 @@ class GroqPlanner:
             known_facts=known_facts,
             rag_context=rag_context,
         )
-        completion = self.client.chat.completions.create(
-            model=self.model,
-            messages=[
-                {"role": "system", "content": JARVIS_IDENTITY_PROMPT},
-                {"role": "user", "content": user_prompt},
-            ],
-            response_format={"type": "json_object"},
-            tool_choice="none",
-            temperature=0.1,
-        )
-        message = completion.choices[0].message
-        content = _message_content(message)
-        payload = _extract_json(content)
-        return _to_plan(payload)
+        try:
+            completion = self.client.chat.completions.create(
+                model=self.model,
+                messages=[
+                    {"role": "system", "content": JARVIS_IDENTITY_PROMPT},
+                    {"role": "user", "content": user_prompt},
+                ],
+                response_format={"type": "json_object"},
+                temperature=0.1,
+            )
+            message = completion.choices[0].message
+            content = _message_content(message)
+            payload = _extract_json(content)
+            return _to_plan(payload)
+        except Exception as exc:
+            # Groq sometimes returns 400 with tool_use_failed when the model
+            # generates a tool call despite no tools being defined.
+            # Extract the failed_generation from the response body and convert it.
+            body = getattr(exc, "body", None)
+            if isinstance(body, dict):
+                error_info = body.get("error", {})
+                if error_info.get("code") == "tool_use_failed":
+                    failed_gen = error_info.get("failed_generation", "")
+                    if failed_gen:
+                        payload = _convert_tool_call_to_plan(failed_gen)
+                        if payload:
+                            return _to_plan(payload)
+            raise
 
 
 class CerebrasPlanner:
@@ -250,7 +284,6 @@ class CerebrasPlanner:
                 {"role": "user", "content": user_prompt},
             ],
             response_format={"type": "json_object"},
-            tool_choice="none",
             temperature=0.1,
         )
         message = completion.choices[0].message
@@ -298,7 +331,6 @@ class OpenRouterPlanner:
                 {"role": "user", "content": user_prompt},
             ],
             response_format={"type": "json_object"},
-            tool_choice="none",
             temperature=0.1,
         )
         message = completion.choices[0].message
@@ -592,8 +624,9 @@ def _create_single_planner(settings: Settings, provider: str, for_agent: bool = 
     if provider == "cerebras":
         if not settings.cerebras_api_key:
             return NullPlanner("CEREBRAS_API_KEY is not set.")
+        model = settings.agent_cerebras_model if for_agent else settings.cerebras_model
         try:
-            return CerebrasPlanner(settings)
+            return CerebrasPlanner(settings, model=model)
         except ImportError:
             return NullPlanner("openai package is not installed.")
         except Exception as exc:
@@ -602,8 +635,9 @@ def _create_single_planner(settings: Settings, provider: str, for_agent: bool = 
     if provider == "openrouter":
         if not settings.openrouter_api_key:
             return NullPlanner("OPENROUTER_API_KEY is not set.")
+        model = settings.agent_openrouter_model if for_agent else settings.openrouter_model
         try:
-            return OpenRouterPlanner(settings)
+            return OpenRouterPlanner(settings, model=model)
         except ImportError:
             return NullPlanner("openai package is not installed.")
         except Exception as exc:
@@ -630,10 +664,7 @@ def create_planner(settings: Settings, for_agent: bool = False) -> BasePlanner:
 
     primary = _create_single_planner(settings, provider, for_agent=for_agent)
 
-    # Build fallback chain (only for non-agent planner to avoid complexity in agent loops)
-    if for_agent:
-        return primary
-
+    # Build fallback chain for both main planner and agent planner
     fallback_names = settings.llm_fallback_providers
     if not fallback_names:
         return primary

@@ -75,6 +75,8 @@ class Settings(BaseSettings):
     agent_openai_model: str = ""
     agent_groq_model: str = ""
     agent_ollama_model: str = ""
+    agent_cerebras_model: str = ""
+    agent_openrouter_model: str = ""
     agent_litellm_model: str = ""
 
     # LiteLLM gateway (optional extra: pip install -e .[litellm]).
