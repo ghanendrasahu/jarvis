@@ -3,11 +3,22 @@ from __future__ import annotations
 import logging
 import logging.handlers
 import sys
+import warnings
 from pathlib import Path
 
 _FORMAT = "%(asctime)s | %(levelname)-7s | %(name)s | %(message)s"
 
 _configured = False
+
+# ---------------------------------------------------------------------------
+# Suppress noisy third-party warnings before any library loads
+# ---------------------------------------------------------------------------
+warnings.filterwarnings("ignore", message=".*dropout option adds dropout.*", category=UserWarning)
+warnings.filterwarnings("ignore", message=".*torch.nn.utils.weight_norm.*", category=FutureWarning)
+warnings.filterwarnings("ignore", message=".*torch.nn.utils.parametrizations.weight_norm.*", category=FutureWarning)
+warnings.filterwarnings("ignore", message=".*Defaulting repo_id.*", category=UserWarning)
+warnings.filterwarnings("ignore", message=".*unauthenticated requests.*", category=UserWarning)
+warnings.filterwarnings("ignore", message=".*FutureWarning.*", category=FutureWarning)
 
 
 def setup_logging(logs_dir: str = "logs", level: int = logging.INFO) -> None:

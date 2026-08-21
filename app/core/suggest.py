@@ -12,7 +12,7 @@ logger = get_logger("suggestion_engine")
 _SUGGESTION_RULES: list[tuple[tuple[str, ...], str]] = [
     (("screenshot", "look at the screen", "analyze screen", "read the screen"), "analyze the screen"),
     (("recall", "remember", "remember_note", "what do i know"), "remember <note>: add a note to my knowledge base"),
-    (("fix", "bug", "debug", "refactor", "failing test"), "run_tests via 'run the test suite' to confirm green"),
+    (("fix", "bug", "debug", "refactor"), "lint_code via 'lint the code' to verify changes"),
     (("schedule", "scheduled", "list schedules"), "list schedules"),
     (("email", "send email"), "upcoming events"),
     (("remind", "reminder"), "list schedules"),

@@ -285,12 +285,10 @@ Three opt-in features keep JARVIS fast and cheap:
    - Use `/metrics` and inspect recent command failures.
    - Add aliases in `app/core/router.py` (`_WORD_ALIASES`).
 
-## Testing
+## Linting
 
 ```bash
-python -m pytest -q
-ruff check app tests
-mypy app tests
+ruff check app
 ```
 
 ## Project Structure
@@ -334,12 +332,11 @@ app/
 config/
   job_profile.yaml        # your identity/skills/form answers
   site_profiles.yaml      # job-board search + selector profiles
-tests/
 scripts/                # run_jarvis.ps1 (single launcher) + bootstrap + clean + auto_start
 ```
 
 ## Maintenance
 
-- `.\scripts\clean.ps1` removes generated caches (`__pycache__`, pytest/ruff caches) and prunes
+- `.\scripts\clean.ps1` removes generated caches (`__pycache__`, ruff caches) and prunes
   Chromium profile cache folders — it keeps your saved logins in `data/browser_profile`.
 - `data/`, `logs/`, and `.venv/` are gitignored runtime state.

@@ -14,7 +14,7 @@ foreach ($dir in $rootCaches) {
   }
 }
 
-foreach ($base in @(".", "app", "tests", "scripts")) {
+foreach ($base in @(".", "app", "scripts")) {
   Get-ChildItem -LiteralPath $base -Recurse -Directory -Filter "__pycache__" -ErrorAction SilentlyContinue |
     Where-Object { $_.FullName -notmatch '\\\.venv\\' } |
     ForEach-Object {

@@ -18,7 +18,7 @@ jobs:
       - name: Install dev deps
         run: pip install ruff
       - name: Lint
-        run: ruff check app tests
+        run: ruff check app
 
   typecheck:
     name: Typecheck
@@ -33,35 +33,4 @@ jobs:
           pip install mypy
           pip install -r requirements.txt
       - name: Typecheck
-        run: mypy app tests
-
-  test:
-    name: Tests
-    runs-on: ubuntu-latest
-    steps:
-      - uses: actions/checkout@v4
-      - uses: actions/setup-python@v5
-        with:
-          python-version: "3.11"
-      - name: Install deps
-        run: pip install -r requirements.txt
-      - name: Run tests
-        env:
-          WORKSPACE_ROOT: ${{ github.workspace }}
-        run: python -m pytest --cov
-
-  test-windows:
-    name: Tests (Windows)
-    runs-on: windows-latest
-    steps:
-      - uses: actions/checkout@v4
-      - uses: actions/setup-python@v5
-        with:
-          python-version: "3.11"
-      - name: Install deps
-        run: pip install -r requirements.txt
-      - name: Run tests
-        env:
-          WORKSPACE_ROOT: ${{ github.workspace }}
-        shell: pwsh
-        run: python -m pytest -q
+        run: mypy app

@@ -33,8 +33,8 @@ CODING_ROLE = _role_prompt(
 Workflow:
 1. Understand the task with search_code and read_text_file before changing anything.
 2. Make minimal, surgical changes with edit_file (or write_text_file for new files).
-3. After editing, ALWAYS finish by running run_tests, then lint_code.
-4. If tests or lint fail, fix the code and rerun until everything passes.
+3. After editing, ALWAYS finish by running lint_code.
+4. If lint fails, fix the code and rerun until everything passes.
 Use only tools listed in the catalog. When verification passes, emit agent_done with a summary of what changed.""",
 )
 

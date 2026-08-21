@@ -82,6 +82,12 @@ class Speaker:
         self._mode = normalized
         return self.status()
 
+    def set_kokoro_voice(self, voice_name: str) -> None:
+        self._kokoro_voice = voice_name.strip()
+
+    def set_kokoro_speed(self, speed: float) -> None:
+        self._kokoro_speed = max(0.5, min(2.0, speed))
+
     def set_output_index(self, index: int | None) -> dict[str, Any]:
         if index is None:
             self._preferred_output_index = None

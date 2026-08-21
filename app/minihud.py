@@ -1,6 +1,8 @@
 from __future__ import annotations
 
 import json
+import math
+import threading
 from collections.abc import Callable
 from datetime import UTC, datetime
 from pathlib import Path
@@ -140,6 +142,86 @@ def voice_phase(status: dict[str, Any]) -> tuple[str, str, float, float]:
     return "LISTENING", GREEN, 16.0, 0.24
 
 
+class VoiceMicButton(QWidget):
+    """Custom-painted voice toggle: face with finger-on/lifted-from mouth."""
+
+    def __init__(self, on_click: Callable[[], None]) -> None:
+        super().__init__()
+        self._on_click = on_click
+        self._running = False
+        self._pulse = 0.0
+        self.setFixedSize(44, 44)
+        self.setCursor(Qt.CursorShape.PointingHandCursor)
+        self.setToolTip("Voice mode — start/stop listening")
+        self._timer = QTimer(self)
+        self._timer.timeout.connect(self._animate)
+        self._timer.start(60)
+
+    def _animate(self) -> None:
+        if self._running:
+            self._pulse += 0.08
+        self.update()
+
+    def update_status(self, running: bool) -> None:
+        self._running = running
+        if not running:
+            self._pulse = 0.0
+
+    def mouseReleaseEvent(self, event) -> None:
+        if event.button() == Qt.MouseButton.LeftButton:
+            self._on_click()
+
+    def paintEvent(self, event) -> None:
+        p = QPainter(self)
+        p.setRenderHint(QPainter.RenderHint.Antialiasing)
+        w, h = self.width(), self.height()
+        cx, cy = w / 2, h / 2
+
+        if self._running:
+            glow = abs(math.sin(self._pulse)) * 0.35
+            color = QColor(CYAN)
+            color.setAlphaF(0.15 + glow)
+            p.setBrush(color)
+            p.setPen(Qt.PenStyle.NoPen)
+            p.drawEllipse(int(cx - 20), int(cy - 20), 40, 40)
+            line_color = QColor(CYAN)
+        else:
+            line_color = QColor(MUTED)
+
+        pen = QPen(line_color, 2.0, Qt.PenStyle.SolidLine, Qt.PenCapStyle.RoundCap, Qt.PenJoinStyle.RoundJoin)
+        p.setPen(pen)
+        p.setBrush(Qt.BrushStyle.NoBrush)
+
+        # head circle
+        head_r = 13
+        p.drawEllipse(int(cx - head_r), int(cy - head_r + 1), head_r * 2, head_r * 2)
+
+        # eyes — two small dots
+        p.setBrush(line_color)
+        p.setPen(Qt.PenStyle.NoPen)
+        ey = cy - 3
+        p.drawEllipse(int(cx - 5) - 2, int(ey) - 2, 4, 4)
+        p.drawEllipse(int(cx + 5) - 2, int(ey) - 2, 4, 4)
+
+        # mouth — small horizontal line
+        p.setPen(QPen(line_color, 1.5))
+        p.setBrush(Qt.BrushStyle.NoBrush)
+        my = cy + 5
+        p.drawLine(int(cx - 3), int(my), int(cx + 3), int(my))
+
+        # finger — vertical line either on or above mouth
+        p.setPen(QPen(line_color, 2.0, Qt.PenStyle.SolidLine, Qt.PenCapStyle.RoundCap))
+        fx = cx + 1
+        if self._running:
+            # finger lifted above mouth — voice is ON (unmuted)
+            p.drawLine(int(fx), int(cy - 13), int(fx), int(cy - 8))
+        else:
+            # finger pressed on mouth — voice is OFF (muted)
+            p.drawLine(int(fx), int(my - 2), int(fx), int(my + 8))
+
+        p.end()
+
+
 class MiniHud(QWidget):
     """Small frameless, always-on-top, draggable window showing live JARVIS activity."""
 
@@ -210,8 +292,7 @@ class MiniHud(QWidget):
 
         input_row = QHBoxLayout()
         input_row.setSpacing(6)
-        self.mic_btn = self._mini_button("🎤", self._toggle_voice, wide=False)
-        self.mic_btn.setToolTip("Voice mode — start/stop listening")
+        self.mic_btn = VoiceMicButton(self._toggle_voice)
         input_row.addWidget(self.mic_btn)
         self.entry = QLineEdit()
         self.entry.setObjectName("MiniEntry")
@@ -290,13 +371,19 @@ class MiniHud(QWidget):
         self.show()
 
     def _toggle_voice(self) -> None:
-        try:
-            if self.runtime.voice.is_running():
-                self.runtime.voice.stop()
-            else:
-                self.runtime.voice.start()
-        except Exception:
-            pass
+        def worker() -> None:
+            try:
+                if self.runtime.voice.is_running():
+                    self.runtime.voice.stop()
+                else:
+                    self.runtime.voice.start()
+            except Exception:
+                pass
+            QTimer.singleShot(0, lambda: self.mic_btn.update_status(
+                self.runtime.voice.is_running()
+            ))
+
+        threading.Thread(target=worker, daemon=True).start()
 
     def _run_quick(self) -> None:
         text = self.entry.text().strip()

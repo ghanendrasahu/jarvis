@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import threading
 import time
 from collections.abc import Iterable
 from dataclasses import dataclass
@@ -160,7 +161,7 @@ class VoiceListener:
             p.terminate()
         return None
 
-    def listen_once(self) -> ListenResult:
+    def listen_once(self, stop_event: threading.Event | None = None) -> ListenResult:
         import speech_recognition as sr
 
         recognizer = self._get_recognizer()
@@ -176,6 +177,8 @@ class VoiceListener:
         except Exception:
             return ListenResult(transcript=None, issue="microphone_init_failed")
         try:
+            if stop_event is not None and stop_event.is_set():
+                return ListenResult(transcript=None, issue="stopped")
             now = time.time()
             interval = max(3, int(self.settings.speech_ambient_adjust_interval_seconds))
             should_adjust = self._last_ambient_adjust_at is None or (now - self._last_ambient_adjust_at) >= interval
@@ -185,13 +188,17 @@ class VoiceListener:
                     duration=max(0.05, float(self.settings.speech_ambient_adjust_duration_seconds)),
                 )  # type: ignore[arg-type]  # duration is float at runtime; stubs type it as int
                 self._last_ambient_adjust_at = now
+            if stop_event is not None and stop_event.is_set():
+                return ListenResult(transcript=None, issue="stopped")
             try:
                 audio = recognizer.listen(
                     source,
-                    timeout=self.settings.speech_timeout_seconds,
+                    timeout=min(self.settings.speech_timeout_seconds, 2),
                     phrase_time_limit=self.settings.phrase_time_limit_seconds,
                 )
             except sr.WaitTimeoutError:
+                if stop_event is not None and stop_event.is_set():
+                    return ListenResult(transcript=None, issue="stopped")
                 return ListenResult(transcript=None, issue="timeout")
         finally:
             try:

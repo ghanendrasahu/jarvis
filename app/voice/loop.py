@@ -83,10 +83,7 @@ class VoiceController:
             return False
         self._stop_event.set()
         assert self._thread is not None
-        wait_seconds = max(
-            3,
-            int(self.settings.speech_timeout_seconds) + int(self.settings.phrase_time_limit_seconds) + 2,
-        )
+        wait_seconds = 3
         self._thread.join(timeout=wait_seconds)
         if self._thread.is_alive():
             with self._state_lock:
@@ -173,7 +170,7 @@ class VoiceController:
         self._speak_async("Hello Boss Sahu, how can I help you?")
         while not self._stop_event.is_set():
             try:
-                result = self.listener.listen_once()
+                result = self.listener.listen_once(stop_event=self._stop_event)
             except Exception as exc:
                 with self._state_lock:
                     self._last_activity_at = datetime.now(UTC).isoformat()

@@ -793,15 +793,3 @@ class JarvisOrchestrator:
             "recent": self.memory.recent_execution_metrics(limit=min(limit, 500)),
             "context": self.memory.get_state("runtime_context", default={}),
         }
-
-    def list_agents(self) -> list[dict]:
-        from app.agents.roles import AGENT_ROLES
-
-        return [
-            {
-                "id": role.id,
-                "name": role.name,
-                "description": role.description,
-            }
-            for role in AGENT_ROLES
-        ]

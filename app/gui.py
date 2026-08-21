@@ -9,7 +9,7 @@ import shutil
 import sys
 import threading
 from collections.abc import Callable
-from datetime import UTC, datetime
+from datetime import datetime
 from pathlib import Path
 from typing import Any
 
@@ -28,9 +28,11 @@ from PySide6.QtGui import (
 )
 from PySide6.QtWidgets import (
     QApplication,
+    QComboBox,
     QDialog,
     QFileDialog,
     QFrame,
+    QGroupBox,
     QHBoxLayout,
     QLabel,
     QLineEdit,
@@ -39,7 +41,9 @@ from PySide6.QtWidgets import (
     QMenu,
     QProgressBar,
     QPushButton,
+    QRadioButton,
     QScrollArea,
+    QSlider,
     QSplitter,
     QTabWidget,
     QTextEdit,
@@ -463,7 +467,6 @@ class JarvisHudApp(QMainWindow):
         self._scheduler_announce = self.runtime.scheduler.on_run
         self.runtime.scheduler.on_run = self._scheduler_on_run
         self.runtime.scheduler.start()
-        self._maybe_show_recap()
         self._job_tick()
 
     # ------------------------------------------------------------ UI build
@@ -545,10 +548,9 @@ class JarvisHudApp(QMainWindow):
         b = self._chip("DIAGNOSE", self._diagnose_system)
         b.setToolTip("Run full system diagnosis (CPU/RAM/GPU + process analysis)")
         header_lay.addWidget(b)
-        b = self._chip("RECAP", self._recap)
-        b.setToolTip("What happened while you were away")
+        b = self._chip("VOICE SETTINGS", self._open_voice_settings)
+        b.setToolTip("Configure voice engine, speed, devices, and voice name")
         header_lay.addWidget(b)
-
         header_lay.addWidget(self._vsep())
         self.auto_start_button = self._chip("AUTOSTART", self._toggle_auto_start)
         self.auto_start_button.setToolTip("Toggle auto-start when this project opens / Windows login")
@@ -568,6 +570,7 @@ class JarvisHudApp(QMainWindow):
         header_lay.addWidget(more_btn)
         self._more_menu = QMenu(self)
         self._more_menu.addAction("HELP  (F1)", self._open_help)
+        self._more_menu.addAction("VOICE SETTINGS", self._open_voice_settings)
         self._more_menu.addAction("SCHEDULER", self._open_scheduler)
         self._more_menu.addAction("HISTORY", self._open_history)
         self._more_menu.addAction("TASKS", self._open_tasks)
@@ -585,7 +588,7 @@ class JarvisHudApp(QMainWindow):
         left = QWidget()
         left_lay = QVBoxLayout(left)
         left_lay.setContentsMargins(0, 0, 0, 0)
-        left_lay.setSpacing(12)
+        left_lay.setSpacing(8)
 
         cmd_card, cmd_body = self._make_card("Command Center", "Natural-language control")
         cmd_lay = QVBoxLayout(cmd_body)
@@ -627,7 +630,7 @@ class JarvisHudApp(QMainWindow):
         feed_lay.addLayout(feed_head)
         self.feed_text = QTextEdit()
         self.feed_text.setReadOnly(True)
-        self.feed_text.setMaximumHeight(150)
+        self.feed_text.setMaximumHeight(120)
         feed_lay.addWidget(self.feed_text)
         left_lay.addWidget(feed_card, 1)
 
@@ -643,6 +646,7 @@ class JarvisHudApp(QMainWindow):
         term_lay.addLayout(term_head)
         self.terminal = QTextEdit()
         self.terminal.setReadOnly(True)
+        self.terminal.setMaximumHeight(200)
         term_lay.addWidget(self.terminal, 1)
         left_lay.addWidget(term_card, 2)
         splitter.addWidget(left)
@@ -667,13 +671,10 @@ class JarvisHudApp(QMainWindow):
         splitter.addWidget(ai_card)
 
         # ------------------------------------------------------- right column
-        right_scroll = QScrollArea()
-        right_scroll.setWidgetResizable(True)
-        right_scroll.setFrameShape(QFrame.Shape.NoFrame)
         right = QWidget()
         right_lay = QVBoxLayout(right)
         right_lay.setContentsMargins(0, 0, 0, 0)
-        right_lay.setSpacing(12)
+        right_lay.setSpacing(10)
 
         voice_card, voice_body = self._make_card("Voice Engine", "Click the wave to toggle")
         voice_lay = QVBoxLayout(voice_body)
@@ -727,7 +728,7 @@ class JarvisHudApp(QMainWindow):
         recent_label.setStyleSheet(f"color: {MUTED}; font-size: 10px; font-weight: 700;")
         job_lay.addWidget(recent_label)
         self.recent_list = QListWidget()
-        self.recent_list.setMaximumHeight(110)
+        self.recent_list.setMaximumHeight(90)
         job_lay.addWidget(self.recent_list)
         right_lay.addWidget(job_card)
 
@@ -745,7 +746,7 @@ class JarvisHudApp(QMainWindow):
         agent_lay.addLayout(agent_head)
         self.approval_scroll = QScrollArea()
         self.approval_scroll.setWidgetResizable(True)
-        self.approval_scroll.setMaximumHeight(190)
+        self.approval_scroll.setMaximumHeight(140)
         self.approval_inner = QWidget()
         self.approval_lay = QVBoxLayout(self.approval_inner)
         self.approval_lay.setContentsMargins(0, 0, 0, 0)
@@ -764,15 +765,15 @@ class JarvisHudApp(QMainWindow):
         self.app_filter_var.textChanged.connect(self._apply_app_filter)
         apps_lay.addWidget(self.app_filter_var)
         self.app_listbox = QListWidget()
+        self.app_listbox.setMaximumHeight(120)
         self.app_listbox.itemDoubleClicked.connect(lambda _: self._open_selected_app())
         apps_lay.addWidget(self.app_listbox)
         right_lay.addWidget(apps_card)
 
         right_lay.addStretch(1)
-        right_scroll.setWidget(right)
-        splitter.addWidget(right_scroll)
+        splitter.addWidget(right)
 
-        splitter.setSizes([560, 420, 380])
+        splitter.setSizes([480, 480, 400])
         root_lay.addWidget(splitter, 1)
 
         # ------------------------------------------------------- status bar
@@ -860,6 +861,9 @@ class JarvisHudApp(QMainWindow):
         self._save_prefs()
 
     def _open_backgrounds(self) -> None:
+        self._show_backgrounds_dialog()
+
+    def _show_backgrounds_dialog(self) -> None:
         win = QDialog(self)
         win.setWindowTitle("JARVIS — Backgrounds")
         win.resize(640, 420)
@@ -875,7 +879,7 @@ class JarvisHudApp(QMainWindow):
         mode_row = QHBoxLayout()
         current_mode = self._bg.get("mode", "aurora")
         for name, label in [("aurora", "Aurora scene"), ("gradient", "Gradient"), ("image", "Static image")]:
-            btn = self._chip(label, lambda m=name: self._apply_background(m))
+            btn = self._chip(label, lambda m=name: self._apply_bg_and_refresh_dialog(win, m))
             if current_mode == name:
                 btn.setStyleSheet(f"color: {GREEN}; background: {_rgba(OK, 220)};")
             mode_row.addWidget(btn)
@@ -926,6 +930,11 @@ class JarvisHudApp(QMainWindow):
         done = self._chip("DONE", win.accept, primary=True)
         lay.addWidget(done, 0, Qt.AlignmentFlag.AlignRight)
         win.exec()
+
+    def _apply_bg_and_refresh_dialog(self, win: QDialog, mode: str) -> None:
+        self._apply_background(mode)
+        win.accept()
+        self._show_backgrounds_dialog()
 
     def _pick_background_image(self, win: QDialog) -> None:
         path, _ = QFileDialog.getOpenFileName(
@@ -2069,7 +2078,190 @@ class JarvisHudApp(QMainWindow):
         text.clear()
         text.setPlainText("\n".join(lines))
 
-    # ------------------------------------------------------------ help / recap
+    # ------------------------------------------------------------ voice settings
+
+    KOKORO_VOICES = [
+        "af_bella", "af_heart", "af_nicole", "af_sarah",
+        "am_adam", "am_michael",
+        "bf_emma", "bf_isabella",
+        "bm_george", "bm_lewis",
+    ]
+    KOKORO_LANGS = [
+        ("American English", "a"),
+        ("British English", "b"),
+        ("Japanese", "j"),
+        ("Chinese", "z"),
+    ]
+
+    def _open_voice_settings(self) -> None:
+        voice = self.runtime.voice
+        speaker = voice.speaker
+
+        win = QDialog(self)
+        win.setWindowTitle("JARVIS — Voice Settings")
+        win.resize(520, 520)
+        outer = QVBoxLayout(win)
+        outer.setContentsMargins(12, 12, 12, 12)
+        outer.setSpacing(10)
+
+        scroll = QScrollArea()
+        scroll.setWidgetResizable(True)
+        container = QWidget()
+        lay = QVBoxLayout(container)
+        lay.setContentsMargins(0, 0, 0, 0)
+        lay.setSpacing(10)
+
+        # -- TTS Engine --
+        eng_group = QGroupBox("TTS Engine")
+        eng_lay = QHBoxLayout(eng_group)
+        engine_buttons: dict[str, QRadioButton] = {}
+        current_mode = speaker.status().get("mode", "sapi")
+        for mode_name in ("kokoro", "sapi", "pyttsx3"):
+            rb = QRadioButton(mode_name.upper())
+            rb.setChecked(mode_name == current_mode)
+            engine_buttons[mode_name] = rb
+            eng_lay.addWidget(rb)
+
+        def on_engine_change() -> None:
+            for mode, rb in engine_buttons.items():
+                if rb.isChecked():
+                    try:
+                        voice.set_speaker_mode(mode)
+                    except Exception:
+                        pass
+                    break
+
+        for rb in engine_buttons.values():
+            rb.toggled.connect(on_engine_change)
+        lay.addWidget(eng_group)
+
+        # -- Kokoro Voice --
+        voice_group = QGroupBox("Kokoro Voice Name")
+        voice_lay = QHBoxLayout(voice_group)
+        voice_combo = QComboBox()
+        voice_combo.setEditable(True)
+        voice_combo.addItems(self.KOKORO_VOICES)
+        current_voice = speaker.status().get("kokoro_voice", "af_bella")
+        idx = voice_combo.findText(current_voice)
+        if idx >= 0:
+            voice_combo.setCurrentIndex(idx)
+        else:
+            voice_combo.setEditText(current_voice)
+        voice_lay.addWidget(voice_combo, 1)
+
+        def on_voice_change(text: str) -> None:
+            speaker.set_kokoro_voice(text)
+
+        voice_combo.currentTextChanged.connect(on_voice_change)
+        lay.addWidget(voice_group)
+
+        # -- Language --
+        lang_group = QGroupBox("Kokoro Language")
+        lang_lay = QHBoxLayout(lang_group)
+        lang_combo = QComboBox()
+        current_lang = speaker.status().get("kokoro_lang_code", "a")
+        for label, code in self.KOKORO_LANGS:
+            lang_combo.addItem(label, code)
+        for i in range(lang_combo.count()):
+            if lang_combo.itemData(i) == current_lang:
+                lang_combo.setCurrentIndex(i)
+                break
+        lang_lay.addWidget(lang_combo)
+
+        def on_lang_change(index: int) -> None:
+            code = lang_combo.itemData(index)
+            if code:
+                speaker._kokoro_lang_code = code
+                if speaker._kokoro_pipeline is not None:
+                    speaker._init_kokoro()
+
+        lang_combo.currentIndexChanged.connect(on_lang_change)
+        lay.addWidget(lang_group)
+
+        # -- Speed --
+        speed_group = QGroupBox("Playback Speed")
+        speed_lay = QHBoxLayout(speed_group)
+        speed_slider = QSlider(Qt.Orientation.Horizontal)
+        speed_slider.setRange(50, 200)
+        current_speed = speaker.status().get("kokoro_speed", 1.0) if hasattr(speaker, '_kokoro_speed') else 1.0
+        speed_slider.setValue(int(current_speed * 100))
+        speed_label = QLabel(f"{current_speed:.1f}x")
+        speed_label.setFixedWidth(40)
+        speed_lay.addWidget(speed_slider, 1)
+        speed_lay.addWidget(speed_label)
+
+        def on_speed_change(val: int) -> None:
+            s = val / 100.0
+            speaker.set_kokoro_speed(s)
+            speed_label.setText(f"{s:.1f}x")
+
+        speed_slider.valueChanged.connect(on_speed_change)
+        lay.addWidget(speed_group)
+
+        # -- Audio Output --
+        out_group = QGroupBox("Audio Output Device")
+        out_lay = QHBoxLayout(out_group)
+        out_combo = QComboBox()
+        out_devices = voice.list_output_devices()
+        selected_out = out_devices.get("selected_index")
+        for dev in out_devices.get("devices", []):
+            name = dev.get("name", f"Device {dev.get('index', '?')}")
+            out_combo.addItem(name, dev.get("index"))
+        if selected_out is not None:
+            for i in range(out_combo.count()):
+                if out_combo.itemData(i) == selected_out:
+                    out_combo.setCurrentIndex(i)
+                    break
+        out_lay.addWidget(out_combo, 1)
+
+        def on_out_change(index: int) -> None:
+            idx = out_combo.itemData(index)
+            voice.set_output_device(idx)
+
+        out_combo.currentIndexChanged.connect(on_out_change)
+        lay.addWidget(out_group)
+
+        # -- Microphone --
+        mic_group = QGroupBox("Microphone")
+        mic_lay = QHBoxLayout(mic_group)
+        mic_combo = QComboBox()
+        mic_devices = voice.list_input_devices()
+        for dev in mic_devices.get("devices", []):
+            mic_combo.addItem(dev.get("name", f"Mic {dev.get('index', '?')}"), dev.get("index"))
+        mic_lay.addWidget(mic_combo, 1)
+
+        def on_mic_change(index: int) -> None:
+            idx = mic_combo.itemData(index)
+            voice.set_input_device(idx)
+
+        mic_combo.currentIndexChanged.connect(on_mic_change)
+        lay.addWidget(mic_group)
+
+        # -- Test button --
+        btn_row = QHBoxLayout()
+
+        def test_voice() -> None:
+            voice._speak_async("Hello Boss Sahu, testing voice.")
+
+        test_btn = QPushButton("Speak Test")
+        test_btn.setObjectName("Primary")
+        test_btn.setCursor(Qt.CursorShape.PointingHandCursor)
+        test_btn.clicked.connect(test_voice)
+        btn_row.addWidget(test_btn)
+
+        btn_row.addStretch(1)
+        close_btn = QPushButton("Close")
+        close_btn.setCursor(Qt.CursorShape.PointingHandCursor)
+        close_btn.clicked.connect(win.close)
+        btn_row.addWidget(close_btn)
+        lay.addLayout(btn_row)
+
+        lay.addStretch()
+        scroll.setWidget(container)
+        outer.addWidget(scroll, 1)
+        win.exec()
+
+    # ------------------------------------------------------------ help
 
     def _open_help(self) -> None:
         win = QDialog(self)
@@ -2100,80 +2292,6 @@ class JarvisHudApp(QMainWindow):
             entries.append(f"      {tool.get('description', '')}  [risk: {tool.get('risk', 'low')}]")
         text.setPlainText("\n".join(entries))
         lay.addWidget(text)
-        win.exec()
-
-    def _maybe_show_recap(self) -> None:
-        state = self.runtime.memory.get_state("session_review", default={})
-        last_seen = state.get("last_seen_at")
-        self.runtime.memory.set_state("session_review", {"last_seen_at": datetime.now(UTC).isoformat()})
-        if not last_seen:
-            return
-        try:
-            review = self.runtime.memory.session_review(since=last_seen)
-        except Exception as exc:
-            self._append_terminal("ERR", f"Recap failed: {exc}")
-            return
-        if not review["command_count"] and not review["job_applications"] and not review["scheduled_runs"]:
-            return
-        self._open_recap(review, auto=True)
-
-    def _recap(self) -> None:
-        state = self.runtime.memory.get_state("session_review", default={})
-        since = state.get("last_seen_at")
-        try:
-            review = self.runtime.memory.session_review(since=since)
-        except Exception as exc:
-            self._toaster.notify("Recap error", str(exc), RED)
-            return
-        self._open_recap(review)
-
-    def _open_recap(self, review: dict[str, Any], auto: bool = False) -> None:
-        win = QDialog(self)
-        win.setWindowTitle("JARVIS — While you were away")
-        win.resize(760, 600)
-        lay = QVBoxLayout(win)
-        text = QTextEdit()
-        text.setReadOnly(True)
-
-        lines: list[str] = ["WHILE YOU WERE AWAY", "", "COMMANDS"]
-        counts = review.get("sources") or {}
-        if counts:
-            lines.append("  " + "  ·  ".join(f"{src}: {n}" for src, n in counts.items()))
-        for row in (review.get("commands") or [])[-12:]:
-            snippet = str(row.get("response_text") or "")[:120].replace("\n", " ")
-            lines.append(f"  {row.get('created_at', '')[:16]} {row.get('source')}: {row.get('command')}")
-            lines.append(f"      {snippet}")
-        lines.append("")
-        lines.append("TOOL ACTIVITY")
-        tool_counts = review.get("tool_counts") or {}
-        if tool_counts:
-            lines.append("  " + "  ·  ".join(f"{k}: {v}" for k, v in tool_counts.items()))
-        top_tools = review.get("top_tools") or {}
-        if top_tools:
-            lines.append("  Most used: " + ", ".join(top_tools))
-        lines.append("")
-        lines.append("JOB PIPELINE")
-        job_status = review.get("job_status") or {}
-        if job_status:
-            lines.append("  " + "  ·  ".join(f"{k}: {v}" for k, v in job_status.items()))
-        for row in (review.get("job_applications") or [])[-10:]:
-            lines.append(f"  [{row.get('status')}] {row.get('title')} @ {row.get('company') or row.get('site')}")
-        lines.append("")
-        lines.append("SCHEDULED RUNS")
-        runs = review.get("scheduled_runs") or []
-        for run in runs[-10:]:
-            lines.append(f"  [{run.get('status')}] {run.get('result', '')[:100]}")
-        if not lines:
-            lines = ["Nothing to report."]
-        text.setPlainText("\n".join(lines))
-        lay.addWidget(text)
-
-        if auto:
-            def _open_recap() -> None:
-                win.close()
-                self._raise_main_window()
-
-            self._toaster.notify("While you were away", "Click to open the catch-up recap.", CYAN, on_click=_open_recap)
         win.exec()
 
     # ------------------------------------------------------------ autostart / tray
@@ -2368,6 +2486,20 @@ def _enable_dpi_awareness() -> None:
             pass
 
 
+def _qt_message_handler(msg_type, context, message):
+    """Suppress noisy Qt messages (e.g. DPI awareness errors)."""
+    if "SetProcessDpiAwarenessContext" in message:
+        return
+    from PySide6.QtCore import QtMsgType
+
+    if msg_type == QtMsgType.QtWarningMsg:
+        import sys
+        print(f"Qt WARNING: {message}", file=sys.stderr)
+    elif msg_type in (QtMsgType.QtCriticalMsg, QtMsgType.QtFatalMsg):
+        import sys
+        print(f"Qt CRITICAL: {message}", file=sys.stderr)
+
+
 def main() -> None:
     _enable_dpi_awareness()
     from app.core.single_instance import SingleInstance
@@ -2375,6 +2507,9 @@ def main() -> None:
     if not SingleInstance("hud").acquire():
         _signal_running_instance()  # another HUD is running; ask it to come to the front
         return
+    from PySide6.QtCore import qInstallMessageHandler
+
+    qInstallMessageHandler(_qt_message_handler)
     app = QApplication(sys.argv)
     app.setApplicationName("JARVIS")
     window = JarvisHudApp(app)

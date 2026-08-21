@@ -1,5 +1,11 @@
 from __future__ import annotations
 
+import os
+
+# Suppress HuggingFace "unauthenticated requests" warning early
+os.environ.setdefault("HF_HUB_DISABLE_TELEMETRY", "1")
+os.environ.setdefault("TOKENIZERS_PARALLELISM", "false")
+
 from functools import lru_cache
 from pathlib import Path
 from typing import Annotated, Any

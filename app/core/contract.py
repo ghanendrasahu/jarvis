@@ -105,12 +105,3 @@ def synthesize_result_text(tool: str, output: dict[str, Any] | None) -> str:
         if isinstance(value, (str, int, float)) and str(value) not in {"", "True", "False", "0"}:
             return f"{tool}: {value}"
     return f"{tool} completed"
-
-
-def first_result_value(output: dict[str, Any] | None, keys: tuple[str, ...]) -> Any | None:
-    """Return the first non-empty value among ``keys`` in a tool output."""
-    for key in keys:
-        value = (output or {}).get(key)
-        if value is not None and value != "":
-            return value
-    return None

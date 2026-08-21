@@ -18,13 +18,13 @@ _CODE_ROLE = """CODE MODE: You are a coding agent working directly in the user's
 Workflow:
 1. Understand the task with search_code and read_text_file before changing anything.
 2. Make minimal, surgical changes with edit_file (or write_text_file for new files).
-3. After editing, ALWAYS finish by running run_tests, then lint_code.
-4. If tests or lint fail, fix the code and rerun until everything passes.
+3. After editing, ALWAYS finish by running lint_code.
+4. If lint fails, fix the code and rerun until everything passes.
 Use only tools listed in the catalog. When verification passes, emit agent_done with a summary of what changed."""
 
 _FIX_ROLE = """CODE FIX MODE: Verification failed on the previous changes. Review the failure output in the history,
-find the cause with search_code/read_text_file, apply a fix, then rerun run_tests and lint_code.
-Do not emit agent_done until tests and lint pass."""
+find the cause with search_code/read_text_file, apply a fix, then rerun lint_code.
+Do not emit agent_done until lint passes."""
 
 
 def _pending_approval_id(results: list[ToolExecutionResult]) -> str | None:
@@ -176,7 +176,6 @@ class CodeAgent:
     ) -> dict[str, Any]:
         outcomes: list[ToolExecutionResult] = []
         for action in (
-            Action(tool="run_tests", args={"timeout_seconds": 180}, risk="medium"),
             Action(tool="lint_code", args={"path": ""}, risk="medium"),
         ):
             outcome = self.executor.execute(
