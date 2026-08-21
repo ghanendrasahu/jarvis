@@ -10,7 +10,8 @@
         "-ExecutionPolicy",
         "Bypass",
         "-File",
-        "${workspaceFolder}/scripts/auto_start.ps1",
+        "${workspaceFolder}/jarvirun.ps1",
+        "autostart",
         "run"
       ],
       "runOptions": {
