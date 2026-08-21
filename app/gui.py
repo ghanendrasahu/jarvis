@@ -473,11 +473,10 @@ class JarvisHudApp(QMainWindow):
 
         # Auto-start voice if enabled in config
         if self.runtime.settings.voice_enabled:
-            threading.Thread(target=self._auto_start_voice, daemon=True).start()
+            QTimer.singleShot(2000, self._auto_start_voice)
 
     def _auto_start_voice(self) -> None:
         try:
-            time.sleep(1.5)
             self.runtime.voice.start()
             self._events.put(("voice", {"running": True, "changed": True}))
         except Exception:

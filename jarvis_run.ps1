@@ -1,7 +1,7 @@
 <#
 .SYNOPSIS
   JARVIS unified launcher.
-  Usage: .\jarvirun.ps1 <command> [options]
+  Usage: .\jarvis_run.ps1 <command> [options]
 
   Commands:
     run          (default) Launch the desktop HUD
@@ -33,7 +33,7 @@ switch ($Command.ToLower()) {
 
   "run" {
     $py = Get-Python
-    Start-Process -FilePath $py -ArgumentList "-m", "app.gui" -WorkingDirectory $root
+    & $py -m app.gui
   }
 
   "cli" {
@@ -53,7 +53,7 @@ switch ($Command.ToLower()) {
     if ($LASTEXITCODE -ne 0) { throw "Failed to install dependencies." }
     Write-Host "Setup complete."
     Write-Host "If microphone support fails on Windows, run:"
-    Write-Host "  pip install pipwin && pipwin install pyaudio"
+    Write-Host "  pip install pipwin; pipwin install pyaudio"
   }
 
   "clean" {
@@ -115,7 +115,7 @@ switch ($Command.ToLower()) {
     switch ($action.ToLower()) {
       "on"     { Set-State $true;  Write-Host "JARVIS auto-start: ON" }
       "off"    { Set-State $false; Write-Host "JARVIS auto-start: OFF" }
-      "status" { $on = Get-State;  Write-Host "JARVIS auto-start: $(if ($on) { 'ON' } else { 'OFF' })" }
+      "status" { $on = Get-State;  Write-Host "JARVIS auto-start: ON=$on" }
       default {
         if (-not (Get-State)) { exit 0 }
         $pyw = Join-Path $root ".venv\Scripts\pythonw.exe"
@@ -128,7 +128,7 @@ switch ($Command.ToLower()) {
 
   default {
     Write-Host "Unknown command: $Command"
-    Write-Host "Usage: .\jarvirun.ps1 <run|cli|setup|clean|autostart>"
+    Write-Host 'Usage: .\jarvis_run.ps1 [run|cli|setup|clean|autostart]'
     exit 1
   }
 }
