@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import threading
 import time
 from dataclasses import dataclass
 
@@ -25,7 +26,6 @@ from app.llm.planner import BasePlanner, create_planner
 from app.tools import register_all_tools
 from app.tools.registry import ToolRegistry
 from app.voice.loop import VoiceController
-from app.voice.speaker import Speaker
 
 logger = get_logger("bootstrap")
 
@@ -125,32 +125,25 @@ def build_runtime(events: EventHub | None = None) -> Runtime:
     )
     _step("monitor+tool registration", step)
 
-    reminder_speaker = Speaker(
-        enabled=settings.tts_enabled,
-        mode=settings.tts_engine,
-        kokoro_voice=settings.kokoro_voice,
-        kokoro_lang_code=settings.kokoro_lang_code,
-        kokoro_speed=settings.kokoro_speed,
-    )
-
     def _announce_scheduled_run(job: dict, status: str, text: str) -> None:
         try:
             if status == "success" and job.get("command", "").startswith("announce "):
-                reminder_speaker.speak(text)
+                voice.speaker.speak(text)
         except Exception:
             logger.warning("reminder speech failed", exc_info=True)
 
     scheduler.on_run = _announce_scheduled_run
 
-    step = time.perf_counter()
+    # Run notes indexing in background to not block startup
     if rag is not None:
-        try:
-            indexed = rag.index_notes_dir()
-            if indexed:
-                logger.info("indexed %d file(s) from notes dir", indexed)
-        except Exception:
-            logger.warning("notes dir indexing failed", exc_info=True)
-    _step("notes indexing", step)
+        def _index_notes_background() -> None:
+            try:
+                indexed = rag.index_notes_dir()
+                if indexed:
+                    logger.info("indexed %d file(s) from notes dir", indexed)
+            except Exception:
+                logger.warning("notes dir indexing failed", exc_info=True)
+        threading.Thread(target=_index_notes_background, daemon=True, name="jarvis-notes-index").start()
 
     total_ms = (time.perf_counter() - started_at) * 1000
     breakdown = ", ".join(f"{label}={ms:.1f}ms" for label, ms in timings)

@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import os
 import threading
 import time
 from collections.abc import Iterable
@@ -63,6 +64,7 @@ class VoiceListener:
         self._device_index: int | None = None
         self._last_ambient_adjust_at: float | None = None
         self._vad = _VadGate()
+        self._groq_client: Any = None
         # Wake-word detector: real model not available, use phrase-matching
         # as a partial fallback, wrapped in VadAwareDetector so silence
         # suppresses detection.
@@ -230,22 +232,22 @@ class VoiceListener:
 
     def _transcribe_groq(self, audio) -> str:
         """Transcribe via Groq's free-tier Whisper (OpenAI-compatible endpoint)."""
-        import os
         import tempfile
 
-        from openai import OpenAI
+        if self._groq_client is None:
+            from openai import OpenAI
 
-        client = OpenAI(
-            api_key=self.settings.groq_api_key,
-            base_url=self.settings.groq_base_url,
-        )
+            self._groq_client = OpenAI(
+                api_key=self.settings.groq_api_key,
+                base_url=self.settings.groq_base_url,
+            )
         path = None
         try:
             with tempfile.NamedTemporaryFile(suffix=".wav", delete=False) as handle:
                 handle.write(audio.get_wav_data())
                 path = handle.name
             with open(path, "rb") as handle:
-                result = client.audio.transcriptions.create(
+                result = self._groq_client.audio.transcriptions.create(
                     model="whisper-large-v3-turbo",
                     file=handle,
                 )

@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import os
 import subprocess
+import time
 from threading import Lock
 from typing import Any
 
@@ -26,9 +27,8 @@ class Speaker:
         self._kokoro_voice = kokoro_voice
         self._kokoro_lang_code = kokoro_lang_code
         self._kokoro_speed = kokoro_speed
-
-        if self._mode == "kokoro":
-            self._init_kokoro()
+        self._audio_outputs_cache: dict[str, Any] | None = None
+        self._audio_outputs_ts: float = 0.0
 
         if enabled and self._mode != "kokoro":
             try:
@@ -91,24 +91,32 @@ class Speaker:
     def set_output_index(self, index: int | None) -> dict[str, Any]:
         if index is None:
             self._preferred_output_index = None
+            self._audio_outputs_cache = None
             return self.status()
         audio_info = self._audio_outputs()
         count = int(audio_info["count"])
         if index < 0 or index >= count:
             raise ValueError(f"Invalid output index {index}.")
         self._preferred_output_index = index
+        self._audio_outputs_cache = None
         return self.status()
 
     def _audio_outputs(self) -> dict[str, Any]:
+        now = time.monotonic()
+        if self._audio_outputs_cache is not None and (now - self._audio_outputs_ts) < 30.0:
+            return self._audio_outputs_cache
         try:
             import win32com.client
 
             voice = win32com.client.Dispatch("SAPI.SpVoice")
             outputs = voice.GetAudioOutputs()
             devices = [{"index": i, "name": outputs.Item(i).GetDescription()} for i in range(outputs.Count)]
-            return {"count": int(outputs.Count), "devices": devices}
+            result = {"count": int(outputs.Count), "devices": devices}
         except Exception:
-            return {"count": 0, "devices": []}
+            result = {"count": 0, "devices": []}
+        self._audio_outputs_cache = result
+        self._audio_outputs_ts = now
+        return result
 
     def _speak_sapi_direct(self, text: str) -> bool:
         try:
@@ -157,6 +165,8 @@ class Speaker:
                 pass
 
     def _speak_kokoro(self, text: str) -> bool:
+        if self._kokoro_pipeline is None:
+            self._init_kokoro()
         if self._kokoro_pipeline is None:
             self._last_error = "kokoro_pipeline_not_initialized"
             return False

@@ -78,6 +78,7 @@ class JarvisOrchestrator:
         self.events = events
         self.task_engine = task_engine
         self._suggestions = SuggestionEngine()
+        self._episodic = EpisodicMemory(memory.database_path)
 
     def _emit(self, topic: str, payload: dict[str, Any]) -> None:
         if self.events is not None:
@@ -459,7 +460,7 @@ class JarvisOrchestrator:
             created_at=datetime.now(UTC).isoformat(),
         )
         self.memory.log_command(source=source, command=cleaned, response_text=response_text)
-        EpisodicMemory(self.memory.database_path).consolidate_episodes()
+        self._episodic.consolidate_episodes(memory=self.memory)
         logger.info("command from=%s status=%s duration=%dms actions=%d", source, status, duration_ms, len(results))
         return self._emit_done(payload)
 

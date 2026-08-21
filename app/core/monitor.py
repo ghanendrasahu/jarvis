@@ -95,6 +95,8 @@ class ResourceMonitor:
 
     def snapshot(self) -> ResourceSample:
         with self._lock:
+            if self._sample is not None:
+                return self._sample
             sample = self._sample_once()
             self._sample = sample
         return sample
@@ -108,8 +110,13 @@ class ResourceMonitor:
             }
 
     def chart(self) -> dict[str, Any]:
-        sample = self.snapshot()
-        history = self.history()
+        with self._lock:
+            sample = self._sample or self._sample_once()
+            history = {
+                "cpu": list(self._cpu_history),
+                "memory": list(self._mem_history),
+                "max": self._history_size,
+            }
         return {
             "cpu_percent": round(sample.cpu_percent, 1),
             "memory_percent": round(sample.memory_percent, 1),

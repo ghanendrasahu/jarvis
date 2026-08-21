@@ -3,9 +3,12 @@ from __future__ import annotations
 import json
 import sqlite3
 from datetime import UTC, datetime
-from typing import Any
+from typing import TYPE_CHECKING, Any
 
 from app.core.logging import get_logger
+
+if TYPE_CHECKING:
+    from app.core.memory import MemoryStore
 
 logger = get_logger("episodic")
 
@@ -233,7 +236,7 @@ class EpisodicMemory:
             "recent": rows,
         }
 
-    def consolidate_episodes(self, max_new: int = 200) -> int:
+    def consolidate_episodes(self, max_new: int = 200, memory: MemoryStore | None = None) -> int:
         """Backfill episodes from command_history that are not yet recorded.
 
         Tracks last consolidated command_history id in MemoryStore's runtime_state
@@ -241,7 +244,7 @@ class EpisodicMemory:
         """
         from app.core.memory import MemoryStore  # local import to avoid cycles
 
-        mem: MemoryStore = MemoryStore(self.database_path)
+        mem: MemoryStore = memory or MemoryStore(self.database_path)
         raw_last_id = mem.get_state("episodic_consolidated_id", default=0)
         last_id = raw_last_id if isinstance(raw_last_id, int) else 0
         rows = mem._conn.execute(
