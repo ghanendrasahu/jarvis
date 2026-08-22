@@ -8,7 +8,13 @@ from typing import Any
 
 from app.config import Settings
 from app.core.logging import get_logger
-from app.core.nlu import correct_transcript, needs_semantic_interpretation, strip_filler
+from app.core.nlu import (
+    correct_transcript,
+    has_lexicon_support,
+    locate_wake_phrase,
+    needs_semantic_interpretation,
+    strip_filler,
+)
 from app.core.orchestrator import JarvisOrchestrator
 from app.models.schemas import ExecuteCommandResponse
 from app.voice.listener import VoiceListener
@@ -60,6 +66,7 @@ class VoiceController:
         self._watchdog_stop = threading.Event()
         self._watchdog_thread: threading.Thread | None = None
         self._consecutive_failures: int = 0
+        self._sticky_started_at: float = 0.0
         # Voice understanding pipeline knobs (getattr keeps duck-typed settings compatible).
         self._fuzzy_cutoff = int(getattr(settings, "voice_fuzzy_cutoff", 88))
         semantic_enabled = bool(getattr(settings, "voice_semantic_enabled", True))
@@ -99,6 +106,7 @@ class VoiceController:
                 self._heartbeat_at = time.monotonic()
                 self._desired_running = True
                 self._consecutive_failures = 0
+                self._sticky_started_at = 0.0
             self._thread = threading.Thread(target=self._run_loop, daemon=True, name="jarvis-voice-loop")
             self._thread.start()
         self._ensure_watchdog()
@@ -260,20 +268,35 @@ class VoiceController:
             )
 
     def _extract_command(self, transcript: str) -> tuple[str, bool]:
-        # Use the partial phrase-matching detector as a convenience
-        # during integration.  This is NOT a real hotword model; the
-        # master prompt warns against claiming full wake-word support
-        # without actual detection.
         used_wake_word = self._wake_word.detect_transcript(transcript)
-        lowered = transcript.lower().strip()
         if not used_wake_word:
+            if self._sticky_followup_active:
+                max_age = max(10, int(getattr(self.settings, "voice_followup_max_seconds", 120)))
+                if time.monotonic() - self._sticky_started_at > max_age:
+                    self._sticky_followup_active = False
+                    logger.info("[voice] sticky follow-up expired after %ss; wake word required again", max_age)
+                    return "", False
             if self._sticky_followup_active or time.time() <= self._followup_until:
                 return transcript.strip(" ,."), False
             return "", False
-        # Strip the wake word and surrounding whitespace/punctuation.
-        index = lowered.find(self._wake_word.wake_phrase)
-        command = transcript[index + len(self._wake_word.wake_phrase) :].strip(" ,.:")
-        return command, True
+        command = self._strip_wake_region(transcript)
+        return command.strip(" ,.:") or transcript.strip(" ,.:"), True
+
+    def _strip_wake_region(self, transcript: str) -> str:
+        """Remove the matched wake-word region without ever slicing at -1."""
+        span = locate_wake_phrase(
+            transcript,
+            self._wake_word.wake_phrase,
+            threshold=float(self._wake_word.fuzzy_score),
+        )
+        if span is None:
+            # Cannot locate safely: preserve the complete transcript.
+            return transcript
+        start, end = span
+        before = transcript[:start].rstrip(" ,.:;")
+        after = transcript[end:].lstrip(" ,.:;")
+        joined = f"{before} {after}".strip() if before and after else (before or after)
+        return joined
 
     def _get_tool_names(self) -> list[str]:
         if self._tool_names is None:
@@ -361,7 +384,7 @@ class VoiceController:
             # Idle results are normal; anything else (mic failure, API errors,
             # low confidence) backs off exponentially so a broken microphone or
             # offline network cannot turn the loop into a hot spin.
-            if result.issue in {"timeout", "no_speech"}:
+            if result.issue in {"timeout", "no_speech", "prompt_echo"}:
                 self._consecutive_failures = 0
             else:
                 self._consecutive_failures += 1
@@ -424,10 +447,20 @@ class VoiceController:
             return
         if used_wake_word:
             if self.settings.voice_followup_sticky_mode:
+                if not self._sticky_followup_active:
+                    self._sticky_started_at = time.monotonic()
                 self._sticky_followup_active = True
                 self._followup_until = 0.0
             else:
                 self._followup_until = time.time() + max(0, int(self.settings.voice_followup_window_seconds))
+        elif not has_lexicon_support(command):
+            # Follow-up transcript with zero command signal (e.g., STT prompt
+            # echoes): drop it instead of feeding garbage to the planner.
+            with self._state_lock:
+                self._unknown_audio_count += 1
+                self._last_error = "non_command_transcript"
+            logger.info("[voice] dropped non-command follow-up input: %r", command)
+            return
 
         canonical_command = self._normalize_for_understanding(command)
         if canonical_command != command:

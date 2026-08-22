@@ -10,7 +10,7 @@ from typing import Any
 
 from app.config import Settings
 from app.core.logging import get_logger
-from app.core.nlu import build_stt_prompt
+from app.core.nlu import build_stt_prompt, strip_prompt_echo
 
 logger = get_logger("voice")
 
@@ -254,6 +254,12 @@ class VoiceListener:
                 transcript = recognizer.recognize_whisper_api(audio, api_key=self.settings.openai_api_key).strip()
             else:
                 transcript = recognizer.recognize_google(audio).strip()
+
+            # Strip STT-prompt scaffolding echoed into the transcript so it can
+            # never become an executable command.
+            transcript = strip_prompt_echo(transcript)
+            if not transcript:
+                return ListenResult(transcript=None, issue="prompt_echo")
 
             if not self._is_transcript_plausible(transcript, self.settings.voice_min_transcript_chars):
                 return ListenResult(transcript=None, issue="garbled_transcript")

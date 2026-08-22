@@ -222,14 +222,58 @@ def needs_semantic_interpretation(text: str) -> bool:
     return has_verb and len(tokens) >= 4 and len(unknown) >= max(2, len(tokens) // 3)
 
 
+def has_lexicon_support(text: str) -> bool:
+    """True when a transcript shows any command-relevant signal.
+
+    Used to reject obviously non-command garbage (e.g., STT prompt echoes)
+    during follow-up windows instead of forwarding it to the planner.
+    """
+    lowered = text.lower().strip()
+    if not lowered:
+        return False
+    if has_free_text_slot(lowered):
+        return True
+    understood = build_lexicon().understood_words
+    for match in re.finditer(r"[a-z']+", lowered):
+        token = match.group()
+        bare = token.replace("'", "")
+        if token in understood or bare in understood or bare.isdigit():
+            return True
+    return False
+
+
 def build_stt_prompt(wake_word: str = "jarvis") -> str:
-    """Compact Whisper initial_prompt biased toward JARVIS's actual vocabulary."""
+    """Compact Whisper initial_prompt biased toward JARVIS's actual vocabulary.
+
+    Vocabulary/context ONLY - never instructional sentences, which Whisper can
+    echo back into transcripts on ambiguous audio.
+    """
     lexicon = build_lexicon()
     vocab = ", ".join(sorted(lexicon.words))
-    return (
-        f"Wake word '{wake_word}'. Commands: {vocab}. "
-        f"Surfaces: {', '.join(SURFACES)}. Ignore filler words."
-    )[:1000]
+    return f"Wake word '{wake_word}'. Commands: {vocab}. Surfaces: {', '.join(SURFACES)}."[:1000]
+
+
+# Static scaffolding fragments of build_stt_prompt() that are never legitimate
+# user speech; echoes of these are stripped from transcripts conservatively.
+_PROMPT_ECHO_PATTERNS = (
+    re.compile(r"\bwake\s+word\s+['\"']?jarvis['\"']?\s*\.?", re.IGNORECASE),
+    re.compile(r"\bcommands?:[^.]*\.?", re.IGNORECASE),
+    re.compile(r"\bsurfaces?:\s*[a-z,\s]+\.?", re.IGNORECASE),
+    re.compile(r"\bignore\s+filler\s+words\b\.?", re.IGNORECASE),
+)
+
+
+def strip_prompt_echo(text: str) -> str:
+    """Remove STT-prompt scaffolding echoed into a transcript.
+
+    Conservative: only labeled prompt constructs ("wake word 'jarvis'",
+    "commands: ...", "surfaces: ...", "ignore filler words") are removed.
+    Bare vocabulary words are NEVER stripped from user speech.
+    """
+    cleaned = text
+    for pattern in _PROMPT_ECHO_PATTERNS:
+        cleaned = pattern.sub(" ", cleaned)
+    return re.sub(r"\s+", " ", cleaned).strip(" ,.:")
 
 
 def best_entity_match(name: str, choices: frozenset[str] | set[str], cutoff: int) -> str | None:
@@ -243,23 +287,43 @@ def best_entity_match(name: str, choices: frozenset[str] | set[str], cutoff: int
     return match[0] if match else None
 
 
-def fuzzy_wake_detected(transcript: str, wake_phrase: str, threshold: float = 82.0) -> bool:
-    """Accept close wake-word variants ("jervis") without firing on unrelated words."""
+def locate_wake_phrase(transcript: str, wake_phrase: str, threshold: float = 82.0) -> tuple[int, int] | None:
+    """Character span (start, end) of the best wake-phrase match, or None.
+
+    Exact substring wins; otherwise token-window RapidFuzz scoring locates a
+    fuzzy variant ("jervis"), with a partial-alignment fallback.
+    """
     text = transcript.lower()
     phrase = wake_phrase.lower().strip()
     if not phrase or not text:
-        return False
-    if phrase in text:
-        return True
+        return None
+    exact = text.find(phrase)
+    if exact != -1:
+        return exact, exact + len(phrase)
 
-    phrase_tokens = phrase.split()
-    tokens = _TOKEN_RE.findall(text)
-    window_size = max(1, len(phrase_tokens))
-    best = 0.0
-    for start in range(max(1, len(tokens) - window_size + 1)):
-        window = " ".join(tokens[start : start + window_size])
-        best = max(best, fuzz.ratio(window, phrase))
-        if best >= threshold:
-            return True
-    best = max(best, fuzz.partial_ratio(phrase, text))
-    return best >= threshold
+    tokens = [(m.start(), m.group()) for m in re.finditer(r"[a-z']+", text)]
+    window_size = max(1, len(phrase.split()))
+    best_span: tuple[int, int] | None = None
+    best_score = 0.0
+    for start in range(max(0, len(tokens) - window_size + 1)):
+        window_tokens = tokens[start : start + window_size]
+        window = " ".join(t[1] for t in window_tokens)
+        score = fuzz.ratio(window, phrase)
+        if score > best_score:
+            best_score = score
+            best_span = (window_tokens[0][0], window_tokens[-1][0] + len(window_tokens[-1][1]))
+    if best_span is not None and best_score >= threshold:
+        return best_span
+
+    try:
+        alignment = fuzz.partial_ratio_alignment(phrase, text)
+    except Exception:
+        return None
+    if alignment is not None and alignment.score >= threshold:
+        return alignment.dest_start, alignment.dest_end
+    return None
+
+
+def fuzzy_wake_detected(transcript: str, wake_phrase: str, threshold: float = 82.0) -> bool:
+    """Accept close wake-word variants ("jervis") without firing on unrelated words."""
+    return locate_wake_phrase(transcript, wake_phrase, threshold) is not None

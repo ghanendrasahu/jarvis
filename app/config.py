@@ -94,6 +94,8 @@ class Settings(BaseSettings):
     max_voice_response_chars: int = 260
     voice_followup_window_seconds: int = 10
     voice_followup_sticky_mode: bool = True
+    # Sticky follow-up auto-expires after this many seconds; wake word required again.
+    voice_followup_max_seconds: int = 120
     voice_confirm_before_send: bool = True
     voice_min_transcript_chars: int = 2
     speech_ambient_adjust_duration_seconds: float = 0.25

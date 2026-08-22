@@ -226,10 +226,6 @@ def register_system_tools(registry: ToolRegistry, settings: Settings, monitor: R
         if shortcut and _shell_open(shortcut):
             return {"message": "Desktop shortcut opened.", "target": shortcut, "kind": "app_shortcut"}
 
-        for shell_target in (raw_name, target):
-            if _shell_open(shell_target):
-                return {"message": "Application launch requested (shell).", "target": shell_target, "kind": "app"}
-
         if normalized in WEB_APP_ALIASES:
             url = WEB_APP_ALIASES[normalized]
             webbrowser.open(url, new=2)

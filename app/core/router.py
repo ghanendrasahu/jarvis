@@ -290,7 +290,13 @@ class DirectCommandRouter:
         match = re.match(r"^(open|launch|start)\s+(.+)$", normalized)
         if match:
             app_name = normalized.split(maxsplit=1)[1]
-            return [Action(tool="open_application", args={"name": app_name}, risk="low", reason="Open app")]
+            # Safety: only route targets the known-resolution system recognizes
+            # (app aliases / web apps / URLs). Unknown targets fall through to
+            # the planner/clarification path instead of blindly executing ASR
+            # garbage like "open heartshot".
+            if resolve_open_target(app_name) is not None:
+                return [Action(tool="open_application", args={"name": app_name}, risk="low", reason="Open app")]
+            return []
 
         match = re.match(r"^(close|quit|kill)\s+(.+)$", normalized)
         if match:
