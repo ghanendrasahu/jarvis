@@ -18,3 +18,9 @@ logs/
 
 # Stray runtime log artifacts
 *.log
+
+# STT benchmark local artifacts (models, voice recordings, results)
+tools/stt_benchmark/models/
+tools/stt_benchmark/recordings/
+tools/stt_benchmark/recordings_boosted/
+tools/stt_benchmark/results.jsonl

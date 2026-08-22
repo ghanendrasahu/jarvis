@@ -115,6 +115,14 @@ class Settings(BaseSettings):
     voice_semantic_model: str = ""  # empty = provider default (groq/cerebras: llama-3.1-8b-instant)
     voice_semantic_timeout_seconds: int = 5
     voice_fuzzy_target_score: int = 75
+
+    # STT backend chain. Primary "qwen3" runs the local Qwen3-ASR model
+    # (lazy-loaded on first use from the shared HF cache); on failure it falls
+    # back to "groq" (Whisper large-v3-turbo API). Set VOICE_STT_BACKEND=groq
+    # to switch back to the previous behavior with one config change.
+    voice_stt_backend: str = "qwen3"  # "qwen3" | "groq"
+    voice_stt_fallback: str = "groq"  # tried when the primary fails/unavailable
+    qwen_stt_model_id: str = "Qwen/Qwen3-ASR-0.6B-hf"
     # Voice-loop resilience (watchdog): auto-restart a crashed loop thread;
     # warn when the loop is silent longer than stale_seconds (cannot preempt).
     voice_watchdog_enabled: bool = True

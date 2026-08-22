@@ -143,6 +143,16 @@ def register_system_tools(registry: ToolRegistry, settings: Settings, monitor: R
         appdata = os.environ.get("APPDATA")
         if appdata:
             roots.append(Path(appdata) / "Microsoft" / "Windows" / "Start Menu" / "Programs")
+            # Windows taskbar pins live here as .lnk files; include them so
+            # apps pinned only to the taskbar remain launchable by name.
+            roots.append(
+                Path(appdata)
+                / "Microsoft"
+                / "Internet Explorer"
+                / "Quick Launch"
+                / "User Pinned"
+                / "TaskBar"
+            )
 
         program_data = os.environ.get("ProgramData")
         if program_data:

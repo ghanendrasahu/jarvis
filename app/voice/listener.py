@@ -59,6 +59,14 @@ class VoiceListener:
         self.settings = settings
         self._recognizer: Any = None
         self._backend = "groq_whisper" if bool(settings.groq_api_key) else "google_web_speech"
+        # Active backend reflects what actually transcribed the last utterance;
+        # None until the first successful STT call (status shows the default).
+        self._active_backend: str | None = None
+        # Local Qwen3-ASR state: created lazily on the voice worker thread;
+        # a load failure latches for the session so every command does not
+        # pay the (slow) load attempt again.
+        self._qwen: Any = None
+        self._qwen_load_failed: bool = False
         self._device_index: int | None = None
         # Plain-attribute snapshots readable without _mic_lock so GUI status
         # polls never contend with an active capture cycle (GIL-atomic reads).
@@ -84,6 +92,15 @@ class VoiceListener:
 
     @property
     def backend(self) -> str:
+        """STT backend currently in effect (post-fallback), for status display."""
+        if self._active_backend == "qwen3":
+            return "qwen3_local"
+        if self._active_backend == "groq":
+            return "groq_whisper"
+        if self._active_backend == "openai":
+            return "openai_whisper"
+        if self._active_backend == "google":
+            return "google_web_speech"
         return self._backend
 
     def _publish_device_snapshot_locked(self) -> None:
@@ -244,16 +261,10 @@ class VoiceListener:
             if not self._vad.has_speech(audio):
                 return ListenResult(transcript=None, issue="no_speech")
 
-            if self.settings.groq_api_key:
-                verbose = self._transcribe_groq(audio)
-                transcript = (getattr(verbose, "text", "") or "").strip()
-                confidence = self._confidence_from_verbose(verbose)
-                if confidence is not None and not self._is_confidence_acceptable(*confidence):
-                    return ListenResult(transcript=None, issue="low_confidence_transcript")
-            elif self.settings.openai_api_key and hasattr(recognizer, "recognize_whisper_api"):
-                transcript = recognizer.recognize_whisper_api(audio, api_key=self.settings.openai_api_key).strip()
-            else:
-                transcript = recognizer.recognize_google(audio).strip()
+            chain_result = self._run_stt_chain(audio, recognizer)
+            if chain_result.issue is not None:
+                return chain_result
+            transcript = chain_result.transcript or ""
 
             # Strip STT-prompt scaffolding echoed into the transcript so it can
             # never become an executable command.
@@ -273,6 +284,118 @@ class VoiceListener:
             return ListenResult(transcript=None, issue=f"listener_error: {exc}")
         finally:
             self._last_listen_end_at = time.time()
+
+    def _run_stt_chain(self, audio, recognizer) -> ListenResult:
+        """Transcribe via the configured backend chain, falling back on failure.
+
+        Order comes from VOICE_STT_BACKEND / VOICE_STT_FALLBACK (qwen3 -> groq by
+        default). Duck-typed settings without those fields keep the exact legacy
+        behavior (groq if a key exists, else openai/google web speech).
+        """
+        primary = str(getattr(self.settings, "voice_stt_backend", "") or "").strip().lower()
+        fallback = str(getattr(self.settings, "voice_stt_fallback", "") or "").strip().lower()
+        groq_available = bool(self.settings.groq_api_key)
+
+        order: list[str] = []
+        if primary == "qwen3":
+            order.append("qwen3")
+            if fallback == "groq" and groq_available:
+                order.append("groq")
+        elif primary == "groq":
+            if groq_available:
+                order.append("groq")
+            if fallback == "qwen3":
+                order.append("qwen3")
+        elif primary == "openai":
+            order.append("openai")
+        elif primary == "google":
+            order.append("google")
+        else:
+            # Legacy default when no explicit backend is configured.
+            if groq_available:
+                order.append("groq")
+            elif self.settings.openai_api_key and hasattr(recognizer, "recognize_whisper_api"):
+                order.append("openai")
+            else:
+                order.append("google")
+
+        # Never strand the user with no usable cloud option: if the configured
+        # chain produced no cloud backend at all, append the legacy tail.
+        if not any(name in {"groq", "openai", "google"} for name in order):
+            if groq_available:
+                order.append("groq")
+            elif self.settings.openai_api_key and hasattr(recognizer, "recognize_whisper_api"):
+                order.append("openai")
+            else:
+                order.append("google")
+
+        attempted: list[str] = []
+        for name in order:
+            attempted.append(name)
+            try:
+                if name == "qwen3":
+                    text = self._transcribe_qwen(audio)
+                elif name == "groq":
+                    verbose = self._transcribe_groq(audio)
+                    text = (getattr(verbose, "text", "") or "").strip()
+                    confidence = self._confidence_from_verbose(verbose)
+                    if confidence is not None and not self._is_confidence_acceptable(*confidence):
+                        # A valid low-confidence result is not a backend failure;
+                        # surface it exactly as the legacy path did.
+                        return ListenResult(transcript=None, issue="low_confidence_transcript")
+                elif name == "openai":
+                    text = recognizer.recognize_whisper_api(
+                        audio, api_key=self.settings.openai_api_key
+                    ).strip()
+                else:
+                    text = recognizer.recognize_google(audio).strip()
+
+                if self._active_backend != name:
+                    logger.info("[voice] STT backend active: %s", name)
+                self._active_backend = name
+                return ListenResult(transcript=text.strip(), issue=None)
+            except sr.UnknownValueError:
+                raise  # preserve legacy unknown_audio handling for cloud APIs
+            except Exception as exc:
+                logger.warning("[voice] STT backend '%s' failed (%s); trying next", name, exc)
+                continue
+
+        return ListenResult(
+            transcript=None,
+            issue=f"request_error: all stt backends failed [{','.join(attempted)}]",
+        )
+
+    def _get_qwen(self) -> Any:
+        if self._qwen is None:
+            from app.voice.qwen_stt import DEFAULT_QWEN_STT_MODEL_ID, Qwen3AsrTranscriber
+
+            model_id = (
+                str(getattr(self.settings, "qwen_stt_model_id", "") or "").strip()
+                or DEFAULT_QWEN_STT_MODEL_ID
+            )
+            self._qwen = Qwen3AsrTranscriber(model_id)
+        return self._qwen
+
+    def _transcribe_qwen(self, audio) -> str:
+        """Local Qwen3-ASR inference; lazy-loads the model on first call."""
+        if self._qwen_load_failed:
+            raise RuntimeError("qwen3 unavailable earlier this session")
+        qwen = self._get_qwen()
+        was_loaded = qwen.loaded
+        try:
+            wav_bytes = audio.get_wav_data()
+            language = str(getattr(self.settings, "stt_language", "") or "")
+            return qwen.transcribe_wav_bytes(wav_bytes, language_code=language)
+        except Exception as exc:
+            if not was_loaded and not qwen.loaded:
+                # Load-phase failure (missing deps/weights, OOM): latch off so
+                # the fallback takes over instantly for the rest of the session.
+                self._qwen_load_failed = True
+                logger.error("[voice] qwen3 STT failed to load (%s); using %s fallback", exc,
+                             getattr(self.settings, "voice_stt_fallback", "groq"))
+            else:
+                logger.warning("[voice] qwen3 transcription error: %s", exc)
+            raise
 
     @staticmethod
     def _is_transcript_plausible(transcript: str, min_chars: int = 2) -> bool:
