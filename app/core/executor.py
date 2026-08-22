@@ -2,12 +2,15 @@ from __future__ import annotations
 
 import threading
 import time
-from typing import cast
+from typing import Any, cast
 
 from app.config import Settings
 from app.core.approvals import ApprovalManager
+from app.core.logging import get_logger
 from app.models.schemas import Action, RiskLevel, ToolExecutionResult
 from app.tools.registry import ToolRegistry
+
+logger = get_logger("executor")
 
 RISK_WEIGHT = {"low": 1, "medium": 2, "high": 3}
 
@@ -16,6 +19,51 @@ _APPROVAL_REASON = {
     "high_only": "Approval policy requires approval for high-risk actions.",
     "medium_and_high": "Approval policy requires approval for medium and high-risk actions.",
 }
+
+
+class OrphanWorkerTracker:
+    """Tracks tool threads that outlived their caller's timeout.
+
+    Python threads cannot be force-killed safely; instead, timed-out workers
+    are registered here so accumulation stays bounded. Underlying operations
+    are cooperatively self-bounded (subprocess timeouts, Playwright per-call
+    timeouts, HTTP timeouts), so orphans terminate on their own - the cap
+    below only prevents unbounded pile-up.
+    """
+
+    def __init__(self) -> None:
+        self._lock = threading.Lock()
+        self._orphans: dict[int, str] = {}
+
+    def register(self, thread: threading.Thread, tool: str) -> None:
+        ident = thread.ident
+        if ident is None:
+            return
+        with self._lock:
+            self._orphans[ident] = tool
+
+    def unregister_thread(self) -> None:
+        current = threading.current_thread().ident
+        if current is None:
+            return
+        with self._lock:
+            self._orphans.pop(current, None)
+
+    def count(self) -> int:
+        with self._lock:
+            return len(self._orphans)
+
+    def tools(self) -> list[str]:
+        with self._lock:
+            return list(self._orphans.values())
+
+
+_orphan_tracker = OrphanWorkerTracker()
+
+
+def orphaned_workers_snapshot() -> dict[str, Any]:
+    """Point-in-time view of abandoned (timed-out but still running) workers."""
+    return {"count": _orphan_tracker.count(), "tools": _orphan_tracker.tools()}
 
 
 def _max_risk(a: str, b: str) -> str:
@@ -44,9 +92,22 @@ class ActionExecutor:
     def _call_with_timeout(self, name: str, args: dict, timeout_seconds: float | None) -> dict:
         if not timeout_seconds or timeout_seconds <= 0:
             return self.registry.execute(name, args)
+
+        # Backpressure: refuse to spawn new work while too many abandoned
+        # (timed-out but still running) workers are active. This keeps the
+        # orphan population bounded instead of accumulating indefinitely.
+        max_orphans = int(getattr(self.settings, "executor_max_orphaned_workers", 16))
+        current_orphans = _orphan_tracker.count()
+        if current_orphans >= max_orphans:
+            raise RuntimeError(
+                f"orphaned tool workers at limit ({current_orphans}/{max_orphans}): "
+                f"{', '.join(_orphan_tracker.tools())}; refusing new execution of '{name}'"
+            )
+
         completed = threading.Event()
         outcome: dict = {}
         error: BaseException | None = None
+        flagged_orphan = {"value": False}
 
         def worker() -> None:
             nonlocal error
@@ -55,12 +116,22 @@ class ActionExecutor:
             except BaseException as exc:  # noqa: BLE001 - propagated to caller below
                 error = exc
             finally:
+                if flagged_orphan["value"]:
+                    _orphan_tracker.unregister_thread()
                 completed.set()
 
         thread = threading.Thread(target=worker, daemon=True, name=f"jarvis-tool-{name}")
         thread.start()
         if not completed.wait(timeout=timeout_seconds):
-            # The worker may still be running; the caller has moved on.
+            flagged_orphan["value"] = True
+            _orphan_tracker.register(thread, name)
+            logger.warning(
+                "tool '%s' timed out after %gs; worker continues in background (%d/%d orphans)",
+                name,
+                timeout_seconds,
+                _orphan_tracker.count(),
+                max_orphans,
+            )
             raise RuntimeError(f"tool '{name}' timed out after {timeout_seconds:g}s")
         if error is not None:
             raise error
@@ -131,8 +202,9 @@ class ActionExecutor:
             except Exception as exc:
                 last_error = str(exc)
                 timed_out = "timed out" in last_error
+                orphan_saturated = "orphaned tool workers at limit" in last_error
                 is_last = attempt >= max_attempts
-                if is_last or effective_risk == "high" or timed_out:
+                if is_last or effective_risk == "high" or timed_out or orphan_saturated:
                     break
                 sleep_seconds = max(0.0, retry_backoff * attempt)
                 time.sleep(sleep_seconds)

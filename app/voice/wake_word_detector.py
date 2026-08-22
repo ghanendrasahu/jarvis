@@ -46,7 +46,17 @@ class PhraseMatchingDetectorForIntegration(WakeWordDetector):
 
     Fuzzy matching accepts close spoken variants ("Jervis", "Jarvic")
     via RapidFuzz while keeping false positives low (configurable
-    threshold)."""
+    threshold).
+
+    openWakeWord evaluation (Phase 4): an acoustic detector was
+    considered but NOT integrated. Reasons: (1) openWakeWord ships no
+    free pretrained "Jarvis" model - a custom model would have to be
+    trained first; (2) continuous acoustic detection requires a
+    persistent audio stream feeding both the detector and STT, which
+    would replace the hardened SpeechRecognition mic lifecycle that the
+    reliability phases just stabilized. The transcript-based fuzzy
+    fallback stays as the production wake-word path; revisit if a
+    custom model is trained."""
 
     def __init__(
         self,

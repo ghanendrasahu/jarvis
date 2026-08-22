@@ -8,6 +8,7 @@ from types import SimpleNamespace
 from typing import cast
 
 from app.config import Settings
+from app.core.orchestrator import JarvisOrchestrator
 from app.llm.planner import FallbackPlanner
 from app.models.schemas import Plan
 from app.voice.listener import VoiceListener
@@ -205,7 +206,10 @@ def _voice_controller() -> VoiceController:
         voice_watchdog_stale_seconds=45,
         voice_watchdog_max_restarts=5,
     )
-    return VoiceController(settings, _DummyOrchestrator())
+    return VoiceController(
+        cast(Settings, settings),
+        cast(JarvisOrchestrator, _DummyOrchestrator()),
+    )
 
 
 def test_supervisor_restarts_dead_loop_thread() -> None:

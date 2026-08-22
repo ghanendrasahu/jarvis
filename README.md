@@ -185,9 +185,12 @@ Behavior notes:
 
 ## Voice Mode Notes
 
-- Wake word: `jarvis`
+- Wake word: `jarvis` (fuzzy variants like "Jervis" also wake it; threshold `WAKE_WORD_FUZZY_SCORE`).
 - Follow-up window: after a wake-word command, short commands can run without repeating wake word (configurable).
 - WhatsApp voice safety: by default, voice sends are staged first; say `confirm send` to send, or `cancel`.
+- Accent tolerance: transcripts are normalized by a semantic layer before routing ("open hot tub" → opens WhatsApp) while search queries stay verbatim. Tune via `VOICE_SEMANTIC_*` / `VOICE_FUZZY_*`.
+- Resilience: the listener thread has a heartbeat watchdog (`VOICE_WATCHDOG_*`) that auto-restarts crashes; persistent mic/API failures back off instead of spinning.
+- Hotword note: an acoustic detector (openWakeWord) was evaluated and deferred — no free pretrained "Jarvis" model exists and continuous streaming would replace the hardened mic lifecycle. The transcript-based fuzzy wake word remains the production path.
 
 Voice diagnostics in CLI:
 - `/voice status`
@@ -246,6 +249,8 @@ Three opt-in features keep JARVIS fast and cheap:
 - `JOB_TARGET_SITES`, `JOB_MAX_APPLY_PER_RUN`, `JOB_APPLY_REMOTE_ONLY`, `JOB_USE_BURNER_ACCOUNT`
 - `JOB_PROFILE`, `JOB_SITE_PROFILES`, `RESUME_PDF`
 - `VOICE_FOLLOWUP_WINDOW_SECONDS`, `VOICE_CONFIRM_BEFORE_SEND`
+- `VOICE_WATCHDOG_ENABLED`, `VOICE_WATCHDOG_STALE_SECONDS`, `VOICE_WATCHDOG_MAX_RESTARTS`
+- `EXECUTOR_MAX_ORPHANED_WORKERS`
 - `TOOL_RETRY_ATTEMPTS`, `TOOL_RETRY_BACKOFF_SECONDS`
 - `BROWSER_PROFILE_DIR`, `BROWSER_AUTOMATION_TIMEOUT_MS`
 - `RAG_ENABLED`, `RAG_NOTES_DIR`, `RAG_EMBEDDINGS_ENABLED`, `RAG_EMBED_MODEL`, `RAG_TOP_K`

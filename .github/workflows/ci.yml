@@ -18,7 +18,7 @@ jobs:
       - name: Install dev deps
         run: pip install ruff
       - name: Lint
-        run: ruff check app
+        run: ruff check app tests
 
   typecheck:
     name: Typecheck
@@ -34,3 +34,18 @@ jobs:
           pip install -r requirements.txt
       - name: Typecheck
         run: mypy app
+
+  test:
+    name: Tests
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+      - name: Install package + dev deps
+        run: |
+          pip install -e .[dev]
+          pip install pytest
+      - name: Run tests
+        run: pytest tests -q

@@ -59,6 +59,7 @@ class VoiceController:
         self._stale_warned_at: float = 0.0
         self._watchdog_stop = threading.Event()
         self._watchdog_thread: threading.Thread | None = None
+        self._consecutive_failures: int = 0
         # Voice understanding pipeline knobs (getattr keeps duck-typed settings compatible).
         self._fuzzy_cutoff = int(getattr(settings, "voice_fuzzy_cutoff", 88))
         semantic_enabled = bool(getattr(settings, "voice_semantic_enabled", True))
@@ -97,6 +98,7 @@ class VoiceController:
                 self._last_normalization = None
                 self._heartbeat_at = time.monotonic()
                 self._desired_running = True
+                self._consecutive_failures = 0
             self._thread = threading.Thread(target=self._run_loop, daemon=True, name="jarvis-voice-loop")
             self._thread.start()
         self._ensure_watchdog()
@@ -356,6 +358,14 @@ class VoiceController:
                     self._last_error = result.issue
                 else:
                     self._last_error = result.issue
+            # Idle results are normal; anything else (mic failure, API errors,
+            # low confidence) backs off exponentially so a broken microphone or
+            # offline network cannot turn the loop into a hot spin.
+            if result.issue in {"timeout", "no_speech"}:
+                self._consecutive_failures = 0
+            else:
+                self._consecutive_failures += 1
+                time.sleep(min(2.0, 0.25 * self._consecutive_failures))
             return
 
         transcript = result.transcript or ""
@@ -368,6 +378,7 @@ class VoiceController:
             self._last_transcript = transcript
             self._recognized_count += 1
             self._last_error = None
+        self._consecutive_failures = 0
 
         lowered = transcript.lower().strip()
         if lowered.startswith("approve "):

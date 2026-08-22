@@ -133,6 +133,9 @@ class Settings(BaseSettings):
     max_history_items: int = 20
     tool_retry_attempts: int = 1
     tool_retry_backoff_seconds: float = 0.4
+    # Max concurrent tool workers that timed out but keep running in the
+    # background; new executions fail fast while the cap is reached.
+    executor_max_orphaned_workers: int = 16
     db_retention_days: int = 60
 
     # Browser automation toggle (set false to skip Playwright tools when unavailable).
