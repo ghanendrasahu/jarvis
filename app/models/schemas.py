@@ -23,12 +23,6 @@ class Plan(BaseModel):
     final_response: str = ""
 
 
-class ExecuteCommandRequest(BaseModel):
-    command: str
-    source: str = "api"
-    auto_approve: bool = False
-
-
 class ToolExecutionResult(BaseModel):
     """Unified contract every tool result must satisfy.
 
@@ -75,26 +69,4 @@ class ExecuteApprovalResponse(BaseModel):
     status: str
     message: str
     execution: ExecuteCommandResponse | None = None
-
-
-class JobApplyRequest(BaseModel):
-    query: str = Field(min_length=1, max_length=200)
-    sites: list[str] | None = Field(default=None)
-    max_applications: int | None = Field(default=None, ge=1, le=100)
-
-
-class ScheduleCreateRequest(BaseModel):
-    command: str = Field(min_length=1, max_length=500)
-    recurrence: str = Field(min_length=1, max_length=100)
-
-
-class JobApplication(BaseModel):
-    created_at: str
-    site: str
-    title: str
-    company: str | None = None
-    location: str | None = None
-    url: str
-    status: str
-    notes: str | None = None
 

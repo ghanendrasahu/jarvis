@@ -1,7 +1,5 @@
 from __future__ import annotations
 
-from typing import Any
-
 from app.core.nlu import fuzzy_wake_detected
 
 
@@ -83,21 +81,3 @@ class PhraseMatchingDetectorForIntegration(WakeWordDetector):
         with the raw transcript instead."""
         return WakeWordResult(detected=False, confidence=0.0)
 
-
-# ------------------------------------------------------------------
-# Real‑time VAD‑aware detector wrapper
-# ------------------------------------------------------------------
-class VadAwareDetector(WakeWordDetector):
-    """Wrap any detector so that audio is first checked for voice
-    activity before attempting wake-word detection.  This prevents
-    false wakewords during silence and is essential for production
-    quality."""
-
-    def __init__(self, inner: WakeWordDetector, vad: Any | None = None) -> None:
-        self.inner = inner
-        self.vad = vad
-
-    def detect(self, audio, sample_rate: int = 16000) -> WakeWordResult:
-        if self.vad is not None and not self.vad.has_speech(audio):
-            return WakeWordResult(detected=False, confidence=0.0)
-        return self.inner.detect(audio, sample_rate)

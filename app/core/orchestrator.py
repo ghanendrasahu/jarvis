@@ -34,11 +34,6 @@ from app.tools.registry import ToolRegistry
 logger = get_logger("orchestrator")
 
 
-def _is_code_worthy(command: str) -> bool:
-    """Backward-compatible alias for the intent classifier's code check."""
-    return is_code_command(command)
-
-
 def _redact_result(item: ToolExecutionResult) -> ToolExecutionResult:
     """Return a copy of a tool result with sensitive values scrubbed for display/persistence."""
     if not item.error and not item.output:

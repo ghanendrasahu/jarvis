@@ -11,10 +11,6 @@ from typing import Any
 from app.config import Settings
 from app.core.logging import get_logger
 from app.core.nlu import build_stt_prompt
-from app.voice.wake_word_detector import (
-    PhraseMatchingDetectorForIntegration,
-    VadAwareDetector,
-)
 
 logger = get_logger("voice")
 
@@ -75,14 +71,6 @@ class VoiceListener:
         self._vad = _VadGate()
         self._groq_client: Any = None
         self._last_listen_end_at: float = 0.0
-
-        # Wake-word detector: real model not available, use phrase-matching
-        # as a partial fallback, wrapped in VadAwareDetector so silence
-        # suppresses detection.
-        self._wake_word_detector = VadAwareDetector(
-            PhraseMatchingDetectorForIntegration(settings.wake_word),
-            self._vad,
-        )
 
     def _get_recognizer(self) -> Any:
         if self._recognizer is None:
