@@ -97,6 +97,21 @@ class Settings(BaseSettings):
     speech_ambient_adjust_duration_seconds: float = 0.25
     speech_ambient_adjust_interval_seconds: int = 25
 
+    # Voice understanding pipeline:
+    # Whisper (hearing) -> fuzzy cleanup -> semantic LLM (understanding) -> router (deciding).
+    stt_language: str = "en"
+    stt_prompt_bias: bool = True
+    voice_fuzzy_cutoff: int = 88
+    voice_min_avg_logprob: float = -1.0
+    voice_max_no_speech_prob: float = 0.9
+    wake_word_fuzzy_enabled: bool = True
+    wake_word_fuzzy_score: int = 82
+    voice_semantic_enabled: bool = True
+    voice_semantic_provider: str = ""  # empty = auto: groq, cerebras, openai, openrouter; or "ollama"
+    voice_semantic_model: str = ""  # empty = provider default (groq/cerebras: llama-3.1-8b-instant)
+    voice_semantic_timeout_seconds: int = 5
+    voice_fuzzy_target_score: int = 75
+
     # Kokoro-82M TTS engine (pip install -e .[tts] + espeak-ng system package).
     # Speaker mode: "sapi" | "pyttsx3" | "kokoro"
     tts_engine: str = "kokoro"

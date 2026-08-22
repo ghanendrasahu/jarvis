@@ -2,6 +2,8 @@ from __future__ import annotations
 
 from typing import Any
 
+from app.core.nlu import fuzzy_wake_detected
+
 
 class WakeWordResult:
     """Result of a wake-word detection attempt."""
@@ -40,14 +42,31 @@ class PhraseMatchingDetectorForIntegration(WakeWordDetector):
     """Partial convenience detector: returns True when the wake
     phrase appears in a *transcript* string.  The voice loop should
     call ``detect_transcript`` instead of ``detect`` when using
-    this class."""
+    this class.
 
-    def __init__(self, wake_phrase: str = "jarvis") -> None:
+    Fuzzy matching accepts close spoken variants ("Jervis", "Jarvic")
+    via RapidFuzz while keeping false positives low (configurable
+    threshold)."""
+
+    def __init__(
+        self,
+        wake_phrase: str = "jarvis",
+        fuzzy_enabled: bool = True,
+        fuzzy_score: float = 82.0,
+    ) -> None:
         self.wake_phrase = wake_phrase.lower().strip()
+        self.fuzzy_enabled = fuzzy_enabled
+        self.fuzzy_score = fuzzy_score
 
     def detect_transcript(self, transcript: str) -> bool:
-        """Return True when *wake_phrase* is found in *transcript*."""
-        return self.wake_phrase in transcript.lower()
+        """Return True when *wake_phrase* (or a close variant) is found."""
+        if not transcript:
+            return False
+        if self.wake_phrase in transcript.lower():
+            return True
+        if not self.fuzzy_enabled:
+            return False
+        return fuzzy_wake_detected(transcript, self.wake_phrase, self.fuzzy_score)
 
     def detect(self, audio, sample_rate: int = 16000) -> WakeWordResult:
         """Placeholder: always False.  Use ``detect_transcript``

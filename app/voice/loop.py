@@ -8,9 +8,11 @@ from typing import Any
 
 from app.config import Settings
 from app.core.logging import get_logger
+from app.core.nlu import correct_transcript, needs_semantic_interpretation, strip_filler
 from app.core.orchestrator import JarvisOrchestrator
 from app.models.schemas import ExecuteCommandResponse
 from app.voice.listener import VoiceListener
+from app.voice.semantic import SemanticInterpreter
 from app.voice.speaker import Speaker
 from app.voice.wake_word_detector import (
     PhraseMatchingDetectorForIntegration,
@@ -49,10 +51,17 @@ class VoiceController:
         self._sticky_followup_active: bool = False
         self._tts_block_until: float = 0.0
         self._pending_whatsapp_confirmation: dict[str, str] | None = None
-        # Wake-word detector — partial phrase-matching fallback;
-        # a real hotword model should replace PhraseMatchingDetectorForIntegration.
+        self._last_normalization: dict[str, str] | None = None
+        # Voice understanding pipeline knobs (getattr keeps duck-typed settings compatible).
+        self._fuzzy_cutoff = int(getattr(settings, "voice_fuzzy_cutoff", 88))
+        semantic_enabled = bool(getattr(settings, "voice_semantic_enabled", True))
+        self._semantic = SemanticInterpreter(settings) if semantic_enabled else None
+        self._tool_names: list[str] | None = None
+        # Wake-word detector — fuzzy matching accepts spoken variants ("Jervis").
         self._wake_word = PhraseMatchingDetectorForIntegration(
-            self.listener.settings.wake_word
+            self.listener.settings.wake_word,
+            fuzzy_enabled=bool(getattr(settings, "wake_word_fuzzy_enabled", True)),
+            fuzzy_score=float(getattr(settings, "wake_word_fuzzy_score", 82.0)),
         )
 
     def is_running(self) -> bool:
@@ -78,6 +87,7 @@ class VoiceController:
                 self._sticky_followup_active = False
                 self._tts_block_until = 0.0
                 self._pending_whatsapp_confirmation = None
+                self._last_normalization = None
             self._thread = threading.Thread(target=self._run_loop, daemon=True, name="jarvis-voice-loop")
             self._thread.start()
             return True
@@ -104,6 +114,8 @@ class VoiceController:
                 "running": self.is_running(),
                 "wake_word": self.settings.wake_word,
                 "stt_backend": self.listener.backend,
+                "stt_language": str(getattr(self.settings, "stt_language", "") or ""),
+                "semantic_normalizer": self._semantic.provider if self._semantic else "disabled",
                 "mic_device_index": self.listener.device_index,
                 "mic_device_name": self.listener.get_device_name(),
                 "tts_enabled": self.speaker.enabled,
@@ -122,6 +134,7 @@ class VoiceController:
                 "sticky_followup_active": self._sticky_followup_active,
                 "tts_block_active": time.time() <= self._tts_block_until,
                 "pending_whatsapp_confirmation": bool(self._pending_whatsapp_confirmation),
+                "last_normalization": self._last_normalization,
             }
 
     def _speak_async(self, text: str) -> None:
@@ -173,6 +186,42 @@ class VoiceController:
         index = lowered.find(self._wake_word.wake_phrase)
         command = transcript[index + len(self._wake_word.wake_phrase) :].strip(" ,.:")
         return command, True
+
+    def _get_tool_names(self) -> list[str]:
+        if self._tool_names is None:
+            try:
+                self._tool_names = [item["name"] for item in self.orchestrator.registry.catalog()]
+            except Exception:
+                self._tool_names = []
+        return self._tool_names
+
+    def _normalize_for_understanding(self, command: str) -> str:
+        """Whisper output -> deterministic cleanup -> optional semantic LLM pass.
+
+        Fast path: understood commands (or free-text queries) skip the LLM and go
+        straight to the existing router. Suspicious transcripts get one semantic
+        interpretation attempt; if it is not confident the original text flows on
+        to the planner exactly as before.
+        """
+        cleaned = strip_filler(command)
+        if not cleaned:
+            return command
+        corrected, _changed = correct_transcript(cleaned, cutoff=self._fuzzy_cutoff)
+        if self._semantic is None or not needs_semantic_interpretation(corrected):
+            return corrected
+
+        learned_facts: dict[str, Any] = {}
+        try:
+            context = self.orchestrator.memory.get_state("runtime_context", default={}) or {}
+            learned_facts = dict(context.get("learned_facts") or {})
+        except Exception:
+            logger.debug("runtime context unavailable for semantic pass", exc_info=True)
+        interpreted = self._semantic.interpret(
+            corrected,
+            tool_names=self._get_tool_names(),
+            learned_facts=learned_facts,
+        )
+        return interpreted or corrected
 
     def _should_ignore_transcript(self, transcript: str) -> bool:
         if time.time() <= self._tts_block_until:
@@ -272,6 +321,13 @@ class VoiceController:
                     self._followup_until = 0.0
                 else:
                     self._followup_until = time.time() + max(0, int(self.settings.voice_followup_window_seconds))
+
+            canonical_command = self._normalize_for_understanding(command)
+            if canonical_command != command:
+                with self._state_lock:
+                    self._last_normalization = {"original": command, "canonical": canonical_command}
+                logger.info("[voice] normalized: '%s' -> '%s'", command, canonical_command)
+                command = canonical_command
 
             with self._state_lock:
                 self._last_command = command

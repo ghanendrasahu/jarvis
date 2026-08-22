@@ -10,6 +10,7 @@ from typing import Any
 
 from app.config import Settings
 from app.core.logging import get_logger
+from app.core.nlu import build_stt_prompt
 from app.voice.wake_word_detector import (
     PhraseMatchingDetectorForIntegration,
     VadAwareDetector,
@@ -258,7 +259,11 @@ class VoiceListener:
                 return ListenResult(transcript=None, issue="no_speech")
 
             if self.settings.groq_api_key:
-                transcript = self._transcribe_groq(audio).strip()
+                verbose = self._transcribe_groq(audio)
+                transcript = (getattr(verbose, "text", "") or "").strip()
+                confidence = self._confidence_from_verbose(verbose)
+                if confidence is not None and not self._is_confidence_acceptable(*confidence):
+                    return ListenResult(transcript=None, issue="low_confidence_transcript")
             elif self.settings.openai_api_key and hasattr(recognizer, "recognize_whisper_api"):
                 transcript = recognizer.recognize_whisper_api(audio, api_key=self.settings.openai_api_key).strip()
             else:
@@ -294,8 +299,12 @@ class VoiceListener:
             return False
         return True
 
-    def _transcribe_groq(self, audio) -> str:
-        """Transcribe via Groq's free-tier Whisper (OpenAI-compatible endpoint)."""
+    def _transcribe_groq(self, audio) -> Any:
+        """Transcribe via Groq's free-tier Whisper (OpenAI-compatible endpoint).
+
+        Tuned for accent robustness: explicit language hint plus a dynamic
+        initial_prompt biased toward JARVIS's real command vocabulary.
+        """
         import tempfile
 
         if self._groq_client is None:
@@ -316,13 +325,21 @@ class VoiceListener:
                 handle.write(audio.get_wav_data())
                 path = handle.name
 
-            with open(path, "rb") as handle:
+            request_kwargs: dict[str, Any] = {"response_format": "verbose_json"}
+            language = str(getattr(self.settings, "stt_language", "") or "").strip()
+            if language:
+                request_kwargs["language"] = language
+            if bool(getattr(self.settings, "stt_prompt_bias", True)):
+                request_kwargs["prompt"] = build_stt_prompt(self.settings.wake_word)
+
+            with open(path, "rb") as audio_file:
                 result = self._groq_client.audio.transcriptions.create(
                     model="whisper-large-v3-turbo",
-                    file=handle,
+                    file=audio_file,
+                    **request_kwargs,
                 )
 
-            return result.text or ""
+            return result
 
         finally:
             if path:
@@ -330,3 +347,40 @@ class VoiceListener:
                     os.unlink(path)
                 except OSError:
                     pass
+
+    @staticmethod
+    def _confidence_from_verbose(result: Any) -> tuple[float, float] | None:
+        """Return (weighted avg_logprob, max no_speech_prob) from verbose_json."""
+        segments = getattr(result, "segments", None)
+        if not segments:
+            return None
+        total_weight = 0.0
+        logprob_sum = 0.0
+        max_no_speech = 0.0
+        for segment in segments:
+            if isinstance(segment, dict):
+                logprob = segment.get("avg_logprob")
+                no_speech = segment.get("no_speech_prob")
+                duration = float(segment.get("end") or 0) - float(segment.get("start") or 0)
+            else:
+                logprob = getattr(segment, "avg_logprob", None)
+                no_speech = getattr(segment, "no_speech_prob", None)
+                duration = float(getattr(segment, "end", 0) or 0) - float(getattr(segment, "start", 0) or 0)
+            if logprob is None:
+                continue
+            weight = max(0.001, duration)
+            logprob_sum += float(logprob) * weight
+            total_weight += weight
+            try:
+                max_no_speech = max(max_no_speech, float(no_speech or 0.0))
+            except (TypeError, ValueError):
+                continue
+        if total_weight <= 0:
+            return None
+        return logprob_sum / total_weight, max_no_speech
+
+    def _is_confidence_acceptable(self, avg_logprob: float, max_no_speech: float) -> bool:
+        """Conservative garbage filter; ambiguous-but-real speech still flows on."""
+        min_logprob = float(getattr(self.settings, "voice_min_avg_logprob", -1.0))
+        max_no_speech_prob = float(getattr(self.settings, "voice_max_no_speech_prob", 0.9))
+        return avg_logprob >= min_logprob and max_no_speech <= max_no_speech_prob
