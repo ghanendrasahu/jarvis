@@ -11,6 +11,7 @@ from app.config import Settings
 from app.llm.planner import FallbackPlanner
 from app.models.schemas import Plan
 from app.voice.listener import VoiceListener
+from app.voice.loop import VoiceController
 from app.voice.speaker import Speaker
 
 # ---------------------------------------------------------------- listener
@@ -179,3 +180,108 @@ def test_fallback_planner_returns_first_success() -> None:
     planner = FallbackPlanner(primary=_FailingPlanner(), fallbacks=[_GoodPlanner()], deadline_seconds=10)
     result = planner.plan("cmd", [], [])
     assert result.final_response == "done"
+
+
+# ---------------------------------------------------------------- watchdog (Phase 3)
+
+
+def _voice_controller() -> VoiceController:
+    settings = SimpleNamespace(
+        groq_model="test-model",
+        wake_word="jarvis",
+        groq_api_key="",
+        openai_api_key="",
+        tts_enabled=False,
+        tts_engine="sapi",
+        kokoro_voice="af_bella",
+        kokoro_lang_code="a",
+        kokoro_speed=1.0,
+        voice_min_transcript_chars=2,
+        voice_followup_sticky_mode=True,
+        voice_followup_window_seconds=10,
+        voice_confirm_before_send=False,
+        # Keep the supervisor thread out of tests; checks are invoked manually.
+        voice_watchdog_enabled=False,
+        voice_watchdog_stale_seconds=45,
+        voice_watchdog_max_restarts=5,
+    )
+    return VoiceController(settings, _DummyOrchestrator())
+
+
+def test_supervisor_restarts_dead_loop_thread() -> None:
+    controller = _voice_controller()
+    controller._run_loop = lambda: time.sleep(5)  # type: ignore[method-assign]
+    try:
+        assert controller.start() is True
+
+        dead = threading.Thread(target=lambda: None)
+        dead.start()
+        dead.join()
+        controller._thread = dead  # simulate a silently crashed worker
+        restarts_before = controller._auto_restarts
+
+        performed = controller._supervisor_check()
+
+        assert performed is True
+        assert controller.is_running()
+        assert controller._auto_restarts == restarts_before + 1
+    finally:
+        controller.stop(timeout=2.0)
+
+
+def test_supervisor_reports_but_does_not_restart_stale_alive_loop() -> None:
+    controller = _voice_controller()
+    controller._run_loop = lambda: time.sleep(5)  # type: ignore[method-assign]
+    try:
+        assert controller.start() is True
+        controller._heartbeat_at = time.monotonic() - 500.0  # far past stale threshold
+
+        performed = controller._supervisor_check()
+
+        assert performed is False, "must not respawn an alive thread (mic contention)"
+        assert controller.is_running()
+        assert "stalled" in str(controller.status().get("last_error"))
+    finally:
+        controller.stop(timeout=2.0)
+
+
+def test_supervisor_budget_exhaustion_blocks_restart() -> None:
+    controller = _voice_controller()
+    controller._auto_restarts = 99  # over the configured budget of 5
+
+    dead = threading.Thread(target=lambda: None)
+    dead.start()
+    dead.join()
+    controller._thread = dead
+    controller._desired_running = True
+
+    performed = controller._supervisor_check()
+
+    assert performed is False
+    assert not controller.is_running()
+    assert str(controller.status().get("last_error")).startswith("watchdog_budget_exhausted")
+
+
+# ---------------------------------------------------------------- event queue (Phase 3)
+
+
+def test_enqueue_drops_oldest_when_saturated() -> None:
+    import queue as q
+
+    from app.gui import JarvisHudApp
+
+    hud = JarvisHudApp.__new__(JarvisHudApp)  # bypass Qt/runtime construction
+    hud._events = q.Queue(maxsize=2)
+
+    for i in range(5):
+        hud._enqueue(("agent_step", {"i": i}))
+
+    assert hud._events.qsize() == 2
+    first = hud._events.get_nowait()
+    assert first[0] == "agent_step"
+    assert first[1]["i"] == 3, "oldest events must be dropped, newest kept"
+
+
+class _DummyOrchestrator:
+    def execute_command(self, command: str, source: str, auto_approve: bool = False):
+        raise AssertionError("execute_command should not be called in these tests")

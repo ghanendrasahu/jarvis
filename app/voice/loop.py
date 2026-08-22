@@ -52,6 +52,13 @@ class VoiceController:
         self._tts_block_until: float = 0.0
         self._pending_whatsapp_confirmation: dict[str, str] | None = None
         self._last_normalization: dict[str, str] | None = None
+        # Watchdog/resilience state (audit Phase 3).
+        self._desired_running: bool = False
+        self._heartbeat_at: float = 0.0
+        self._auto_restarts: int = 0
+        self._stale_warned_at: float = 0.0
+        self._watchdog_stop = threading.Event()
+        self._watchdog_thread: threading.Thread | None = None
         # Voice understanding pipeline knobs (getattr keeps duck-typed settings compatible).
         self._fuzzy_cutoff = int(getattr(settings, "voice_fuzzy_cutoff", 88))
         semantic_enabled = bool(getattr(settings, "voice_semantic_enabled", True))
@@ -88,25 +95,94 @@ class VoiceController:
                 self._tts_block_until = 0.0
                 self._pending_whatsapp_confirmation = None
                 self._last_normalization = None
+                self._heartbeat_at = time.monotonic()
+                self._desired_running = True
             self._thread = threading.Thread(target=self._run_loop, daemon=True, name="jarvis-voice-loop")
             self._thread.start()
-            return True
+        self._ensure_watchdog()
+        return True
 
-    def stop(self) -> bool:
+    def stop(self, timeout: float = 3.0) -> bool:
+        self._watchdog_stop.set()
         with self._lifecycle_lock:
             if not self.is_running():
+                self._desired_running = False
                 return False
             self._stop_event.set()
+            self._desired_running = False
             assert self._thread is not None
             thread = self._thread
-            wait_seconds = 3
-            thread.join(timeout=wait_seconds)
+            thread.join(timeout=max(0.1, float(timeout)))
             if thread.is_alive():
                 with self._state_lock:
                     self._last_error = "stop_timeout: listener still shutting down"
                 return False
             self._thread = None
             return True
+
+    def _ensure_watchdog(self) -> None:
+        if not bool(getattr(self.settings, "voice_watchdog_enabled", True)):
+            return
+        if self._watchdog_thread is not None and self._watchdog_thread.is_alive():
+            return
+        self._watchdog_stop.clear()
+        self._watchdog_thread = threading.Thread(
+            target=self._supervisor_loop, daemon=True, name="jarvis-voice-watchdog"
+        )
+        self._watchdog_thread.start()
+
+    def _supervisor_loop(self) -> None:
+        while not self._watchdog_stop.wait(5.0):
+            try:
+                self._supervisor_check()
+            except Exception:
+                logger.exception("[voice] watchdog iteration failed")
+
+    def _supervisor_check(self) -> bool:
+        """One watchdog pass. Returns True when a dead loop was restarted.
+
+        A thread that is alive but silent (e.g., blocked in an STT call) is only
+        reported - it cannot be preempted safely, and restarting it would fight
+        over the microphone.
+        """
+        if not self._desired_running or self._stop_event.is_set():
+            return False
+        thread = self._thread
+        alive = thread is not None and thread.is_alive()
+        now = time.monotonic()
+        heartbeat_age = max(0.0, now - self._heartbeat_at)
+
+        if not alive:
+            max_restarts = int(getattr(self.settings, "voice_watchdog_max_restarts", 5))
+            if self._auto_restarts >= max_restarts:
+                logger.error("[voice] watchdog restart budget exhausted (%d)", self._auto_restarts)
+                with self._state_lock:
+                    self._last_error = f"watchdog_budget_exhausted:{self._auto_restarts}"
+                return False
+            logger.warning(
+                "[voice] loop thread died unexpectedly; auto-restarting (%d/%d)",
+                self._auto_restarts + 1,
+                max_restarts,
+            )
+            self._auto_restarts += 1
+            with self._state_lock:
+                self._last_error = "watchdog_restart"
+            started = self.start()
+            if started:
+                logger.info("[voice] loop restarted by watchdog")
+            return started
+
+        stale_after = max(15.0, float(getattr(self.settings, "voice_watchdog_stale_seconds", 90)))
+        if heartbeat_age > stale_after and (now - self._stale_warned_at) > 60.0:
+            self._stale_warned_at = now
+            logger.warning(
+                "[voice] loop silent for %.0fs (> %.0fs); will recover when current call returns",
+                heartbeat_age,
+                stale_after,
+            )
+            with self._state_lock:
+                self._last_error = f"stalled_{int(heartbeat_age)}s"
+        return False
 
     def status(self) -> dict[str, Any]:
         # speaker.status() serves cached audio info (COM refresh happens on a
@@ -139,6 +215,12 @@ class VoiceController:
                 "tts_block_active": time.time() <= self._tts_block_until,
                 "pending_whatsapp_confirmation": bool(self._pending_whatsapp_confirmation),
                 "last_normalization": self._last_normalization,
+                "heartbeat_age_seconds": (
+                    round(max(0.0, time.monotonic() - self._heartbeat_at), 1)
+                    if self._desired_running or self.is_running()
+                    else None
+                ),
+                "auto_restarts": self._auto_restarts,
             }
 
     def _speak_async(self, text: str) -> None:
@@ -236,131 +318,141 @@ class VoiceController:
         model = self.settings.groq_model
         self._speak_async(f"Hello Boss Sahu, running on {model}. How can I help you?")
         while not self._stop_event.is_set():
+            # Heartbeat for the watchdog; plain write is fine under the GIL.
+            self._heartbeat_at = time.monotonic()
             try:
-                result = self.listener.listen_once(stop_event=self._stop_event)
-            except Exception as exc:
-                with self._state_lock:
-                    self._last_activity_at = datetime.now(UTC).isoformat()
-                    self._last_error = str(exc)
+                self._run_loop_iteration()
+            except Exception:
+                # Never let an unexpected error kill the worker silently.
+                logger.exception("[voice] loop iteration failed")
                 time.sleep(0.5)
-                continue
 
+    def _run_loop_iteration(self) -> None:
+        try:
+            result = self.listener.listen_once(stop_event=self._stop_event)
+        except Exception as exc:
             with self._state_lock:
-                self._listen_attempts += 1
                 self._last_activity_at = datetime.now(UTC).isoformat()
+                self._last_error = str(exc)
+            time.sleep(0.5)
+            return
 
-            if result.issue:
-                with self._state_lock:
-                    if result.issue == "timeout":
-                        self._timeout_count += 1
-                    elif result.issue == "no_speech":
-                        pass
-                    elif result.issue == "garbled_transcript":
-                        self._unknown_audio_count += 1
-                    elif result.issue == "unknown_audio":
-                        self._unknown_audio_count += 1
-                    elif result.issue.startswith("request_error"):
-                        self._request_error_count += 1
-                        self._last_error = result.issue
-                    else:
-                        self._last_error = result.issue
-                continue
+        with self._state_lock:
+            self._listen_attempts += 1
+            self._last_activity_at = datetime.now(UTC).isoformat()
 
-            transcript = result.transcript or ""
-            if not transcript:
-                continue
-            if self._should_ignore_transcript(transcript):
-                continue
-
+        if result.issue:
             with self._state_lock:
-                self._last_transcript = transcript
-                self._recognized_count += 1
-                self._last_error = None
-
-            lowered = transcript.lower().strip()
-            if lowered.startswith("approve "):
-                approval_id = lowered.split("approve ", 1)[1].strip()
-                try:
-                    approval_response = self.orchestrator.approve(approval_id)
-                    message = approval_response.message
-                except Exception as exc:
-                    logger.exception("[voice] approval failed: %s", approval_id)
-                    message = f"Approval failed: {exc}"
-                logger.info("[voice] approval: %s", approval_id)
-                logger.info("[voice] response: %s", message)
-                self._speak_async(message[: self.settings.max_voice_response_chars])
-                continue
-
-            normalized = transcript.lower().strip()
-            wake = self.settings.wake_word.lower().strip()
-            if normalized in {f"{wake} sleep", "sleep", "go to sleep", "stop listening"}:
-                self._sticky_followup_active = False
-                self._followup_until = 0.0
-                self._pending_whatsapp_confirmation = None
-                self._speak_async("Follow-up mode off. Say jarvis to wake me again.")
-                continue
-
-            if normalized in {"cancel", "cancel that", "nevermind", "never mind", "stop"}:
-                self._pending_whatsapp_confirmation = None
-                self._followup_until = 0.0
-                self._speak_async("Canceled.")
-                continue
-
-            if normalized in {"confirm send", "send now", "yes send it"} and self._pending_whatsapp_confirmation:
-                pending = self._pending_whatsapp_confirmation
-                command = f"send whatsapp to {pending['phone']}: {pending['message']}"
-                execution = self._run_command(command)
-                self._pending_whatsapp_confirmation = None
-                logger.info("[voice] command: %s", command)
-                logger.info("[voice] response: %s", execution.response_text)
-                self._speak_async(execution.response_text[: self.settings.max_voice_response_chars])
-                continue
-
-            command, used_wake_word = self._extract_command(transcript)
-            if not command:
-                continue
-            if used_wake_word:
-                if self.settings.voice_followup_sticky_mode:
-                    self._sticky_followup_active = True
-                    self._followup_until = 0.0
+                if result.issue == "timeout":
+                    self._timeout_count += 1
+                elif result.issue == "no_speech":
+                    pass
+                elif result.issue == "garbled_transcript":
+                    self._unknown_audio_count += 1
+                elif result.issue == "unknown_audio":
+                    self._unknown_audio_count += 1
+                elif result.issue.startswith("request_error"):
+                    self._request_error_count += 1
+                    self._last_error = result.issue
                 else:
-                    self._followup_until = time.time() + max(0, int(self.settings.voice_followup_window_seconds))
+                    self._last_error = result.issue
+            return
 
-            canonical_command = self._normalize_for_understanding(command)
-            if canonical_command != command:
-                with self._state_lock:
-                    self._last_normalization = {"original": command, "canonical": canonical_command}
-                logger.info("[voice] normalized: '%s' -> '%s'", command, canonical_command)
-                command = canonical_command
+        transcript = result.transcript or ""
+        if not transcript:
+            return
+        if self._should_ignore_transcript(transcript):
+            return
 
-            with self._state_lock:
-                self._last_command = command
+        with self._state_lock:
+            self._last_transcript = transcript
+            self._recognized_count += 1
+            self._last_error = None
 
-            # Safer voice UX: draft WhatsApp message first, then require explicit send confirmation.
-            if self.settings.voice_confirm_before_send:
-                send_match = re.match(
-                    r"^(?:send\s+)?whatsapp(?:\s+message)?\s+to\s+(.+?)\s*[:\-]\s*(.+)$",
-                    command.strip(),
-                    flags=re.IGNORECASE,
-                )
-                if send_match:
-                    phone = send_match.group(1).strip()
-                    message = send_match.group(2).strip()
-                    draft_command = f"open whatsapp chat {phone}: {message}"
-                    execution = self.orchestrator.execute_command(command=draft_command, source="voice", auto_approve=False)
-                    self._pending_whatsapp_confirmation = {"phone": phone, "message": message}
-                    response = (
-                        f"{execution.response_text} Draft is ready. Say 'confirm send' to send now or 'cancel'."
-                    )
-                    logger.info("[voice] command: %s", draft_command)
-                    logger.info("[voice] response: %s", response)
-                    self._speak_async(response[: self.settings.max_voice_response_chars])
-                    continue
+        lowered = transcript.lower().strip()
+        if lowered.startswith("approve "):
+            approval_id = lowered.split("approve ", 1)[1].strip()
+            try:
+                approval_response = self.orchestrator.approve(approval_id)
+                message = approval_response.message
+            except Exception as exc:
+                logger.exception("[voice] approval failed: %s", approval_id)
+                message = f"Approval failed: {exc}"
+            logger.info("[voice] approval: %s", approval_id)
+            logger.info("[voice] response: %s", message)
+            self._speak_async(message[: self.settings.max_voice_response_chars])
+            return
 
+        normalized = transcript.lower().strip()
+        wake = self.settings.wake_word.lower().strip()
+        if normalized in {f"{wake} sleep", "sleep", "go to sleep", "stop listening"}:
+            self._sticky_followup_active = False
+            self._followup_until = 0.0
+            self._pending_whatsapp_confirmation = None
+            self._speak_async("Follow-up mode off. Say jarvis to wake me again.")
+            return
+
+        if normalized in {"cancel", "cancel that", "nevermind", "never mind", "stop"}:
+            self._pending_whatsapp_confirmation = None
+            self._followup_until = 0.0
+            self._speak_async("Canceled.")
+            return
+
+        if normalized in {"confirm send", "send now", "yes send it"} and self._pending_whatsapp_confirmation:
+            pending = self._pending_whatsapp_confirmation
+            command = f"send whatsapp to {pending['phone']}: {pending['message']}"
             execution = self._run_command(command)
+            self._pending_whatsapp_confirmation = None
             logger.info("[voice] command: %s", command)
             logger.info("[voice] response: %s", execution.response_text)
             self._speak_async(execution.response_text[: self.settings.max_voice_response_chars])
+            return
+
+        command, used_wake_word = self._extract_command(transcript)
+        if not command:
+            return
+        if used_wake_word:
+            if self.settings.voice_followup_sticky_mode:
+                self._sticky_followup_active = True
+                self._followup_until = 0.0
+            else:
+                self._followup_until = time.time() + max(0, int(self.settings.voice_followup_window_seconds))
+
+        canonical_command = self._normalize_for_understanding(command)
+        if canonical_command != command:
+            with self._state_lock:
+                self._last_normalization = {"original": command, "canonical": canonical_command}
+            logger.info("[voice] normalized: '%s' -> '%s'", command, canonical_command)
+            command = canonical_command
+
+        with self._state_lock:
+            self._last_command = command
+
+        # Safer voice UX: draft WhatsApp message first, then require explicit send confirmation.
+        if self.settings.voice_confirm_before_send:
+            send_match = re.match(
+                r"^(?:send\s+)?whatsapp(?:\s+message)?\s+to\s+(.+?)\s*[:\-]\s*(.+)$",
+                command.strip(),
+                flags=re.IGNORECASE,
+            )
+            if send_match:
+                phone = send_match.group(1).strip()
+                message = send_match.group(2).strip()
+                draft_command = f"open whatsapp chat {phone}: {message}"
+                execution = self.orchestrator.execute_command(command=draft_command, source="voice", auto_approve=False)
+                self._pending_whatsapp_confirmation = {"phone": phone, "message": message}
+                response = (
+                    f"{execution.response_text} Draft is ready. Say 'confirm send' to send now or 'cancel'."
+                )
+                logger.info("[voice] command: %s", draft_command)
+                logger.info("[voice] response: %s", response)
+                self._speak_async(response[: self.settings.max_voice_response_chars])
+                return
+
+        execution = self._run_command(command)
+        logger.info("[voice] command: %s", command)
+        logger.info("[voice] response: %s", execution.response_text)
+        self._speak_async(execution.response_text[: self.settings.max_voice_response_chars])
 
     def probe_once(self) -> dict[str, str | None]:
         result = self.listener.listen_once()

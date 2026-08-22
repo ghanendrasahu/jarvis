@@ -68,6 +68,9 @@ TOOLTIP_BORDER = SCENE = RING2 = ""
 
 _current_theme = "aurora"
 
+# Max agent-step widgets rendered per 80ms poll tick; storms collapse into one line.
+_AGENT_STEP_BUDGET_PER_TICK = 30
+
 
 def _apply_palette(theme: str) -> None:
     global _current_theme
@@ -415,7 +418,7 @@ class JarvisHudApp(QMainWindow):
         )
         self.mini.hide()
 
-        self._events: queue.Queue[tuple[str, Any]] = queue.Queue()
+        self._events: queue.Queue[tuple[str, Any]] = queue.Queue(maxsize=2000)
         self._busy = False
         self._busy_seq = 0
         self._done_seqs: set[int] = set()
@@ -441,7 +444,7 @@ class JarvisHudApp(QMainWindow):
         self._toaster = Toaster(self)
         self._tray = TrayIcon(on_show=self._tray_show, on_mini=self._tray_mini, on_exit=self._tray_exit)
         self._hotkey = GlobalHotkey()
-        if self._hotkey.start(lambda: self._events.put(("summon_mini", None))):
+        if self._hotkey.start(lambda: self._enqueue(("summon_mini", None))):
             self._append_terminal("SYS", "Global hotkey Ctrl+Shift+J registered.")
 
         self._poll_timer = QTimer(self)
@@ -479,7 +482,7 @@ class JarvisHudApp(QMainWindow):
     def _auto_start_voice(self) -> None:
         try:
             self.runtime.voice.start()
-            self._events.put(("voice", {"running": True, "changed": True}))
+            self._enqueue(("voice", {"running": True, "changed": True}))
         except Exception:
             pass
 
@@ -1027,6 +1030,22 @@ class JarvisHudApp(QMainWindow):
             self._done_seqs = {seq for seq in self._done_seqs if seq > self._busy_seq - 64}
         return self._busy_seq
 
+    def _enqueue(self, item: tuple[str, Any]) -> None:
+        """Thread-safe event enqueue that drops the oldest events when saturated.
+
+        Producers are background threads; blocking them on a full queue would
+        stall the very workers the HUD is reporting on.
+        """
+        while True:
+            try:
+                self._events.put_nowait(item)
+                return
+            except queue.Full:
+                try:
+                    self._events.get_nowait()
+                except queue.Empty:
+                    return
+
     def _clear_terminal(self) -> None:
         self.terminal.clear()
 
@@ -1062,7 +1081,7 @@ class JarvisHudApp(QMainWindow):
         seq = self._next_busy_seq()
 
         def watchdog() -> None:
-            self._events.put(("command_timeout", seq))
+            self._enqueue(("command_timeout", seq))
 
         deadline = max(5, int(getattr(self.runtime.settings, "command_busy_timeout_seconds", 180)))
         timer = threading.Timer(deadline, watchdog)
@@ -1074,11 +1093,11 @@ class JarvisHudApp(QMainWindow):
                     command=command,
                     source="gui",
                     auto_approve=False,
-                    on_step=lambda step: self._events.put(("agent_step", step)),
+                    on_step=lambda step: self._enqueue(("agent_step", step)),
                 )
-                self._events.put(("command_result", (seq, result.model_dump())))
+                self._enqueue(("command_result", (seq, result.model_dump())))
             except Exception as exc:
-                self._events.put(("error", str(exc)))
+                self._enqueue(("error", str(exc)))
             finally:
                 timer.cancel()
 
@@ -1122,12 +1141,12 @@ class JarvisHudApp(QMainWindow):
             try:
                 if self.runtime.voice.is_running():
                     changed = self.runtime.voice.stop()
-                    self._events.put(("voice", {"running": False, "changed": changed}))
+                    self._enqueue(("voice", {"running": False, "changed": changed}))
                 else:
                     changed = self.runtime.voice.start()
-                    self._events.put(("voice", {"running": True, "changed": changed}))
+                    self._enqueue(("voice", {"running": True, "changed": changed}))
             except Exception as exc:
-                self._events.put(("error", str(exc)))
+                self._enqueue(("error", str(exc)))
 
         threading.Thread(target=worker, daemon=True).start()
 
@@ -1170,9 +1189,9 @@ class JarvisHudApp(QMainWindow):
                     payload["recent"] = recent.get("items", [])
                 except Exception:
                     pass
-                self._events.put(("job_status", payload))
+                self._enqueue(("job_status", payload))
             except Exception as exc:
-                self._events.put(("error", str(exc)))
+                self._enqueue(("error", str(exc)))
 
         threading.Thread(target=worker, daemon=True).start()
 
@@ -1182,10 +1201,10 @@ class JarvisHudApp(QMainWindow):
         def worker() -> None:
             try:
                 payload = self.runtime.registry.execute("job_cancel", {})
-                self._events.put(("job_status", payload))
-                self._events.put(("job_msg", payload.get("result_text", "Job task canceled.")))
+                self._enqueue(("job_status", payload))
+                self._enqueue(("job_msg", payload.get("result_text", "Job task canceled.")))
             except Exception as exc:
-                self._events.put(("error", str(exc)))
+                self._enqueue(("error", str(exc)))
 
         threading.Thread(target=worker, daemon=True).start()
 
@@ -1195,10 +1214,10 @@ class JarvisHudApp(QMainWindow):
         def worker() -> None:
             try:
                 payload = self.runtime.registry.execute("job_resume", {})
-                self._events.put(("job_status", payload))
-                self._events.put(("job_msg", payload.get("result_text", "Job task resumed.")))
+                self._enqueue(("job_status", payload))
+                self._enqueue(("job_msg", payload.get("result_text", "Job task resumed.")))
             except Exception as exc:
-                self._events.put(("error", str(exc)))
+                self._enqueue(("error", str(exc)))
 
         threading.Thread(target=worker, daemon=True).start()
 
@@ -1248,9 +1267,9 @@ class JarvisHudApp(QMainWindow):
         def worker() -> None:
             try:
                 items = [i.model_dump() for i in self.runtime.orchestrator.list_pending_approvals()]
-                self._events.put(("approvals", items))
+                self._enqueue(("approvals", items))
             except Exception as exc:
-                self._events.put(("error", str(exc)))
+                self._enqueue(("error", str(exc)))
 
         threading.Thread(target=worker, daemon=True).start()
 
@@ -1308,9 +1327,9 @@ class JarvisHudApp(QMainWindow):
         def worker() -> None:
             try:
                 res = self.runtime.orchestrator.approve(approval_id)
-                self._events.put(("approval_result", res.model_dump()))
+                self._enqueue(("approval_result", res.model_dump()))
             except Exception as exc:
-                self._events.put(("error", str(exc)))
+                self._enqueue(("error", str(exc)))
 
         threading.Thread(target=worker, daemon=True).start()
 
@@ -1320,9 +1339,9 @@ class JarvisHudApp(QMainWindow):
         def worker() -> None:
             try:
                 res = self.runtime.orchestrator.reject(approval_id)
-                self._events.put(("approval_result", res.model_dump()))
+                self._enqueue(("approval_result", res.model_dump()))
             except Exception as exc:
-                self._events.put(("error", str(exc)))
+                self._enqueue(("error", str(exc)))
 
         threading.Thread(target=worker, daemon=True).start()
 
@@ -1334,9 +1353,9 @@ class JarvisHudApp(QMainWindow):
         def worker() -> None:
             try:
                 payload = self.runtime.registry.execute("diagnose_system", {})
-                self._events.put(("diagnosis", payload))
+                self._enqueue(("diagnosis", payload))
             except Exception as exc:
-                self._events.put(("diagnosis_error", str(exc)))
+                self._enqueue(("diagnosis_error", str(exc)))
 
         threading.Thread(target=worker, daemon=True).start()
 
@@ -1364,7 +1383,7 @@ class JarvisHudApp(QMainWindow):
 
     def _on_hub_event(self, topic: str, payload: dict[str, Any]) -> None:
         if topic in {"command_start", "command_done", "agent_step", "approval", "scheduler_run"}:
-            self._events.put(("hub_event", (topic, payload)))
+            self._enqueue(("hub_event", (topic, payload)))
 
     def _handle_hub_event(self, topic: str, payload: dict[str, Any]) -> None:
         text = ""
@@ -1432,12 +1451,20 @@ class JarvisHudApp(QMainWindow):
             self._append_feed("feed_cmd", f"▸ agent: {tool} done")
 
     def _poll_events(self) -> None:
+        rendered_agent_steps = 0
+        dropped_agent_steps = 0
         while True:
             try:
                 event, payload = self._events.get_nowait()
             except queue.Empty:
                 break
-            if event == "command_result":
+            if event == "agent_step":
+                # Cap per-tick widget churn during agent step storms.
+                if rendered_agent_steps >= _AGENT_STEP_BUDGET_PER_TICK:
+                    dropped_agent_steps += 1
+                    continue
+                rendered_agent_steps += 1
+            elif event == "command_result":
                 seq, payload = payload
                 self._done_seqs.add(seq)
                 self._handle_command_result(payload)
@@ -1463,6 +1490,12 @@ class JarvisHudApp(QMainWindow):
                 self._raise_main_window()
                 self.mini.show()
                 self._toaster.notify("JARVIS", "Mini HUD summoned — Ctrl+Shift+J", CYAN, duration_ms=2500)
+            elif event == "tray_show":
+                self._raise_main_window()
+            elif event == "tray_mini":
+                self.mini.show()
+            elif event == "tray_exit":
+                self._request_quit()
             elif event == "approval_result":
                 self._set_busy(False)
                 self._append_terminal("OK", payload.get("message", ""))
@@ -1514,6 +1547,8 @@ class JarvisHudApp(QMainWindow):
                 self._set_busy(False)
                 self._append_terminal("ERR", str(payload))
                 self._toaster.notify("JARVIS error", str(payload), RED)
+        if dropped_agent_steps:
+            self._append_feed("feed_pending", f"… {dropped_agent_steps} agent steps collapsed (rate-limited)")
 
     # ------------------------------------------------------------ app launcher
 
@@ -1521,9 +1556,9 @@ class JarvisHudApp(QMainWindow):
         def worker() -> None:
             try:
                 payload = self.runtime.registry.execute("list_known_apps", {})
-                self._events.put(("app_launcher", payload))
+                self._enqueue(("app_launcher", payload))
             except Exception as exc:
-                self._events.put(("error", str(exc)))
+                self._enqueue(("error", str(exc)))
 
         threading.Thread(target=worker, daemon=True).start()
 
@@ -1616,11 +1651,11 @@ class JarvisHudApp(QMainWindow):
                     ans = (plan.final_response or "").strip()
                     if not ans:
                         ans = self.runtime.orchestrator.execute_command(command=q, source="gui_chat", auto_approve=False).response_text
-                    self._events.put(("chat_stream_chunk", ans))
-                    self._events.put(("chat_stream_done", ans))
+                    self._enqueue(("chat_stream_chunk", ans))
+                    self._enqueue(("chat_stream_done", ans))
             except Exception as exc:
-                self._events.put(("chat_stream_chunk", f"Error: {exc}"))
-                self._events.put(("chat_stream_done", f"Error: {exc}"))
+                self._enqueue(("chat_stream_chunk", f"Error: {exc}"))
+                self._enqueue(("chat_stream_done", f"Error: {exc}"))
 
         threading.Thread(target=worker, daemon=True).start()
 
@@ -1643,8 +1678,8 @@ class JarvisHudApp(QMainWindow):
             if not delta:
                 continue
             built.append(delta)
-            self._events.put(("chat_stream_chunk", delta))
-        self._events.put(("chat_stream_done", "".join(built).strip()))
+            self._enqueue(("chat_stream_chunk", delta))
+        self._enqueue(("chat_stream_done", "".join(built).strip()))
         return True
 
     # ------------------------------------------------------------ hotkeys
@@ -1663,7 +1698,7 @@ class JarvisHudApp(QMainWindow):
     # ------------------------------------------------------------ scheduler
 
     def _scheduler_on_run(self, job: dict[str, Any], status: str, text: str) -> None:
-        self._events.put(("sched_run", (job, status, text)))
+        self._enqueue(("sched_run", (job, status, text)))
         announce = self._scheduler_announce
         if announce is not None:
             try:
@@ -1749,9 +1784,9 @@ class JarvisHudApp(QMainWindow):
         def worker() -> None:
             try:
                 jobs = self.runtime.scheduler.list_jobs()
-                self._events.put(("sched_list", jobs))
+                self._enqueue(("sched_list", jobs))
             except Exception as exc:
-                self._events.put(("error", str(exc)))
+                self._enqueue(("error", str(exc)))
 
         threading.Thread(target=worker, daemon=True).start()
 
@@ -1779,10 +1814,10 @@ class JarvisHudApp(QMainWindow):
         def worker() -> None:
             try:
                 job = self.runtime.scheduler.add(command=command, recurrence=recurrence)
-                self._events.put(("sched_added", job.get("id", "")))
-                self._events.put(("sched_list", self.runtime.scheduler.list_jobs()))
+                self._enqueue(("sched_added", job.get("id", "")))
+                self._enqueue(("sched_list", self.runtime.scheduler.list_jobs()))
             except Exception as exc:
-                self._events.put(("sched_error", str(exc)))
+                self._enqueue(("sched_error", str(exc)))
 
         threading.Thread(target=worker, daemon=True).start()
 
@@ -1797,9 +1832,9 @@ class JarvisHudApp(QMainWindow):
         def worker() -> None:
             try:
                 self.runtime.scheduler.remove(job_id)
-                self._events.put(("sched_list", self.runtime.scheduler.list_jobs()))
+                self._enqueue(("sched_list", self.runtime.scheduler.list_jobs()))
             except Exception as exc:
-                self._events.put(("sched_error", str(exc)))
+                self._enqueue(("sched_error", str(exc)))
 
         threading.Thread(target=worker, daemon=True).start()
 
@@ -1816,9 +1851,9 @@ class JarvisHudApp(QMainWindow):
                     self.runtime.scheduler.set_enabled(job_id, False)
                 else:
                     self.runtime.scheduler.set_enabled(job_id, True)
-                self._events.put(("sched_list", self.runtime.scheduler.list_jobs()))
+                self._enqueue(("sched_list", self.runtime.scheduler.list_jobs()))
             except Exception as exc:
-                self._events.put(("sched_error", str(exc)))
+                self._enqueue(("sched_error", str(exc)))
 
         threading.Thread(target=worker, daemon=True).start()
 
@@ -1854,9 +1889,9 @@ class JarvisHudApp(QMainWindow):
                     "tools": self.runtime.orchestrator.get_tool_history(limit=80),
                     "metrics": self.runtime.orchestrator.get_metrics(limit=500),
                 }
-                self._events.put(("history_data", data))
+                self._enqueue(("history_data", data))
             except Exception as exc:
-                self._events.put(("error", str(exc)))
+                self._enqueue(("error", str(exc)))
 
         threading.Thread(target=worker, daemon=True).start()
 
@@ -1969,9 +2004,9 @@ class JarvisHudApp(QMainWindow):
         def worker() -> None:
             try:
                 payload = self.runtime.registry.execute("task_list", {"limit": 50})
-                self._events.put(("tasks_list", payload))
+                self._enqueue(("tasks_list", payload))
             except Exception as exc:
-                self._events.put(("error", str(exc)))
+                self._enqueue(("error", str(exc)))
 
         threading.Thread(target=worker, daemon=True).start()
 
@@ -1999,9 +2034,9 @@ class JarvisHudApp(QMainWindow):
         def worker() -> None:
             try:
                 payload = self.runtime.registry.execute("task_status", {"task_id": task_id})
-                self._events.put(("task_detail", payload))
+                self._enqueue(("task_detail", payload))
             except Exception as exc:
-                self._events.put(("error", str(exc)))
+                self._enqueue(("error", str(exc)))
 
         threading.Thread(target=worker, daemon=True).start()
 
@@ -2072,9 +2107,9 @@ class JarvisHudApp(QMainWindow):
             try:
                 episodes = self.runtime.registry.execute("memory_list", {"limit": 25})
                 knowledge = self.runtime.registry.execute("knowledge_stats", {})
-                self._events.put(("memory_data", {"episodes": episodes, "knowledge": knowledge}))
+                self._enqueue(("memory_data", {"episodes": episodes, "knowledge": knowledge}))
             except Exception as exc:
-                self._events.put(("error", str(exc)))
+                self._enqueue(("error", str(exc)))
 
         threading.Thread(target=worker, daemon=True).start()
 
@@ -2110,9 +2145,9 @@ class JarvisHudApp(QMainWindow):
         def worker() -> None:
             try:
                 payload = self.runtime.registry.execute("recall", {"query": query, "top_k": 8})
-                self._events.put(("memory_search", payload))
+                self._enqueue(("memory_search", payload))
             except Exception as exc:
-                self._events.put(("error", str(exc)))
+                self._enqueue(("error", str(exc)))
 
         threading.Thread(target=worker, daemon=True).start()
 
@@ -2406,13 +2441,14 @@ class JarvisHudApp(QMainWindow):
         self.hide()
 
     def _tray_show(self) -> None:
-        QTimer.singleShot(0, self._raise_main_window)
+        # pystray invokes this on its own thread - never touch Qt from here.
+        self._enqueue(("tray_show", None))
 
     def _tray_mini(self) -> None:
-        QTimer.singleShot(0, self.mini.show)
+        self._enqueue(("tray_mini", None))
 
     def _tray_exit(self) -> None:
-        QTimer.singleShot(0, self._request_quit)
+        self._enqueue(("tray_exit", None))
 
     def _request_quit(self) -> None:
         self._on_close()
@@ -2494,8 +2530,15 @@ class JarvisHudApp(QMainWindow):
         event.accept()
 
     def _on_close(self) -> None:
+        # Persist UI state and close windows first so the HUD disappears
+        # instantly; remaining teardown happens behind a dead window.
+        self._save_ui_config()
         try:
-            self.runtime.voice.stop()
+            self.mini.close()
+        except Exception:
+            pass
+        try:
+            self.runtime.voice.stop(timeout=2.0)
         except Exception:
             pass
         try:
@@ -2513,11 +2556,6 @@ class JarvisHudApp(QMainWindow):
             pass
         try:
             self._tray.stop()
-        except Exception:
-            pass
-        self._save_ui_config()
-        try:
-            self.mini.close()
         except Exception:
             pass
 

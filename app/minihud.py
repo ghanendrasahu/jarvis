@@ -245,6 +245,7 @@ class MiniHud(QWidget):
         self._active_command = ""
         self._last_status = ""
         self._wave_phase = 0.0
+        self._mic_state_dirty = False
 
         self.setAttribute(Qt.WidgetAttribute.WA_TranslucentBackground)
         self.setFixedWidth(340)
@@ -379,9 +380,9 @@ class MiniHud(QWidget):
                     self.runtime.voice.start()
             except Exception:
                 pass
-            QTimer.singleShot(0, lambda: self.mic_btn.update_status(
-                self.runtime.voice.is_running()
-            ))
+            # Never touch Qt widgets/timers from this worker thread; the
+            # GUI-thread tick timer picks up the flag and refreshes the button.
+            self._mic_state_dirty = True
 
         threading.Thread(target=worker, daemon=True).start()
 
@@ -440,6 +441,9 @@ class MiniHud(QWidget):
                 status = self.runtime.voice.status()
             except Exception:
                 status = {}
+            if getattr(self, "_mic_state_dirty", False):
+                self._mic_state_dirty = False
+                self.mic_btn.update_status(bool(status.get("running")))
             phase, color, _, _ = voice_phase(status)
             self.dot.setStyleSheet(f"color: {color}; font-size: 14px;")
 

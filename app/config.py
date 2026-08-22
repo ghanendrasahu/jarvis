@@ -113,6 +113,11 @@ class Settings(BaseSettings):
     voice_semantic_model: str = ""  # empty = provider default (groq/cerebras: llama-3.1-8b-instant)
     voice_semantic_timeout_seconds: int = 5
     voice_fuzzy_target_score: int = 75
+    # Voice-loop resilience (watchdog): auto-restart a crashed loop thread;
+    # warn when the loop is silent longer than stale_seconds (cannot preempt).
+    voice_watchdog_enabled: bool = True
+    voice_watchdog_stale_seconds: int = 90
+    voice_watchdog_max_restarts: int = 5
     # HUD watchdog: clear a stuck command/busy state after this many seconds.
     command_busy_timeout_seconds: int = 180
 
