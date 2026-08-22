@@ -417,6 +417,8 @@ class JarvisHudApp(QMainWindow):
 
         self._events: queue.Queue[tuple[str, Any]] = queue.Queue()
         self._busy = False
+        self._busy_seq = 0
+        self._done_seqs: set[int] = set()
         self._scene_angle = 0.0
         self._pending_ids: list[str] = []
         self._chat_streaming = False
@@ -1018,6 +1020,13 @@ class JarvisHudApp(QMainWindow):
         self._busy = busy
         self.run_button.setEnabled(not busy)
 
+    def _next_busy_seq(self) -> int:
+        """Allocate the watchdog token for a new command run."""
+        self._busy_seq += 1
+        if len(self._done_seqs) > 64:
+            self._done_seqs = {seq for seq in self._done_seqs if seq > self._busy_seq - 64}
+        return self._busy_seq
+
     def _clear_terminal(self) -> None:
         self.terminal.clear()
 
@@ -1050,6 +1059,14 @@ class JarvisHudApp(QMainWindow):
         self._append_feed("feed_cmd", f"▶ {command}")
         self.mini.notify_command(command)
         self._set_busy(True)
+        seq = self._next_busy_seq()
+
+        def watchdog() -> None:
+            self._events.put(("command_timeout", seq))
+
+        deadline = max(5, int(getattr(self.runtime.settings, "command_busy_timeout_seconds", 180)))
+        timer = threading.Timer(deadline, watchdog)
+        timer.daemon = True
 
         def worker() -> None:
             try:
@@ -1059,10 +1076,13 @@ class JarvisHudApp(QMainWindow):
                     auto_approve=False,
                     on_step=lambda step: self._events.put(("agent_step", step)),
                 )
-                self._events.put(("command_result", result.model_dump()))
+                self._events.put(("command_result", (seq, result.model_dump())))
             except Exception as exc:
                 self._events.put(("error", str(exc)))
+            finally:
+                timer.cancel()
 
+        timer.start()
         threading.Thread(target=worker, daemon=True).start()
 
     def _push_history(self, command: str) -> None:
@@ -1418,7 +1438,17 @@ class JarvisHudApp(QMainWindow):
             except queue.Empty:
                 break
             if event == "command_result":
+                seq, payload = payload
+                self._done_seqs.add(seq)
                 self._handle_command_result(payload)
+            elif event == "command_timeout":
+                seq = int(payload)
+                if seq not in self._done_seqs:
+                    deadline = max(5, int(getattr(self.runtime.settings, "command_busy_timeout_seconds", 180)))
+                    self._set_busy(False)
+                    self._append_terminal("ERR", f"Command exceeded the {deadline}s busy deadline; input re-enabled. It may still be running in the background.")
+                    self._append_feed("feed_err", f"✗ command timed out after {deadline}s")
+                    self._toaster.notify("Command timeout", f"No result after {deadline}s.", RED)
             elif event == "agent_step":
                 self._handle_agent_step(payload)
             elif event == "voice":
@@ -1601,7 +1631,7 @@ class JarvisHudApp(QMainWindow):
             from openai import OpenAI
         except Exception:
             return False
-        client = OpenAI(api_key=self.runtime.settings.openai_api_key)
+        client = OpenAI(api_key=self.runtime.settings.openai_api_key, timeout=120.0, max_retries=0)
         model = str(getattr(self.runtime.settings, "openai_model", "gpt-4.1-mini"))
         msgs: list[Any] = [{"role": "system", "content": "You are AI Bot inside Jarvis HUD. Keep answers concise and useful."}]
         msgs.extend(self._chat_history[-10:])
@@ -2547,7 +2577,7 @@ def main() -> None:
     window = JarvisHudApp(app)
     try:
         window.run()
-    except Exception as exc:
+    except Exception:
         import traceback
         traceback.print_exc()
         raise

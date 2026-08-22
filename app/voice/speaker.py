@@ -2,9 +2,12 @@ from __future__ import annotations
 
 import os
 import subprocess
+import threading
 import time
 from threading import Lock
 from typing import Any
+
+_AUDIO_OUTPUTS_TTL_SECONDS = 300.0
 
 
 class Speaker:
@@ -19,7 +22,7 @@ class Speaker:
         self.enabled = enabled
         self._lock = Lock()
         self._engine = None
-        self._engine_name = "disabled"
+        self._engine_name = "uninitialized"
         self._last_error: str | None = None
         self._mode: str = mode or ("sapi" if os.name == "nt" else "pyttsx3")
         self._preferred_output_index: int | None = None
@@ -29,32 +32,28 @@ class Speaker:
         self._kokoro_speed = kokoro_speed
         self._audio_outputs_cache: dict[str, Any] | None = None
         self._audio_outputs_ts: float = 0.0
+        # Audio-output enumeration uses SAPI COM; never do it on a caller that
+        # may be the GUI thread - status() serves the cache and a daemon
+        # thread refreshes it in the background.
+        self._audio_refresh_lock = Lock()
+        self._audio_refresh_inflight = False
+        self._audio_refresh_last_attempt = 0.0
 
-        if enabled and self._mode != "kokoro":
-            # When mode is None (default), JARVIS configures tts_engine=kokoro
-            # Attempt Kokoro initialization first since it's the configured default
-            if mode is None:
-                try:
-                    from kokoro import KPipeline
-                    self._kokoro_pipeline = KPipeline(lang_code=self._kokoro_lang_code)
-                    self._engine_name = "kokoro"
-                    self._mode = "kokoro"
-                except Exception as kokoro_exc:
-                    self._last_error = f"kokoro_init_failed: {kokoro_exc}"
-                    self._kokoro_pipeline = None
-            # Fall back to original SAPI/pyttsx3 initialization if Kokoro not available
-            if self._mode != "kokoro":
-                try:
-                    import pyttsx3
+    def _ensure_pyttsx3_engine(self):
+        """Initialize pyttsx3 lazily on the calling (TTS) thread, never at startup."""
+        if self._engine is not None:
+            return self._engine
+        try:
+            import pyttsx3
 
-                    self._engine = pyttsx3.init()
-                    self._engine.setProperty("rate", 190)
-                    self._engine_name = "pyttsx3"
-                except Exception as exc:
-                    self._last_error = f"pyttsx3_init_failed: {exc}"
-                    self._engine = None
-                    self._engine_name = "windows_sapi_fallback"
-                    self._mode = "sapi"
+            engine = pyttsx3.init()
+            engine.setProperty("rate", 190)
+            self._engine = engine
+            self._engine_name = "pyttsx3"
+        except Exception as exc:
+            self._last_error = f"pyttsx3_init_failed: {exc}"
+            self._engine = None
+        return self._engine
 
     def _init_kokoro(self) -> None:
         try:
@@ -106,7 +105,7 @@ class Speaker:
             self._preferred_output_index = None
             self._audio_outputs_cache = None
             return self.status()
-        audio_info = self._audio_outputs()
+        audio_info = self._audio_outputs(force=True)
         count = int(audio_info["count"])
         if index < 0 or index >= count:
             raise ValueError(f"Invalid output index {index}.")
@@ -114,10 +113,42 @@ class Speaker:
         self._audio_outputs_cache = None
         return self.status()
 
-    def _audio_outputs(self) -> dict[str, Any]:
+    def _audio_outputs(self, force: bool = False) -> dict[str, Any]:
+        """Return cached audio-output info; never block the caller on COM.
+
+        ``force=True`` enumerates synchronously and must only be used from
+        threads that may legitimately block (TTS worker, explicit settings
+        actions). Otherwise a stale cache is served and a daemon thread
+        refreshes it in the background.
+        """
         now = time.monotonic()
-        if self._audio_outputs_cache is not None and (now - self._audio_outputs_ts) < 30.0:
-            return self._audio_outputs_cache
+        cache = self._audio_outputs_cache
+        if not force and cache is not None and (now - self._audio_outputs_ts) < _AUDIO_OUTPUTS_TTL_SECONDS:
+            return cache
+        if force:
+            self._refresh_audio_outputs()
+            return self._audio_outputs_cache or {"count": 0, "devices": []}
+        self._schedule_audio_refresh()
+        return cache or {"count": 0, "devices": []}
+
+    def _schedule_audio_refresh(self) -> None:
+        with self._audio_refresh_lock:
+            now = time.monotonic()
+            if self._audio_refresh_inflight or (now - self._audio_refresh_last_attempt) < 10.0:
+                return
+            self._audio_refresh_inflight = True
+            self._audio_refresh_last_attempt = now
+
+        def _worker() -> None:
+            try:
+                self._refresh_audio_outputs()
+            finally:
+                with self._audio_refresh_lock:
+                    self._audio_refresh_inflight = False
+
+        threading.Thread(target=_worker, daemon=True, name="jarvis-audio-outputs").start()
+
+    def _refresh_audio_outputs(self) -> None:
         try:
             import win32com.client
 
@@ -128,8 +159,7 @@ class Speaker:
         except Exception:
             result = {"count": 0, "devices": []}
         self._audio_outputs_cache = result
-        self._audio_outputs_ts = now
-        return result
+        self._audio_outputs_ts = time.monotonic()
 
     def _speak_sapi_direct(self, text: str) -> bool:
         try:
@@ -219,7 +249,8 @@ class Speaker:
             if self._mode == "kokoro":
                 if self._speak_kokoro(text):
                     return
-            audio_info = self._audio_outputs()
+            # TTS runs on worker threads, so a synchronous enumeration is safe here.
+            audio_info = self._audio_outputs(force=True)
             if audio_info["count"] == 0:
                 self._last_error = "no_audio_output_device_visible_to_runtime"
                 try:
@@ -232,14 +263,15 @@ class Speaker:
             if self._mode == "sapi":
                 if self._speak_sapi_direct(text):
                     return
-            if self._engine is not None:
+            engine = self._ensure_pyttsx3_engine()
+            if engine is not None:
                 try:
                     if self._mode != "pyttsx3" and self._preferred_output_index is not None:
                         # If routing is explicit, prefer sapi direct over pyttsx3.
                         if self._speak_sapi_direct(text):
                             return
-                    self._engine.say(text)
-                    self._engine.runAndWait()
+                    engine.say(text)
+                    engine.runAndWait()
                     self._last_error = None
                     self._engine_name = "pyttsx3"
                     return

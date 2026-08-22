@@ -109,6 +109,10 @@ class VoiceController:
             return True
 
     def status(self) -> dict[str, Any]:
+        # speaker.status() serves cached audio info (COM refresh happens on a
+        # daemon thread), and listener device accessors are lock-free
+        # snapshots - nothing here may block against an active mic capture.
+        speaker_status = self.speaker.status()
         with self._state_lock:
             return {
                 "running": self.is_running(),
@@ -119,7 +123,7 @@ class VoiceController:
                 "mic_device_index": self.listener.device_index,
                 "mic_device_name": self.listener.get_device_name(),
                 "tts_enabled": self.speaker.enabled,
-                "speaker": self.speaker.status(),
+                "speaker": speaker_status,
                 "started_at": self._started_at,
                 "last_activity_at": self._last_activity_at,
                 "last_transcript": self._last_transcript,

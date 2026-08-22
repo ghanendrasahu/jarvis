@@ -54,6 +54,8 @@ class Settings(BaseSettings):
     llm_max_retries: int = 2
     llm_retry_base_delay: float = 1.0
     llm_timeout_seconds: int = 30
+    # Hard wall-clock budget for a full planner fallback chain (all providers+retries).
+    llm_fallback_deadline_seconds: int = 180
 
     # Cerebras (free, 60K TPM — 7.5x more than Groq's free tier).
     cerebras_api_key: str | None = None
@@ -111,6 +113,8 @@ class Settings(BaseSettings):
     voice_semantic_model: str = ""  # empty = provider default (groq/cerebras: llama-3.1-8b-instant)
     voice_semantic_timeout_seconds: int = 5
     voice_fuzzy_target_score: int = 75
+    # HUD watchdog: clear a stuck command/busy state after this many seconds.
+    command_busy_timeout_seconds: int = 180
 
     # Kokoro-82M TTS engine (pip install -e .[tts] + espeak-ng system package).
     # Speaker mode: "sapi" | "pyttsx3" | "kokoro"

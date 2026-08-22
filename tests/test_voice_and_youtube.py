@@ -2,7 +2,10 @@ from __future__ import annotations
 
 import threading
 import time
+from typing import cast
 
+from app.config import Settings
+from app.core.orchestrator import JarvisOrchestrator
 from app.core.router import DirectCommandRouter
 from app.tools.system_tools import resolve_open_target
 from app.voice.listener import VoiceListener
@@ -73,7 +76,10 @@ def test_voice_controller_start_stop_is_single_thread() -> None:
         voice_followup_window_seconds = 10
         voice_confirm_before_send = False
 
-    controller = VoiceController(_Settings(), _DummyOrchestrator())
+    controller = VoiceController(
+        cast(Settings, _Settings()),
+        cast(JarvisOrchestrator, _DummyOrchestrator()),
+    )
 
     entered = threading.Event()
 

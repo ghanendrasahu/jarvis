@@ -138,7 +138,9 @@ class OpenAIPlanner:
         self.model = model or settings.openai_model
         from openai import OpenAI
 
-        self.client = OpenAI(api_key=settings.openai_api_key)
+        # Explicit per-attempt timeout + capped retries: SDK defaults are 600s
+        # with 2 retries, which can hang a command worker for ~30 minutes.
+        self.client = OpenAI(api_key=settings.openai_api_key, timeout=60.0, max_retries=1)
 
     def plan(
         self,
@@ -194,6 +196,8 @@ class GroqPlanner:
         self.client = OpenAI(
             api_key=settings.groq_api_key,
             base_url=settings.groq_base_url,
+            timeout=60.0,
+            max_retries=1,
         )
 
     def plan(
@@ -256,6 +260,8 @@ class CerebrasPlanner:
         self.client = OpenAI(
             api_key=settings.cerebras_api_key,
             base_url=settings.cerebras_base_url,
+            timeout=60.0,
+            max_retries=1,
         )
 
     def plan(
@@ -303,6 +309,8 @@ class OpenRouterPlanner:
         self.client = OpenAI(
             api_key=settings.openrouter_api_key,
             base_url=settings.openrouter_base_url,
+            timeout=60.0,
+            max_retries=1,
         )
 
     def plan(
@@ -499,11 +507,15 @@ class FallbackPlanner:
         fallbacks: list[BasePlanner],
         max_retries: int = 2,
         retry_base_delay: float = 1.0,
+        deadline_seconds: float = 180.0,
     ) -> None:
         self._primary = primary
         self._fallbacks = fallbacks
         self._max_retries = max_retries
         self._retry_base_delay = retry_base_delay
+        # Hard wall-clock budget across all providers/retries so a chain of
+        # slow providers can never block a caller indefinitely.
+        self._deadline_seconds = max(1.0, float(deadline_seconds))
         self._last_provider: str = ""
         self._last_error: str = ""
 
@@ -517,10 +529,14 @@ class FallbackPlanner:
         known_facts: dict | None = None,
         rag_context: str = "",
     ) -> Plan:
+        started = time.monotonic()
         providers = [self._primary] + self._fallbacks
         last_exc: Exception | None = None
 
         for provider_idx, planner in enumerate(providers):
+            if time.monotonic() - started >= self._deadline_seconds:
+                logger.warning("planner deadline (%.0fs) reached before %s", self._deadline_seconds, type(planner).__name__)
+                break
             provider_name = type(planner).__name__
             attempts = self._max_retries + 1 if provider_idx > 0 else 1
 
@@ -557,8 +573,10 @@ class FallbackPlanner:
                         break
 
                     if code in _RETRYABLE_ERRORS and attempt < attempts - 1:
-                        # Transient error — retry with backoff
                         delay = self._retry_base_delay * (2 ** attempt)
+                        remaining = self._deadline_seconds - (time.monotonic() - started)
+                        if delay >= remaining:
+                            break
                         logger.info("retrying %s in %.1fs...", provider_name, delay)
                         time.sleep(delay)
                         continue
@@ -693,4 +711,5 @@ def create_planner(settings: Settings, for_agent: bool = False) -> BasePlanner:
         fallbacks=fallbacks,
         max_retries=settings.llm_max_retries,
         retry_base_delay=settings.llm_retry_base_delay,
+        deadline_seconds=float(getattr(settings, "llm_fallback_deadline_seconds", 180)),
     )

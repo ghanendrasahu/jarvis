@@ -64,6 +64,10 @@ class VoiceListener:
         self._recognizer: Any = None
         self._backend = "groq_whisper" if bool(settings.groq_api_key) else "google_web_speech"
         self._device_index: int | None = None
+        # Plain-attribute snapshots readable without _mic_lock so GUI status
+        # polls never contend with an active capture cycle (GIL-atomic reads).
+        self._device_index_snapshot: int | None = None
+        self._device_name_snapshot: str | None = None
         self._mic_lock = threading.RLock()
         self._microphone_names_cache: list[str] | None = None
         self._device_name_cache: dict[int, str] = {}
@@ -94,14 +98,21 @@ class VoiceListener:
     def backend(self) -> str:
         return self._backend
 
+    def _publish_device_snapshot_locked(self) -> None:
+        """Refresh the lock-free snapshots. Callers must hold _mic_lock."""
+        self._device_index_snapshot = self._device_index
+        self._device_name_snapshot = (
+            self._device_name_cache.get(self._device_index) if self._device_index is not None else None
+        )
+
     @property
     def device_index(self) -> int | None:
-        with self._mic_lock:
-            return self._device_index
+        return self._device_index_snapshot
 
     def set_device_index(self, index: int | None) -> None:
         with self._mic_lock:
             self._device_index = index
+            self._publish_device_snapshot_locked()
 
     def list_microphones(self) -> list[str]:
         """Return microphone names, caching the PyAudio enumeration."""
@@ -115,25 +126,11 @@ class VoiceListener:
             self._device_name_cache = {
                 index: name for index, name in enumerate(self._microphone_names_cache)
             }
+            self._publish_device_snapshot_locked()
             return list(self._microphone_names_cache)
 
     def get_device_name(self) -> str | None:
-        with self._mic_lock:
-            if self._device_index is None:
-                return None
-
-            cached = self._device_name_cache.get(self._device_index)
-            if cached is not None:
-                return cached
-
-            if self._microphone_names_cache is None:
-                return None
-            if self._device_index < 0 or self._device_index >= len(self._microphone_names_cache):
-                return None
-
-            name = self._microphone_names_cache[self._device_index]
-            self._device_name_cache[self._device_index] = name
-            return name
+        return self._device_name_snapshot
 
     @staticmethod
     def _score_mic_name(name: str) -> int:
@@ -214,6 +211,7 @@ class VoiceListener:
                         self._device_index = self._auto_pick_microphone(names)
                     except Exception:
                         self._device_index = None
+                    self._publish_device_snapshot_locked()
 
                 mic = sr.Microphone(device_index=self._device_index)
 
@@ -310,9 +308,13 @@ class VoiceListener:
         if self._groq_client is None:
             from openai import OpenAI
 
+            # Explicit timeout + capped retries: without these the SDK waits up
+            # to 600s per attempt and the voice loop goes deaf for minutes.
             self._groq_client = OpenAI(
                 api_key=self.settings.groq_api_key,
                 base_url=self.settings.groq_base_url,
+                timeout=30.0,
+                max_retries=1,
             )
 
         path = None
