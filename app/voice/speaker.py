@@ -91,6 +91,11 @@ class Speaker:
             raise ValueError("mode must be one of: pyttsx3, sapi, kokoro")
         if normalized == "kokoro" and self._kokoro_pipeline is None:
             self._init_kokoro()
+            if self._kokoro_pipeline is None:
+                # Kokoro initialization failed; _init_kokoro already restored a
+                # working fallback mode. Keep it instead of selecting an engine
+                # whose pipeline is missing.
+                return self.status()
         self._mode = normalized
         return self.status()
 

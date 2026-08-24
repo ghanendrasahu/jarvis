@@ -14,7 +14,7 @@ from datetime import datetime
 from pathlib import Path
 from typing import Any
 
-from PySide6.QtCore import QEvent, QPointF, QRectF, Qt, QTimer
+from PySide6.QtCore import QEvent, QPointF, QRectF, QSignalBlocker, Qt, QTimer
 from PySide6.QtGui import (
     QColor,
     QFont,
@@ -104,6 +104,18 @@ def _unique_path(directory: Path, filename: str) -> Path:
         candidate = directory / f"{stem}_{counter}{suffix}"
         counter += 1
     return candidate
+
+
+def _qt_widget_alive(widget: Any) -> bool:
+    """True when a QWidget reference still points at a live C++ object."""
+    if widget is None:
+        return False
+    try:
+        import shiboken6
+
+        return shiboken6.isValid(widget)
+    except Exception:
+        return True
 
 
 def _rgba(hex_color: str, alpha: int) -> str:
@@ -766,6 +778,12 @@ class JarvisHudApp(QMainWindow):
         self._chat_cancel: threading.Event | None = None
         self._chat_stream_start_offset = -1
         self._chat_stream_text: list[str] = []
+        # B6: voice-settings work (Kokoro init, SAPI enumeration) runs on short
+        # daemon workers; a generation token keeps the newest user selection
+        # authoritative and the lock linearizes apply order.
+        self._voice_settings_generation = 0
+        self._voice_apply_lock = threading.Lock()
+        self._voice_refs: dict[str, Any] = {}
         self._last_user_text = ""
         self._pending_images: list[str] = []
         self._cmd_history: list[str] = []
@@ -2058,6 +2076,8 @@ class JarvisHudApp(QMainWindow):
                 self._handle_chat_done(dict(payload or {}))
             elif event == "chat_stream_error":
                 self._handle_chat_error(str(payload))
+            elif event == "voice_settings_result":
+                self._handle_voice_settings_result(dict(payload or {}))
             elif event == "job_status":
                 self._update_job_panel(payload)
             elif event == "job_msg":
@@ -2919,6 +2939,135 @@ class JarvisHudApp(QMainWindow):
         ("Chinese", "z"),
     ]
 
+    # ------------------------------------------------------------ voice settings workers
+
+    def _next_voice_token(self) -> int:
+        self._voice_settings_generation += 1
+        return self._voice_settings_generation
+
+    def _spawn_voice_worker(self, kind: str, action: Callable[[], Any]) -> None:
+        """Run an expensive voice operation off the Qt GUI thread.
+
+        Each operation receives a monotonically increasing token. The token is
+        re-checked under ``_voice_apply_lock`` immediately before the mutation,
+        so when the user changes settings rapidly only the newest selection is
+        ever applied — an older worker can never overwrite it. Results travel
+        through the existing event queue so every GUI mutation stays on the
+        Qt thread. Workers are short-lived daemons; shutdown never waits on
+        them and stale results are dropped by token in the handler.
+        """
+        token = self._next_voice_token()
+
+        def worker() -> None:
+            error: str | None = None
+            result: Any = None
+            with self._voice_apply_lock:
+                if token != self._voice_settings_generation:
+                    return  # superseded while queued: do not touch the voice engine
+                try:
+                    result = action()
+                except Exception as exc:
+                    error = str(exc)
+            self._enqueue(
+                (
+                    "voice_settings_result",
+                    {"token": token, "kind": kind, "error": error, "result": result},
+                )
+            )
+
+        threading.Thread(target=worker, daemon=True, name=f"jarvis-voice-{kind}").start()
+
+    def _apply_speaker_mode(self, mode: str) -> None:
+        voice = self.runtime.voice
+
+        def action() -> dict[str, Any]:
+            status = voice.set_speaker_mode(mode)
+            if str(status.get("mode", "")).lower() != mode.strip().lower():
+                # e.g. Kokoro init failed and the speaker kept its previous mode
+                raise RuntimeError(str(status.get("last_error") or f"{mode} unavailable"))
+            return status
+
+        self._spawn_voice_worker("mode", action)
+
+    def _apply_kokoro_reinit(self) -> None:
+        speaker = self.runtime.voice.speaker
+
+        def action() -> None:
+            speaker._init_kokoro()
+
+        self._spawn_voice_worker("kokoro", action)
+
+    def _apply_output_device(self, index: int | None) -> None:
+        voice = self.runtime.voice
+
+        def action() -> dict[str, Any]:
+            status = voice.set_output_device(index)
+            # set_output_index clears the device cache after applying, so its
+            # status payload reports zero devices until the background refresh
+            # lands. Re-enumerate here in the same worker thread so the GUI
+            # receives a complete list.
+            devices = voice.list_output_devices()
+            if not devices.get("devices"):
+                voice.speaker._refresh_audio_outputs()
+                devices = voice.list_output_devices()
+            return {"status": dict(status), "devices": dict(devices)}
+
+        self._spawn_voice_worker("device", action)
+
+    def _refresh_output_devices_async(self) -> None:
+        """Enumerate SAPI output devices in the background (never on the GUI thread)."""
+        self._spawn_voice_worker("devices", self.runtime.voice.speaker._refresh_audio_outputs)
+
+    def _handle_voice_settings_result(self, payload: dict[str, Any]) -> None:
+        if int(payload.get("token", -1)) != self._voice_settings_generation:
+            return  # stale completion: a newer selection owns the UI now
+        kind = str(payload.get("kind", ""))
+        error = payload.get("error")
+        refs = dict(getattr(self, "_voice_refs", {}) or {})
+        if error:
+            self._toaster.notify("Voice settings", f"{kind} failed: {error}", RED, duration_ms=4000)
+            self._append_terminal("ERR", f"voice {kind} failed: {error}")
+        if kind == "mode":
+            self._sync_voice_engine_buttons(refs)
+        elif kind == "kokoro":
+            status = self.runtime.voice.speaker.status()
+            last_error = status.get("last_error")
+            if last_error:
+                self._toaster.notify("Kokoro unavailable", str(last_error), AMBER, duration_ms=4000)
+            self._sync_voice_engine_buttons(refs)
+        elif kind in {"device", "devices"}:
+            if not error:
+                result = payload.get("result") or {}
+                devices = result.get("devices") if isinstance(result, dict) else None
+                self._sync_output_devices_combo(refs, devices=devices)
+
+    def _sync_voice_engine_buttons(self, refs: dict[str, Any]) -> None:
+        buttons: dict[str, QRadioButton] = refs.get("engine_buttons") or {}
+        if not buttons or not _qt_widget_alive(refs.get("dialog")):
+            return
+        current_mode = str(self.runtime.voice.speaker.status().get("mode", "")).lower()
+        for mode, rb in buttons.items():
+            with QSignalBlocker(rb):  # programmatic sync must not re-trigger handlers
+                rb.setChecked(mode.lower() == current_mode)
+
+    def _sync_output_devices_combo(self, refs: dict[str, Any], devices: dict[str, Any] | None = None) -> None:
+        combo = refs.get("out_combo")
+        if not isinstance(combo, QComboBox) or not _qt_widget_alive(refs.get("dialog")):
+            return
+        devices = devices or self.runtime.voice.list_output_devices()
+        selected = devices.get("selected_index")
+        items = list(devices.get("devices") or [])
+        if not items:
+            return  # never wipe the visible device list with an empty snapshot
+        with QSignalBlocker(combo):
+            combo.clear()
+            for dev in items:
+                combo.addItem(dev.get("name", f"Device {dev.get('index', '?')}"), dev.get("index"))
+            if selected is not None:
+                idx = combo.findData(selected)
+                if idx >= 0:
+                    combo.setCurrentIndex(idx)
+
     def _open_voice_settings(self) -> None:
         voice = self.runtime.voice
         speaker = voice.speaker
@@ -2950,10 +3099,7 @@ class JarvisHudApp(QMainWindow):
         def on_engine_change() -> None:
             for mode, rb in engine_buttons.items():
                 if rb.isChecked():
-                    try:
-                        voice.set_speaker_mode(mode)
-                    except Exception:
-                        pass
+                    self._apply_speaker_mode(mode)
                     break
 
         for rb in engine_buttons.values():
@@ -2996,7 +3142,7 @@ class JarvisHudApp(QMainWindow):
             if code:
                 speaker._kokoro_lang_code = code
                 if speaker._kokoro_pipeline is not None:
-                    speaker._init_kokoro()
+                    self._apply_kokoro_reinit()
 
         lang_combo.currentIndexChanged.connect(on_lang_change)
         lay.addWidget(lang_group)
@@ -3037,10 +3183,13 @@ class JarvisHudApp(QMainWindow):
 
         def on_out_change(index: int) -> None:
             oidx = out_combo.itemData(index)
-            voice.set_output_device(oidx)
+            self._apply_output_device(oidx)
 
         out_combo.currentIndexChanged.connect(on_out_change)
         lay.addWidget(out_group)
+        # Enumeration itself runs in a worker; the combo fills when the result
+        # arrives through the event queue (cache is served instantly if warm).
+        self._refresh_output_devices_async()
 
         mic_group = QGroupBox("MICROPHONE")
         mic_lay = QHBoxLayout(mic_group)
@@ -3073,7 +3222,10 @@ class JarvisHudApp(QMainWindow):
         lay.addStretch()
         scroll.setWidget(container)
         outer.addWidget(scroll, 1)
+        # Worker results update these widgets on the GUI thread only.
+        self._voice_refs = {"dialog": win, "engine_buttons": engine_buttons, "out_combo": out_combo}
         win.exec()
+        self._voice_refs = {}  # dialog closed: worker results must not touch dead widgets
 
     # ------------------------------------------------------------ help
 
