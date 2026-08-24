@@ -45,6 +45,7 @@ def hud(qapp: QApplication) -> Any:
     hud.chat_status_label = QLabel("")
     hud.chat_entry = QLineEdit()
     hud.chat_image_button = QPushButton("IMAGE")
+    hud._chat_stream_seq = 0
     hud._chat_streaming = False
     hud._chat_responding = False
     hud._chat_stream_start_offset = -1
@@ -148,6 +149,7 @@ def wire_submission(hud: Any, monkeypatch: pytest.MonkeyPatch) -> dict[str, Any]
         "service_calls": 0,
         "terminal": [],
         "logged": [],
+        "queued_events": [],
         "started": threading.Event(),
         "release": threading.Event(),
     }
@@ -168,8 +170,16 @@ def wire_submission(hud: Any, monkeypatch: pytest.MonkeyPatch) -> dict[str, Any]
         memory=SimpleNamespace(log_command=lambda **kw: state["logged"].append(kw)),
     )
     hud._chat_service = SimpleNamespace(stream_chat=stream_chat)
+    hud._enqueue = lambda item: state["queued_events"].append(item)
     monkeypatch.setattr("app.gui.build_history_from_memory", lambda memory, window: [])
     return state
+
+
+def pump_chat_events(hud: Any, state: dict[str, Any]) -> None:
+    """Deliver queued events exactly as _poll_events would on the GUI thread."""
+    while state["queued_events"]:
+        topic, payload = state["queued_events"].pop(0)
+        hud._handle_chat_stream_event(topic, dict(payload or {}))
 
 
 def test_busy_command_execution_preserves_typed_message(hud: Any, monkeypatch: pytest.MonkeyPatch) -> None:
@@ -285,6 +295,123 @@ def test_stop_during_stream_preserves_composer_text(hud: Any) -> None:
 
     assert hud.chat_entry.text() == "type ahead while thinking"
     assert hud.ask_button.text() == "…"
+
+
+# ----------------------------------------------------------------- B11: late events after Clear
+
+
+def _start_live_stream(hud: Any) -> int:
+    """Mirror what _ask_chatbot does once a submission is accepted."""
+    seq = hud._next_chat_stream_seq()
+    hud._set_busy(True)
+    hud._chat_cancel = threading.Event()
+    hud.ask_button.setText("STOP")
+    hud._start_chat_stream()
+    return seq
+
+
+def test_clear_during_stream_ignores_late_delta(hud: Any, monkeypatch: pytest.MonkeyPatch) -> None:
+    state = wire_submission(hud, monkeypatch)
+    seq = _start_live_stream(hud)
+
+    JarvisHudApp._clear_conversation(hud)
+
+    hud._emit_chat_stream("chat_stream_chunk", seq, text="late ghost")
+    pump_chat_events(hud, state)
+
+    assert "late ghost" not in hud.chat_text.toPlainText()
+    assert hud._chat_stream_text == []
+
+
+def test_clear_during_stream_late_done_is_not_persisted(hud: Any, monkeypatch: pytest.MonkeyPatch) -> None:
+    state = wire_submission(hud, monkeypatch)
+    seq = _start_live_stream(hud)
+
+    JarvisHudApp._clear_conversation(hud)
+
+    hud._emit_chat_stream("chat_stream_done", seq, text="ghost response", stopped=False, meta={})
+    pump_chat_events(hud, state)
+
+    assert state["logged"] == [], "a cleared stream's response must never reach memory.log_command"
+    assert "ghost response" not in hud.chat_text.toPlainText()
+    assert hud._busy is False, "Clear must not leave the HUD stuck busy"
+    assert hud._chat_streaming is False
+    assert hud.ask_button.text() == "ASK"
+
+
+def test_clear_during_stream_ignores_late_error(hud: Any, monkeypatch: pytest.MonkeyPatch) -> None:
+    state = wire_submission(hud, monkeypatch)
+    seq = _start_live_stream(hud)
+
+    JarvisHudApp._clear_conversation(hud)
+
+    hud._emit_chat_stream("chat_stream_error", seq, message="boom after clear")
+    pump_chat_events(hud, state)
+
+    plain = hud.chat_text.toPlainText()
+    assert "boom" not in plain and "CHAT ERROR" not in plain
+    assert hud.ai_state_chip.text().endswith("READY")
+    assert hud._busy is False
+
+
+def test_old_stream_events_cannot_leak_into_a_newer_stream(hud: Any, monkeypatch: pytest.MonkeyPatch) -> None:
+    state = wire_submission(hud, monkeypatch)
+    old_seq = _start_live_stream(hud)
+
+    JarvisHudApp._clear_conversation(hud)  # invalidate stream A
+
+    accepted = hud._ask_chatbot("fresh question")  # starts stream B with a newer sequence
+    assert accepted is True
+    new_seq = hud._chat_stream_seq
+
+    hud._emit_chat_stream("chat_stream_chunk", old_seq, text="OLD ")
+    hud._emit_chat_stream("chat_stream_done", old_seq, text="OLD final", stopped=False, meta={})
+    pump_chat_events(hud, state)
+
+    hud._emit_chat_stream("chat_stream_chunk", new_seq, text="NEW final")
+    hud._emit_chat_stream(
+        "chat_stream_done",
+        new_seq,
+        text="NEW final",
+        stopped=False,
+        meta={"provider": "opencode"},
+    )
+    pump_chat_events(hud, state)
+
+    plain = hud.chat_text.toPlainText()
+    assert "NEW final" in plain
+    assert "OLD" not in plain
+    assert [entry["response_text"] for entry in state["logged"]] == ["NEW final"]
+
+
+def test_normal_successful_stream_still_renders_and_persists(hud: Any, monkeypatch: pytest.MonkeyPatch) -> None:
+    state = wire_submission(hud, monkeypatch)
+    seq = _start_live_stream(hud)
+
+    hud._emit_chat_stream("chat_stream_chunk", seq, text="Hello ")
+    hud._emit_chat_stream("chat_stream_chunk", seq, text="world")
+    hud._emit_chat_stream("chat_stream_done", seq, text="Hello world", stopped=False, meta={})
+    pump_chat_events(hud, state)
+
+    assert "Hello world" in hud.chat_text.toPlainText()
+    assert [e["response_text"] for e in state["logged"]] == ["Hello world"]
+    assert hud._chat_streaming is False
+    assert hud._busy is False
+
+
+def test_stop_partial_response_renders_marker_but_is_not_persisted(hud: Any, monkeypatch: pytest.MonkeyPatch) -> None:
+    """Existing STOP contract: partial text renders with marker, is not persisted."""
+    state = wire_submission(hud, monkeypatch)
+    seq = _start_live_stream(hud)
+
+    hud._emit_chat_stream("chat_stream_chunk", seq, text="partial ans")
+    hud._emit_chat_stream("chat_stream_done", seq, text="partial ans", stopped=True, meta={})
+    pump_chat_events(hud, state)
+
+    assert "partial ans" in hud.chat_text.toPlainText()
+    assert "stopped" in hud.chat_text.toPlainText()
+    assert state["logged"] == [], "stopped partial responses are not written to chat history"
+    assert hud._chat_streaming is False
 
 
 # --------------------------------------------------------------------------- markdown

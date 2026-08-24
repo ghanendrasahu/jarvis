@@ -778,6 +778,11 @@ class JarvisHudApp(QMainWindow):
         self._chat_cancel: threading.Event | None = None
         self._chat_stream_start_offset = -1
         self._chat_stream_text: list[str] = []
+        # B11: monotonically increasing identity for each accepted chat stream.
+        # Worker events carry the sequence they belong to; Clear (or a newer
+        # ask) advances it so late events from superseded streams are dropped
+        # before they can touch UI state or persistence.
+        self._chat_stream_seq = 0
         # B6: voice-settings work (Kokoro init, SAPI enumeration) runs on short
         # daemon workers; a generation token keeps the newest user selection
         # authoritative and the lock linearizes apply order.
@@ -2069,13 +2074,13 @@ class JarvisHudApp(QMainWindow):
             elif event == "app_launcher":
                 self._handle_app_launcher(payload)
             elif event == "chat_stream_chunk":
-                self._append_chat_stream_chunk(str(payload))
+                self._handle_chat_stream_event("chat_stream_chunk", dict(payload or {}))
             elif event == "chat_stream_reset":
-                self._reset_chat_stream_region()
+                self._handle_chat_stream_event("chat_stream_reset", dict(payload or {}))
             elif event == "chat_stream_done":
-                self._handle_chat_done(dict(payload or {}))
+                self._handle_chat_stream_event("chat_stream_done", dict(payload or {}))
             elif event == "chat_stream_error":
-                self._handle_chat_error(str(payload))
+                self._handle_chat_stream_event("chat_stream_error", dict(payload or {}))
             elif event == "voice_settings_result":
                 self._handle_voice_settings_result(dict(payload or {}))
             elif event == "job_status":
@@ -2308,39 +2313,65 @@ class JarvisHudApp(QMainWindow):
 
         window = max(2, int(getattr(self.runtime.settings, "jarvis_chat_history_window", 12)))
         history = build_history_from_memory(self.runtime.memory, window)
+        seq = self._next_chat_stream_seq()
         self._set_busy(True)
         self._set_ai_state("thinking")
         self._chat_cancel = threading.Event()
         self.ask_button.setText("STOP")
         self._start_chat_stream()
 
-        def worker() -> None:
+        def worker(seq: int = seq) -> None:
             cancel = self._chat_cancel or threading.Event()
             try:
                 for event in self._chat_service.stream_chat(text, history, cancel):
                     kind = event.get("type")
                     if kind == "delta":
-                        self._enqueue(("chat_stream_chunk", str(event.get("text", ""))))
+                        self._emit_chat_stream("chat_stream_chunk", seq, text=str(event.get("text", "")))
                     elif kind == "stream_reset":
-                        self._enqueue(("chat_stream_reset", None))
+                        self._emit_chat_stream("chat_stream_reset", seq)
                     elif kind == "done":
-                        self._enqueue(
-                            (
-                                "chat_stream_done",
-                                {
-                                    "text": str(event.get("text", "")),
-                                    "stopped": bool(event.get("stopped")),
-                                    "meta": dict(event.get("meta") or {}),
-                                },
-                            )
+                        self._emit_chat_stream(
+                            "chat_stream_done",
+                            seq,
+                            text=str(event.get("text", "")),
+                            stopped=bool(event.get("stopped")),
+                            meta=dict(event.get("meta") or {}),
                         )
                     elif kind == "error":
-                        self._enqueue(("chat_stream_error", str(event.get("message", "Chat failed."))))
+                        self._emit_chat_stream("chat_stream_error", seq, message=str(event.get("message", "Chat failed.")))
             except Exception as exc:  # provider construction errors land here
-                self._enqueue(("chat_stream_error", f"Unexpected chat error: {exc}"))
+                self._emit_chat_stream("chat_stream_error", seq, message=f"Unexpected chat error: {exc}")
 
         threading.Thread(target=worker, daemon=True, name="jarvis-chat").start()
         return True
+
+    def _next_chat_stream_seq(self) -> int:
+        self._chat_stream_seq += 1
+        return self._chat_stream_seq
+
+    def _emit_chat_stream(self, topic: str, seq: int, **fields: Any) -> None:
+        """Queue a chat-stream event tagged with the stream's identity."""
+        payload: dict[str, Any] = {"seq": seq}
+        payload.update(fields)
+        self._enqueue((topic, payload))
+
+    def _handle_chat_stream_event(self, topic: str, payload: dict[str, Any]) -> None:
+        """Route one chat-stream event; drop anything from a superseded stream.
+
+        Clear (and every newly accepted stream) advances ``_chat_stream_seq``.
+        Events whose sequence no longer matches are discarded here, before any
+        handler can mutate UI state or reach memory.log_command."""
+        seq = int(payload.get("seq", -1))
+        if seq != self._chat_stream_seq:
+            return
+        if topic == "chat_stream_chunk":
+            self._append_chat_stream_chunk(str(payload.get("text", "")))
+        elif topic == "chat_stream_reset":
+            self._reset_chat_stream_region()
+        elif topic == "chat_stream_done":
+            self._handle_chat_done(payload)
+        elif topic == "chat_stream_error":
+            self._handle_chat_error(str(payload.get("message", "Chat failed.")))
 
     def _stop_chat_stream(self) -> None:
         if self._chat_cancel is not None:
@@ -2354,6 +2385,11 @@ class JarvisHudApp(QMainWindow):
         self._ask_chatbot(self._last_user_text)
 
     def _clear_conversation(self) -> None:
+        # Invalidate any in-flight stream first: its worker may still enqueue
+        # late delta/reset/done/error events, and every one of them must be
+        # dropped (including the done that would otherwise persist the
+        # response we are erasing).
+        self._chat_stream_seq += 1
         was_streaming = self._chat_streaming
         if was_streaming:
             self._stop_chat_stream()
