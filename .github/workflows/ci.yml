@@ -22,7 +22,9 @@ jobs:
 
   typecheck:
     name: Typecheck
-    runs-on: ubuntu-latest
+    # Windows-only stdlib (winreg, winsound, ctypes.windll) is only visible to
+    # mypy when it analyzes for sys.platform == "win32", so typecheck on Windows.
+    runs-on: windows-latest
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-python@v5

@@ -1820,10 +1820,9 @@ class JarvisHudApp(QMainWindow):
         threading.Thread(target=worker, daemon=True).start()
 
     def _render_approval_cards(self, items: list[dict[str, Any]]) -> None:
-        while self.approval_lay.count():
-            old = self.approval_lay.takeAt(0)
-            w = old.widget()
-            if w is not None:
+        # takeAt() is typed Optional[QLayoutItem]; narrow before use.
+        while (old := self.approval_lay.takeAt(0)) is not None:
+            if (w := old.widget()) is not None:
                 w.deleteLater()
         self._approval_cards.clear()
         self._pending_ids = [str(a.get("id") or a.get("approval_id") or "") for a in items]
