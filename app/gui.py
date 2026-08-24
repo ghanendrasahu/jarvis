@@ -56,6 +56,7 @@ from app.bootstrap import build_runtime
 from app.core.events import EventHub
 from app.core.media import background_image_path, list_background_images
 from app.core.palette import PALETTES, THEME_ORDER
+from app.core.utils import build_startup_greeting
 from app.hotkey import GlobalHotkey
 from app.minihud import MiniHud, voice_phase
 from app.minihud import apply_palette as apply_mini_palette
@@ -468,6 +469,7 @@ class JarvisHudApp(QMainWindow):
         self._summon_timer.start(1000)
 
         self._append_terminal("SYS", "HUD online.")
+        self._startup_greeting()
 
         self._restore_ui_config()
         self._scheduler_announce = self.runtime.scheduler.on_run
@@ -478,6 +480,25 @@ class JarvisHudApp(QMainWindow):
         # Auto-start voice if enabled in config
         #if self.runtime.settings.voice_enabled:
         #    QTimer.singleShot(2000, self._auto_start_voice)
+
+    def _startup_greeting(self) -> None:
+        settings = self.runtime.settings
+        if not settings.startup_greeting_enabled:
+            return
+        greeting = build_startup_greeting()
+        self._append_terminal("JARVIS", greeting)
+        if not settings.tts_enabled:
+            return
+
+        def _speak() -> None:
+            try:
+                self.runtime.voice.speaker.speak(greeting)
+            except Exception:
+                from app.core.logging import get_logger
+
+                get_logger("gui").warning("startup greeting speech failed", exc_info=True)
+
+        threading.Thread(target=_speak, daemon=True, name="jarvis-startup-greeting").start()
 
     def _auto_start_voice(self) -> None:
         try:
@@ -1003,7 +1024,7 @@ class JarvisHudApp(QMainWindow):
 
     def _append_terminal(self, kind: str, text: str) -> None:
         ts = datetime.now().strftime("%H:%M:%S")
-        tag = {"CMD": CYAN, "OK": GREEN, "WARN": AMBER, "ERR": RED, "SYS": INDIGO}.get(kind, MUTED)
+        tag = {"CMD": CYAN, "OK": GREEN, "WARN": AMBER, "ERR": RED, "SYS": INDIGO, "JARVIS": GREEN}.get(kind, MUTED)
         safe = text.replace("&", "&amp;").replace("<", "&lt;").replace(">", "&gt;")
         self.terminal.append(
             f'<span style="color:{MUTED}">[{ts}]</span> <span style="color:{tag}">{safe}</span>'

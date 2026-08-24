@@ -1,7 +1,20 @@
 from __future__ import annotations
 
 import re
+from datetime import datetime
 from typing import Any
+
+
+def build_startup_greeting(now: datetime | None = None) -> str:
+    """Return the classic Jarvis startup greeting for the time of day."""
+    hour = (now or datetime.now()).hour
+    if 5 <= hour < 12:
+        part = "morning"
+    elif 12 <= hour < 18:
+        part = "afternoon"
+    else:
+        part = "evening"
+    return f"Good {part}, sir. All systems are online."
 
 
 def safe_int(value: Any, default: int = 0) -> int:

@@ -138,6 +138,9 @@ class Settings(BaseSettings):
     kokoro_lang_code: str = "a"  # a=American English, b=British, j=Japanese, z=Chinese, etc.
     kokoro_speed: float = 1.0
 
+    # Spoken + on-screen welcome greeting when the HUD starts.
+    startup_greeting_enabled: bool = True
+
     approval_policy: str = "medium_and_high"
     auto_approve_low_risk: bool = True
     max_history_items: int = 20
