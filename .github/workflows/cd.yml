@@ -1,0 +1,106 @@
+name: CD
+
+# Continuous delivery: tag push (v*) -> quality gates -> build -> GitHub Release.
+# Manual dispatch is a dry-run: gates + build + downloadable artifact, NO release.
+
+on:
+  push:
+    tags:
+      - 'v*'
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+concurrency:
+  group: cd-${{ github.ref }}
+  cancel-in-progress: false
+
+jobs:
+  quality-gates:
+    name: Quality gates
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+
+      - name: Install package + dev deps
+        run: |
+          pip install -e .[dev]
+          pip install pytest
+
+      - name: Ruff
+        run: ruff check app tests
+
+      - name: Mypy
+        run: mypy app
+
+      - name: Tests
+        run: pytest tests -q
+
+  build:
+    name: Build distribution
+    needs: quality-gates
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+
+      - name: Build sdist and wheel
+        run: |
+          python -m pip install --upgrade build
+          python -m build
+
+      - name: Upload dist artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: dist
+          path: dist/
+          if-no-files-found: error
+
+  release:
+    name: GitHub Release
+    needs: build
+    if: startsWith(github.ref, 'refs/tags/v')
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+
+      - name: Download dist artifact
+        uses: actions/download-artifact@v4
+        with:
+          name: dist
+          path: dist
+
+      - name: Verify tag matches project version
+        env:
+          TAG_NAME: ${{ github.ref_name }}
+        run: |
+          python - <<'PY'
+          import os, sys, tomllib
+
+          tag = os.environ["TAG_NAME"]
+          with open("pyproject.toml", "rb") as fh:
+              version = tomllib.load(fh)["project"]["version"]
+          expected = f"v{version}"
+          if tag != expected:
+              print(f"::error::tag {tag!r} does not match project version {expected!r}")
+              sys.exit(1)
+          print(f"version guard OK: tag {tag} == project version {expected}")
+          PY
+
+      - name: Create GitHub Release
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          TAG_NAME: ${{ github.ref_name }}
+        run: gh release create "$TAG_NAME" dist/* --generate-notes --verify-tag
