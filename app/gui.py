@@ -642,7 +642,6 @@ class WaveWidget(QWidget):
         super().__init__()
         self._on_click = on_click
         self._phase = 0.0
-        self._label = "IDLE"
         self._color = MUTED
         self._amp = 6.0
         self._speed = 0.18
@@ -657,8 +656,7 @@ class WaveWidget(QWidget):
         if self.isVisible():
             self.update()
 
-    def update_status(self, label: str, color: str, amp: float, speed: float) -> None:
-        self._label = label
+    def update_status(self, color: str, amp: float, speed: float) -> None:
         self._color = color
         self._amp = amp
         self._speed = speed
@@ -760,12 +758,10 @@ class JarvisHudApp(QMainWindow):
         self._busy = False
         self._busy_seq = 0
         self._done_seqs: set[int] = set()
-        self._scene_angle = 0.0
         self._pending_ids: list[str] = []
         self._chat_streaming = False
         self._chat_responding = False
         self._ai_state_key = "idle"
-        self._chat_history: list[dict[str, str]] = []
         self._chat_service = ChatService(self.runtime.settings)
         self._chat_cancel: threading.Event | None = None
         self._chat_stream_start_offset = -1
@@ -840,13 +836,6 @@ class JarvisHudApp(QMainWindow):
                 get_logger("gui").warning("startup greeting speech failed", exc_info=True)
 
         threading.Thread(target=_speak, daemon=True, name="jarvis-startup-greeting").start()
-
-    def _auto_start_voice(self) -> None:
-        try:
-            self.runtime.voice.start()
-            self._enqueue(("voice", {"running": True, "changed": True}))
-        except Exception:
-            pass
 
     # ------------------------------------------------------------ shared builders
 
@@ -1692,7 +1681,7 @@ class JarvisHudApp(QMainWindow):
         except Exception:
             status = {}
         phase, color, amp, speed = voice_phase(status)
-        self.voice_wave.update_status(phase, color, amp, speed)
+        self.voice_wave.update_status(color, amp, speed)
         self.voice_dot.setStyleSheet(f"color: {color}; font-size: 12px;")
         if not running:
             self.voice_state_label.setText("OFFLINE")
