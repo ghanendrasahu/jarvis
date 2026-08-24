@@ -48,6 +48,11 @@ class FakeProvider:
         if tag == "fail":
             raise ChatStreamError(str(args[0]) if args else "http")
             yield  # pragma: no cover - generator formalities
+        if tag == "partial_fail":
+            for delta in args[0]:
+                yield {"delta": delta}
+            raise ChatStreamError(str(args[1]) if len(args) > 1 else "http")
+            yield  # pragma: no cover - generator formalities
         if tag == "slow":
             time.sleep(float(args[0]))
             inner = FakeProvider(self.spec, args[1] if len(args) > 1 else "ok")._resolve(cancel_event)
@@ -64,6 +69,11 @@ class FakeProvider:
             yield {"done": True}
             return
         if tag == "empty":
+            yield {"done": True}
+            return
+        if tag == "deltas":
+            for delta in args[0]:
+                yield {"delta": delta}
             yield {"done": True}
             return
         deltas = ["Hello", " ", "world"]
@@ -235,6 +245,118 @@ def test_empty_response_treated_as_failure(monkeypatch: pytest.MonkeyPatch) -> N
     events = run(service)
     assert events[-1]["type"] == "done"
     assert events[-1]["meta"]["provider"] == "groq"
+
+
+# --------------------------------------------------------------------------- B1: mid-stream fallback duplication
+
+
+def test_midstream_failure_discards_partial_and_falls_back(monkeypatch: pytest.MonkeyPatch) -> None:
+    """B1 regression: a failed attempt's partial tokens must never contaminate the fallback."""
+    primary = FakeProvider(
+        ProviderSpec("opencode", "m1"), ("partial_fail", ["Hello ", "partial"], "connection")
+    )
+    fallback = FakeProvider(ProviderSpec("groq", "m2"), ("deltas", ["Hello ", "world"]))
+    service = make_service(
+        monkeypatch,
+        {"opencode": primary, "groq": fallback},
+        jarvis_chat_fallback_1="groq:m2",
+    )
+    events = run(service)
+
+    done = events[-1]
+    assert done["type"] == "done"
+    assert done["text"] == "Hello world"
+    assert "partial" not in done["text"]
+    assert "Hello Hello" not in done["text"]
+    assert done["meta"]["provider"] == "groq"
+
+    types = [e["type"] for e in events]
+    assert types.count("stream_reset") == 1
+    last_failed_delta = max(i for i, e in enumerate(events) if e.get("provider") == "opencode")
+    reset_idx = types.index("stream_reset")
+    first_fallback_delta = min(i for i, e in enumerate(events) if e.get("provider") == "groq")
+    assert last_failed_delta < reset_idx < first_fallback_delta
+
+
+def test_failure_before_first_token_preserves_existing_fallback(monkeypatch: pytest.MonkeyPatch) -> None:
+    primary = FakeProvider(ProviderSpec("opencode", "m1"), ("fail", "timeout"))
+    fallback = FakeProvider(ProviderSpec("groq", "m2"), ("deltas", ["Fallback ", "reply"]))
+    service = make_service(
+        monkeypatch,
+        {"opencode": primary, "groq": fallback},
+        jarvis_chat_fallback_1="groq:m2",
+    )
+    events = run(service)
+
+    done = events[-1]
+    assert done["type"] == "done"
+    assert done["text"] == "Fallback reply"
+    assert done["meta"]["fallback_used"] is True
+    # nothing was streamed before the failure, so there is nothing to reset
+    assert not any(e["type"] == "stream_reset" for e in events)
+
+
+def test_multiple_partial_failures_isolate_each_attempt(monkeypatch: pytest.MonkeyPatch) -> None:
+    a = FakeProvider(ProviderSpec("opencode", "m1"), ("partial_fail", ["AAA "], "timeout"))
+    b = FakeProvider(ProviderSpec("groq", "m2"), ("partial_fail", ["BBB "], "rate_limit"))
+    c = FakeProvider(ProviderSpec("cerebras", "m3"), ("deltas", ["Final answer"]))
+    service = make_service(
+        monkeypatch,
+        {"opencode": a, "groq": b, "cerebras": c},
+        jarvis_chat_model="m1",
+        jarvis_chat_fallback_1="groq:m2",
+        jarvis_chat_fallback_2="cerebras:m3",
+    )
+    events = run(service)
+
+    done = events[-1]
+    assert done["type"] == "done"
+    assert done["text"] == "Final answer"
+    assert "AAA" not in done["text"]
+    assert "BBB" not in done["text"]
+    assert done["meta"]["provider"] == "cerebras"
+    assert sum(1 for e in events if e["type"] == "stream_reset") == 2
+
+
+def test_all_providers_fail_after_partial_output_keeps_error_behavior(monkeypatch: pytest.MonkeyPatch) -> None:
+    a = FakeProvider(ProviderSpec("opencode", "m1"), ("partial_fail", ["AAA "], "timeout"))
+    b = FakeProvider(ProviderSpec("groq", "m2"), ("partial_fail", ["BBB "], "rate_limit"))
+    service = make_service(
+        monkeypatch,
+        {"opencode": a, "groq": b},
+        jarvis_chat_model="m1",
+        jarvis_chat_fallback_1="groq:m2",
+    )
+    events = run(service)
+
+    last = events[-1]
+    assert last["type"] == "error"
+    assert "failed" in last["message"].lower()
+    assert set(last.get("providers_tried", [])) == {"opencode:m1", "groq:m2"}
+    assert not any(e["type"] == "done" for e in events), "failed partial text must never be returned as a successful response"
+    # a reset may fire between two partially-streamed failures, but none dangles after the last one
+    assert sum(1 for e in events if e["type"] == "stream_reset") == 1
+
+
+def test_retry_same_provider_discards_first_attempt_partial(monkeypatch: pytest.MonkeyPatch) -> None:
+    class FlakyThenOk(FakeProvider):
+        def _resolve(self, cancel_event: threading.Event | None) -> Iterator[dict[str, Any]]:
+            if self.calls == 1:
+                yield {"delta": "Hello "}
+                yield {"delta": "partial"}
+                raise ChatStreamError("timeout")
+            yield from super()._resolve(cancel_event)
+
+    flaky = FlakyThenOk(ProviderSpec("opencode", "m1"))
+    service = make_service(monkeypatch, {"opencode": flaky}, jarvis_chat_max_retries=1)
+    events = run(service)
+
+    done = events[-1]
+    assert done["type"] == "done"
+    assert done["text"] == "Hello world"
+    assert "partial" not in done["text"]
+    assert flaky.calls == 2
+    assert sum(1 for e in events if e["type"] == "stream_reset") == 1
 
 
 def test_cancellation_returns_partial_text(monkeypatch: pytest.MonkeyPatch) -> None:

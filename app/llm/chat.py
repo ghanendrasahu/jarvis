@@ -328,7 +328,12 @@ class ChatService:
         history: list[ChatMessage],
         cancel_event: threading.Event | None = None,
     ) -> Iterator[dict[str, Any]]:
-        """Yield events: {started}, {delta}, {done(text, meta)} or {error(message)}."""
+        """Yield events: {delta}, {stream_reset}, {done(text, meta)} or {error(message)}.
+
+        ``stream_reset`` tells consumers to discard partial text from an attempt
+        that failed mid-stream, so a fallback/retry attempt renders on its own.
+        It is only emitted when a later attempt actually produces deltas.
+        """
         started = time.perf_counter()
         window = max(2, int(self.settings.jarvis_chat_history_window))
         trimmed = history[-window * 2 :]
@@ -347,6 +352,7 @@ class ChatService:
         first_token_ms: float | None = None
         aggregated: list[str] = []
         attempted: list[str] = []
+        pending_reset = False  # a failed attempt left partial tokens on screen
 
         def elapsed_ms() -> int:
             return int((time.perf_counter() - started) * 1000)
@@ -374,6 +380,7 @@ class ChatService:
                     break
                 if time.perf_counter() >= deadline:
                     break
+                aggregated.clear()  # every retry/provider attempt owns isolated response state
                 chunks = provider.stream(
                     api_messages,
                     temperature=temperature,
@@ -384,6 +391,9 @@ class ChatService:
                 try:
                     for event in chunks:
                         if "delta" in event:
+                            if pending_reset:
+                                pending_reset = False
+                                yield {"type": "stream_reset"}
                             if first_token_ms is None:
                                 first_token_ms = elapsed_ms()
                             aggregated.append(event["delta"])
@@ -407,6 +417,8 @@ class ChatService:
                         exc.kind,
                         exc.detail,
                     )
+                    pending_reset = pending_reset or bool(aggregated)
+                    aggregated.clear()
                     if exc.kind in _RETRYABLE_KINDS and attempt < attempts - 1:
                         self._interruptible_backoff(min(0.8 * (2**attempt), 2.0), deadline, cancel_event)
                         continue

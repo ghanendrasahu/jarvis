@@ -80,6 +80,31 @@ def test_stopped_marker_rendered(hud: Any) -> None:
     assert "stopped" in hud.chat_text.toPlainText()
 
 
+def test_failed_partial_replaced_by_fallback_response(hud: Any) -> None:
+    """B1 regression: failed attempt's partial text must be discarded before the fallback renders."""
+    hud._start_chat_stream()
+    hud._append_chat_stream_chunk("Hello ")
+    hud._append_chat_stream_chunk("partial")
+    assert "partial" in hud.chat_text.toPlainText()
+
+    JarvisHudApp._reset_chat_stream_region(hud)
+    assert hud._chat_stream_text == []
+    assert "partial" not in hud.chat_text.toPlainText()
+
+    hud._append_chat_stream_chunk("Hello ")
+    hud._append_chat_stream_chunk("world")
+    full = "".join(hud._chat_stream_text)
+    assert full == "Hello world"
+    hud._finish_chat_stream_text(full, False)
+
+    plain = hud.chat_text.toPlainText()
+    assert "Hello world" in plain
+    assert "partial" not in plain
+    assert "Hello Hello" not in plain
+    assert hud._chat_stream_start_offset == -1
+    assert hud.ask_button.text() == "ASK"
+
+
 def test_clear_resets_conversation_state(hud: Any) -> None:
     import threading
 

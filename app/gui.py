@@ -2052,6 +2052,8 @@ class JarvisHudApp(QMainWindow):
                 self._handle_app_launcher(payload)
             elif event == "chat_stream_chunk":
                 self._append_chat_stream_chunk(str(payload))
+            elif event == "chat_stream_reset":
+                self._reset_chat_stream_region()
             elif event == "chat_stream_done":
                 self._handle_chat_done(dict(payload or {}))
             elif event == "chat_stream_error":
@@ -2199,6 +2201,22 @@ class JarvisHudApp(QMainWindow):
         self.chat_text.setTextCursor(cursor)
         self.chat_text.verticalScrollBar().setValue(self.chat_text.verticalScrollBar().maximum())
 
+    def _reset_chat_stream_region(self) -> None:
+        """Discard partial tokens shown for a provider attempt that failed mid-stream."""
+        if not self._chat_streaming:
+            return
+        start = int(getattr(self, "_chat_stream_start_offset", -1))
+        if start < 0:
+            return
+        cursor = self.chat_text.textCursor()
+        cursor.setPosition(start)
+        cursor.setPosition(len(self.chat_text.toPlainText()), QTextCursor.MoveMode.KeepAnchor)
+        cursor.removeSelectedText()
+        self.chat_text.setTextCursor(cursor)
+        self._chat_stream_text = []
+        self._chat_responding = False
+        self.chat_text.verticalScrollBar().setValue(self.chat_text.verticalScrollBar().maximum())
+
     def _finish_chat_stream_text(self, text: str, stopped: bool) -> None:
         """Swap the streamed plain text for the rendered Markdown version."""
         if not self._chat_streaming:
@@ -2271,6 +2289,8 @@ class JarvisHudApp(QMainWindow):
                     kind = event.get("type")
                     if kind == "delta":
                         self._enqueue(("chat_stream_chunk", str(event.get("text", ""))))
+                    elif kind == "stream_reset":
+                        self._enqueue(("chat_stream_reset", None))
                     elif kind == "done":
                         self._enqueue(
                             (
