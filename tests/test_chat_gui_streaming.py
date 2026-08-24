@@ -1,13 +1,22 @@
 from __future__ import annotations
 
 import os
+import threading
+from types import SimpleNamespace
 from typing import Any
 
 import pytest
 
 os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
 
-from PySide6.QtWidgets import QApplication, QLabel, QPushButton, QStackedWidget, QTextEdit  # noqa: E402
+from PySide6.QtWidgets import (  # noqa: E402
+    QApplication,
+    QLabel,
+    QLineEdit,
+    QPushButton,
+    QStackedWidget,
+    QTextEdit,
+)
 
 from app.gui import JarvisHudApp, markdown_to_html  # noqa: E402
 
@@ -34,6 +43,8 @@ def hud(qapp: QApplication) -> Any:
     hud.ask_button.setEnabled(True)
     hud.run_button = QPushButton("EXECUTE")
     hud.chat_status_label = QLabel("")
+    hud.chat_entry = QLineEdit()
+    hud.chat_image_button = QPushButton("IMAGE")
     hud._chat_streaming = False
     hud._chat_responding = False
     hud._chat_stream_start_offset = -1
@@ -118,6 +129,162 @@ def test_clear_resets_conversation_state(hud: Any) -> None:
     assert hud.ai_stack.currentIndex() == 0, "idle panel must return after clear"
     assert hud._chat_stream_start_offset == -1
     assert hud.ask_button.text() == "ASK"
+
+
+# ----------------------------------------------------------------- B4: no silent input loss
+
+
+class ToasterSpy:
+    def __init__(self) -> None:
+        self.calls: list[tuple[str, str]] = []
+
+    def notify(self, title: str, message: str, color: object = "", duration_ms: int = 3000) -> None:
+        self.calls.append((title, message))
+
+
+def wire_submission(hud: Any, monkeypatch: pytest.MonkeyPatch) -> dict[str, Any]:
+    """Stub everything _ask_chatbot touches after acceptance; return observation spies."""
+    state: dict[str, Any] = {
+        "service_calls": 0,
+        "terminal": [],
+        "logged": [],
+        "started": threading.Event(),
+        "release": threading.Event(),
+    }
+
+    def stream_chat(_text: str, _history: list[Any], _cancel: Any) -> Any:
+        state["service_calls"] += 1
+        state["started"].set()
+        state["release"].wait(timeout=2.0)
+        if False:  # pragma: no cover - generator formalities
+            yield  # type: ignore[unreachable]
+
+    hud._toaster = ToasterSpy()
+    hud._append_terminal = lambda tag, msg: state["terminal"].append((tag, msg))
+    hud._pending_images = []
+    hud._last_user_text = ""
+    hud.runtime = SimpleNamespace(
+        settings=SimpleNamespace(jarvis_chat_history_window=12),
+        memory=SimpleNamespace(log_command=lambda **kw: state["logged"].append(kw)),
+    )
+    hud._chat_service = SimpleNamespace(stream_chat=stream_chat)
+    monkeypatch.setattr("app.gui.build_history_from_memory", lambda memory, window: [])
+    return state
+
+
+def test_busy_command_execution_preserves_typed_message(hud: Any, monkeypatch: pytest.MonkeyPatch) -> None:
+    state = wire_submission(hud, monkeypatch)
+    hud._busy = True  # a command is currently executing
+    hud.chat_entry.setText("remember the launch plan")
+
+    JarvisHudApp._on_ask_clicked(hud)
+
+    assert hud.chat_entry.text() == "remember the launch plan", "typed text must never be lost"
+    assert state["service_calls"] == 0
+    assert len(hud._toaster.calls) == 1
+    assert "busy" in hud._toaster.calls[0][0].lower()
+    assert any("executing a command" in msg for _title, msg in hud._toaster.calls)
+    assert state["terminal"], "user must receive non-blocking feedback"
+    assert hud._chat_streaming is False
+
+
+def test_streaming_busy_rejects_new_submission_without_loss(hud: Any, monkeypatch: pytest.MonkeyPatch) -> None:
+    state = wire_submission(hud, monkeypatch)
+    hud.chat_entry.setText("next question")
+    hud._chat_streaming = True
+
+    accepted = hud._ask_chatbot("next question")
+
+    assert accepted is False
+    assert hud.chat_entry.text() == "next question"
+    assert state["service_calls"] == 0
+    assert any("still responding" in msg for _title, msg in hud._toaster.calls)
+
+
+def test_accepted_submission_clears_input_and_starts_stream(hud: Any, monkeypatch: pytest.MonkeyPatch) -> None:
+    state = wire_submission(hud, monkeypatch)
+    hud.chat_entry.setText("what is a neutron star")
+
+    JarvisHudApp._on_ask_clicked(hud)
+    assert state["started"].wait(timeout=2.0), "accepted submission must start the chat worker"
+
+    assert hud.chat_entry.text() == "", "accepted submission must clear the composer normally"
+    assert state["service_calls"] == 1
+    assert hud._busy is True
+    assert hud._chat_streaming is True
+    assert hud.ask_button.text() == "STOP"
+    assert "neutron star" in hud.chat_text.toPlainText()
+
+    state["release"].set()
+
+
+def test_busy_state_cleared_correctly_after_operation_finishes(hud: Any, monkeypatch: pytest.MonkeyPatch) -> None:
+    state = wire_submission(hud, monkeypatch)
+    hud.chat_entry.setText("what is a neutron star")
+    JarvisHudApp._on_ask_clicked(hud)
+    assert state["started"].wait(timeout=2.0)
+    state["release"].set()
+
+    # The poller dispatches chat_stream_done to this handler on the GUI thread.
+    hud._handle_chat_done({"text": "A neutron star.", "stopped": False, "meta": {}})
+
+    assert hud._busy is False
+    assert hud._chat_streaming is False
+    assert hud.ask_button.text() == "ASK"
+    assert hud.ask_button.isEnabled()
+    assert hud.run_button.isEnabled()
+    assert state["logged"] and state["logged"][0]["response_text"] == "A neutron star."
+
+
+def test_retry_submission_keeps_composer_draft(hud: Any, monkeypatch: pytest.MonkeyPatch) -> None:
+    state = wire_submission(hud, monkeypatch)
+    hud.chat_entry.setText("draft in progress")
+    hud._last_user_text = "earlier question"
+
+    accepted = hud._ask_chatbot(hud._last_user_text)
+    assert state["started"].wait(timeout=2.0)
+
+    assert accepted is True
+    assert hud.chat_entry.text() == "draft in progress", "RETRY must not consume an unrelated draft"
+    state["release"].set()
+
+
+def test_enter_and_send_button_follow_same_path(hud: Any, monkeypatch: pytest.MonkeyPatch) -> None:
+    """Return-pressed and ASK-clicked share one handler, so their behavior is identical."""
+    state = wire_submission(hud, monkeypatch)
+    hud._busy = True
+    hud.chat_entry.setText("queued while busy")
+
+    JarvisHudApp._on_ask_clicked(hud)  # keyboard: returnPressed wiring
+    first_toasts = len(hud._toaster.calls)
+    assert first_toasts == 1
+
+    JarvisHudApp._on_ask_clicked(hud)  # send button: clicked wiring
+
+    assert hud.chat_entry.text() == "queued while busy"
+    assert len(hud._toaster.calls) == 2
+    assert state["service_calls"] == 0
+
+
+def test_empty_input_is_ignored_without_noise(hud: Any, monkeypatch: pytest.MonkeyPatch) -> None:
+    state = wire_submission(hud, monkeypatch)
+
+    JarvisHudApp._on_ask_clicked(hud)
+
+    assert state["service_calls"] == 0
+    assert not hud._toaster.calls
+
+
+def test_stop_during_stream_preserves_composer_text(hud: Any) -> None:
+    """Existing ASK->STOP behavior stays intact and never consumes the composer."""
+    hud._chat_streaming = True
+    hud.chat_entry.setText("type ahead while thinking")
+    hud.ask_button.setText("STOP")
+
+    JarvisHudApp._on_ask_clicked(hud)
+
+    assert hud.chat_entry.text() == "type ahead while thinking"
+    assert hud.ask_button.text() == "…"
 
 
 # --------------------------------------------------------------------------- markdown

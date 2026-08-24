@@ -2250,15 +2250,27 @@ class JarvisHudApp(QMainWindow):
         text = self.chat_entry.text().strip()
         if not text:
             return
-        self.chat_entry.clear()
-        self._ask_chatbot(text)
+        # The composer is consumed only after _ask_chatbot accepts the
+        # submission, so a rejected message is never silently lost.
+        if self._ask_chatbot(text):
+            self.chat_entry.clear()
 
-    def _ask_chatbot(self, text: str) -> None:
+    def _notify_input_rejected(self) -> None:
+        """Non-blocking feedback when a chat message cannot be accepted right now."""
+        context = "still responding" if self._chat_streaming else "executing a command"
+        hint = f"JARVIS is {context}. Your message stays in the box."
+        self._toaster.notify("JARVIS is busy", hint, AMBER, duration_ms=2500)
+        self._append_terminal("SYS", hint)
+        self.chat_entry.setFocus()
+
+    def _ask_chatbot(self, text: str) -> bool:
+        """Run one conversational turn. Returns False when the submission was rejected."""
         text = (text or "").strip()
         if not text:
-            return
+            return False
         if self._chat_streaming or (self._busy and not self._chat_streaming):
-            return
+            self._notify_input_rejected()
+            return False
 
         route = classify_user_input(text)
         self._last_user_text = text
@@ -2272,7 +2284,7 @@ class JarvisHudApp(QMainWindow):
                 f'<span style="color:{MUTED}; font-size:11px;">→ routed to command system</span><br>'
             )
             self._run_command_text(text)
-            return
+            return True
 
         window = max(2, int(getattr(self.runtime.settings, "jarvis_chat_history_window", 12)))
         history = build_history_from_memory(self.runtime.memory, window)
@@ -2308,6 +2320,7 @@ class JarvisHudApp(QMainWindow):
                 self._enqueue(("chat_stream_error", f"Unexpected chat error: {exc}"))
 
         threading.Thread(target=worker, daemon=True, name="jarvis-chat").start()
+        return True
 
     def _stop_chat_stream(self) -> None:
         if self._chat_cancel is not None:
