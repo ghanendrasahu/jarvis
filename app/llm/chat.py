@@ -91,19 +91,23 @@ class ChatMessage:
 
 
 def _image_to_data_url(path: str) -> str | None:
+    """Encode a local image as a normalized PNG data URL.
+
+    Every input is flattened to RGBA and stored as PNG, and the data URL is
+    therefore always labeled ``image/png`` — the MIME type matches the actual
+    payload bytes regardless of the source file's extension (audit B3).
+    """
     try:
+        import io
+
         from PIL import Image
 
         with Image.open(path) as img:
             img.load()
-        suffix = Path(path).suffix.lower().lstrip(".") or "png"
-        mime = "jpeg" if suffix in {"jpg", "jpeg"} else suffix
-        import io
-
-        buffer = io.BytesIO()
-        Image.open(path).convert("RGBA").save(buffer, format="PNG")
+            buffer = io.BytesIO()
+            img.convert("RGBA").save(buffer, format="PNG")
         encoded = base64.b64encode(buffer.getvalue()).decode("ascii")
-        return f"data:image/{mime};base64,{encoded}"
+        return f"data:image/png;base64,{encoded}"
     except Exception:
         logger.warning("chat_image_unreadable path=%s", Path(path).name)
         return None

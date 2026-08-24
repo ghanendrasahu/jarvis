@@ -1,8 +1,11 @@
 ﻿from __future__ import annotations
 
+import base64
+import io
 import threading
 import time
 from collections.abc import Iterator
+from pathlib import Path
 from typing import Any
 
 import pytest
@@ -13,6 +16,7 @@ from app.llm.chat import (
     ChatService,
     ChatStreamError,
     ProviderSpec,
+    _image_to_data_url,
     build_history_from_memory,
 )
 
@@ -129,6 +133,7 @@ def make_service(monkeypatch: pytest.MonkeyPatch, providers: dict[str, FakeProvi
         jarvis_chat_max_retries=settings_kwargs.pop("jarvis_chat_max_retries", 0),
         jarvis_chat_deadline_seconds=settings_kwargs.pop("jarvis_chat_deadline_seconds", 30),
         jarvis_chat_history_window=settings_kwargs.pop("jarvis_chat_history_window", 12),
+        jarvis_chat_vision_enabled=settings_kwargs.pop("jarvis_chat_vision_enabled", False),
     )
     assert not settings_kwargs, f"unused settings kwargs: {settings_kwargs}"
 
@@ -630,6 +635,134 @@ def test_repeated_cancel_calls_are_idempotent(monkeypatch: pytest.MonkeyPatch) -
     done_events = [e for e in events if e["type"] == "done"]
     assert len(done_events) == 1, "repeated STOP must produce exactly one stopped response"
     assert not any(e["type"] == "error" for e in events), "cancellation must never become an error"
+
+
+# --------------------------------------------------------------------------- B3: image MIME/payload consistency
+
+PNG_SIGNATURE = b"\x89PNG\r\n\x1a\n"
+
+
+def _write_image(tmp_path: Path, fmt: str) -> Path:
+    from PIL import Image
+
+    path = tmp_path / f"img.{fmt.lower()}"
+    pil_format = {"jpg": "JPEG", "jpeg": "JPEG"}.get(fmt.lower(), fmt.upper())
+    if pil_format == "JPEG":
+        Image.new("RGB", (8, 8), (200, 30, 30)).save(path, format="JPEG")
+    else:
+        Image.new("RGBA", (8, 8), (200, 30, 30, 255)).save(path, format=pil_format)
+    return path
+
+
+def _split_data_url(url: str) -> tuple[str, bytes]:
+    assert url.startswith("data:")
+    header, payload_b64 = url.split(",", 1)
+    mime = header[len("data:") :].split(";", 1)[0]
+    return mime, base64.b64decode(payload_b64)
+
+
+@pytest.mark.parametrize("fmt", ["jpg", "jpeg", "png"])
+def test_image_payload_signature_matches_mime(tmp_path: Path, fmt: str) -> None:
+    """The advertised MIME must match the decoded magic bytes of the payload."""
+    url = _image_to_data_url(str(_write_image(tmp_path, fmt)))
+    assert url is not None
+
+    mime, payload = _split_data_url(url)
+    assert mime == "image/png", "normalized encoding must be labeled PNG"
+    assert payload.startswith(PNG_SIGNATURE), ".jpg/.jpeg inputs must no longer ship PNG bytes under image/jpeg"
+
+    from PIL import Image
+
+    decoded = Image.open(io.BytesIO(payload))
+    assert decoded.format == "PNG", "payload must be decodable as the labeled format"
+    assert decoded.size == (8, 8)
+
+
+def test_png_input_stays_png_labeled(tmp_path: Path) -> None:
+    url = _image_to_data_url(str(_write_image(tmp_path, "png")))
+    assert url is not None
+    mime, payload = _split_data_url(url)
+    assert mime == "image/png" and payload.startswith(PNG_SIGNATURE)
+
+
+def test_vision_request_parts_carry_matching_payloads(tmp_path: Path) -> None:
+    jpg = _write_image(tmp_path, "jpg")
+    png = _write_image(tmp_path, "png")
+    msg = ChatMessage(role="user", content="what is this?", images=[str(jpg), str(png)])
+
+    parts = msg.to_api(vision=True)["content"]
+    assert parts[0] == {"type": "text", "text": "what is this?"}
+    assert [p["type"] for p in parts[1:]] == ["image_url", "image_url"]
+
+    for part in parts[1:]:
+        mime, payload = _split_data_url(part["image_url"]["url"])
+        assert mime == "image/png"
+        assert payload.startswith(PNG_SIGNATURE)
+        assert part["image_url"]["url"].startswith("data:image/png;base64,")
+
+
+def test_unreadable_image_fails_cleanly_and_is_dropped(tmp_path: Path) -> None:
+    garbage = tmp_path / "broken.jpg"
+    garbage.write_bytes(b"this is not an image at all")
+    missing = tmp_path / "missing.png"
+
+    assert _image_to_data_url(str(garbage)) is None
+    assert _image_to_data_url(str(missing)) is None
+
+    msg = ChatMessage(role="user", content="look", images=[str(garbage), str(missing)])
+    content = msg.to_api(vision=True)["content"]
+    assert content == [{"type": "text", "text": "look"}], "unreadable images are dropped, text remains"
+
+
+def test_remote_and_data_urls_pass_through_untouched() -> None:
+    remote = ChatMessage(role="user", content="", images=["https://example.com/cat.jpg"])
+    parts = remote.to_api(vision=True)["content"]
+    assert parts == [{"type": "image_url", "image_url": {"url": "https://example.com/cat.jpg"}}]
+
+    data = ChatMessage(role="user", content="", images=["data:image/jpeg;base64,QUJD"])
+    parts = data.to_api(vision=True)["content"]
+    assert parts == [{"type": "image_url", "image_url": {"url": "data:image/jpeg;base64,QUJD"}}]
+
+
+def test_vision_disabled_keeps_text_only_content(tmp_path: Path) -> None:
+    img = _write_image(tmp_path, "jpg")
+    msg = ChatMessage(role="user", content="describe this", images=[str(img)])
+    assert msg.to_api(vision=False) == {"role": "user", "content": "describe this"}
+
+
+def test_provider_request_structure_compatible_with_openai(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
+    jpg = _write_image(tmp_path, "jpg")
+    primary = FakeProvider(ProviderSpec("opencode", "m1"))
+    service = make_service(
+        monkeypatch,
+        {"opencode": primary},
+        jarvis_chat_history_window=4,
+        jarvis_chat_vision_enabled=True,
+    )
+    # Reuse the internal message builder through stream_chat's history plumbing.
+    history = [
+        ChatMessage(role="user", content="see attachment", images=[str(jpg)]),
+        ChatMessage(role="assistant", content="ok"),
+    ]
+    run(service, "and this one?", history)
+
+    sent = primary.seen_messages[-1]
+    user_turns = [m for m in sent if m.get("role") == "user"]
+    assert len(user_turns) >= 2
+    history_turn, live_turn = user_turns[0], user_turns[-1]
+
+    content = history_turn["content"]
+    assert isinstance(content, list)
+    text_parts = [p for p in content if p["type"] == "text"]
+    image_parts = [p for p in content if p["type"] == "image_url"]
+    assert text_parts and text_parts[0]["text"] == "see attachment"
+    assert len(image_parts) == 1
+    url = image_parts[0]["image_url"]["url"]
+    mime, payload = _split_data_url(url)
+    assert mime == "image/png"
+    assert payload.startswith(PNG_SIGNATURE)
+
+    assert live_turn["content"] == "and this one?", "text-only turns stay plain strings"
 
 
 def test_vision_gating_on_message_payload() -> None:
