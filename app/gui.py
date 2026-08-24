@@ -13,7 +13,7 @@ from datetime import datetime
 from pathlib import Path
 from typing import Any
 
-from PySide6.QtCore import QEvent, QPointF, Qt, QTimer
+from PySide6.QtCore import QEvent, QPointF, QRectF, Qt, QTimer
 from PySide6.QtGui import (
     QColor,
     QFont,
@@ -46,6 +46,7 @@ from PySide6.QtWidgets import (
     QScrollArea,
     QSlider,
     QSplitter,
+    QStackedWidget,
     QTabWidget,
     QTextEdit,
     QVBoxLayout,
@@ -68,6 +69,8 @@ INNER = CANVAS = TERM = LIST = ENTRY = CHIP = CHIP_HI = SEL = BTN2 = DANGER = OK
 TOOLTIP_BORDER = SCENE = RING2 = ""
 
 _current_theme = "aurora"
+
+FONT_MONO = "'Cascadia Mono', 'Consolas', monospace"
 
 # Max agent-step widgets rendered per 80ms poll tick; storms collapse into one line.
 _AGENT_STEP_BUDGET_PER_TICK = 30
@@ -114,123 +117,230 @@ def _blend(c1: str, c2: str, t: float) -> str:
     return f"#{int(r1 + (r2 - r1) * t):02x}{int(g1 + (g2 - g1) * t):02x}{int(b1 + (b2 - b1) * t):02x}"
 
 
+def _title_color() -> str:
+    return _blend(TEXT, MUTED, 0.42)
+
+
 def _build_qss() -> str:
+    title = _title_color()
     return f"""
-    * {{ font-family: 'Segoe UI'; }}
+    * {{ font-family: 'Segoe UI'; outline: none; }}
     QMainWindow, QWidget {{ background: transparent; }}
-    QLabel {{ color: {TEXT}; font-size: 12px; }}
-    QFrame#Header {{
-        background: {_rgba(BG, 150)};
-        border: 1px solid {_rgba(STROKE, 180)};
-        border-radius: 14px;
+    QDialog {{ background: {CANVAS}; }}
+
+    QLabel {{ color: {TEXT}; font-size: 13px; background: transparent; }}
+    QLabel#Brand {{ color: {TEXT}; font-size: 19px; font-weight: 800; letter-spacing: 5px; }}
+    QLabel#BrandDot {{ color: {CYAN}; font-size: 15px; }}
+    QLabel#BrandSub {{ color: {MUTED}; font-size: 10px; font-weight: 600; letter-spacing: 2px; }}
+    QLabel#CardTitle {{ color: {title}; font-size: 11px; font-weight: 700; letter-spacing: 1.6px; }}
+    QLabel#CardSubtitle {{ color: {MUTED}; font-size: 10.5px; }}
+    QLabel#SectionLabel {{ color: {title}; font-size: 10px; font-weight: 700; letter-spacing: 1.4px; }}
+    QLabel#MetaLabel {{ color: {MUTED}; font-size: 11px; }}
+
+    QFrame#Shell {{
+        background: {_rgba(BG, 135)};
+        border: 1px solid {_rgba(STROKE, 145)};
+        border-radius: 16px;
     }}
     QFrame#Card {{
-        background: {_rgba(PANEL_2, 195)};
-        border: 1px solid {_rgba(STROKE, 180)};
+        background: {_rgba(PANEL_2, 206)};
+        border: 1px solid {_rgba(STROKE, 150)};
         border-radius: 14px;
     }}
-    QFrame#CardTitleBar {{ background: transparent; }}
-    QLabel#CardTitle {{ color: {TEXT}; font-size: 11px; font-weight: 700; letter-spacing: 1px; }}
-    QLabel#CardSubtitle {{ color: {MUTED}; font-size: 10px; }}
+    QFrame#AccentBar {{ background: {CYAN}; border: none; }}
+    QFrame#HSep {{ background: {_rgba(STROKE, 125)}; max-height: 1px; border: none; }}
+
     QPushButton {{
         color: {TEXT};
-        background: {_rgba(CHIP, 200)};
-        border: 1px solid {_rgba(STROKE, 120)};
-        border-radius: 10px;
-        padding: 6px 12px;
-        font-size: 11px;
+        background: {_rgba(CHIP, 205)};
+        border: 1px solid {_rgba(STROKE, 130)};
+        border-radius: 8px;
+        padding: 7px 14px;
+        font-size: 12px;
         font-weight: 600;
     }}
-    QPushButton:hover {{ background: {_rgba(CHIP_HI, 230)}; }}
-    QPushButton:pressed {{ background: {_rgba(SEL, 230)}; }}
-    QPushButton#Primary {{
+    QPushButton:hover {{ background: {_rgba(CHIP_HI, 235)}; border-color: {_rgba(STROKE, 195)}; }}
+    QPushButton:pressed {{ background: {SEL}; }}
+    QPushButton:disabled {{ color: {_rgba(MUTED, 130)}; background: {_rgba(CHIP, 105)}; border-color: {_rgba(STROKE, 65)}; }}
+    QPushButton:focus {{ border-color: {_rgba(CYAN, 170)}; }}
+    QPushButton[kind="primary"] {{
         color: {BG};
         background: qlineargradient(x1:0, y1:0, x2:1, y2:0, stop:0 {CYAN}, stop:1 {INDIGO});
         border: none;
         font-weight: 800;
-        padding: 8px 16px;
+        padding: 9px 18px;
     }}
-    QPushButton#Primary:hover {{ background: qlineargradient(x1:0, y1:0, x2:1, y2:0, stop:0 {_blend(CYAN, '#ffffff', 0.15)}, stop:1 {_blend(INDIGO, '#ffffff', 0.15)}); }}
-    QPushButton#Danger {{ background: {_rgba(DANGER, 200)}; color: {RED}; }}
-    QPushButton#Success {{ background: {_rgba(OK, 200)}; color: {GREEN}; }}
+    QPushButton[kind="primary"]:hover {{
+        background: qlineargradient(x1:0, y1:0, x2:1, y2:0, stop:0 {_blend(CYAN, '#ffffff', 0.16)}, stop:1 {_blend(INDIGO, '#ffffff', 0.16)});
+    }}
+    QPushButton[kind="primary"]:pressed {{
+        background: qlineargradient(x1:0, y1:0, x2:1, y2:0, stop:0 {_blend(CYAN, '#000000', 0.18)}, stop:1 {_blend(INDIGO, '#000000', 0.18)});
+    }}
+    QPushButton[kind="primary"]:disabled {{
+        color: {_rgba(BG, 140)};
+        background: {_rgba(CHIP_HI, 120)};
+    }}
+    QPushButton[kind="tertiary"] {{
+        color: {MUTED};
+        background: transparent;
+        border: 1px solid {_rgba(STROKE, 95)};
+    }}
+    QPushButton[kind="tertiary"]:hover {{ color: {TEXT}; background: {_rgba(CHIP, 170)}; }}
+    QPushButton[size="small"] {{ padding: 4px 11px; font-size: 11px; border-radius: 6px; }}
+    QPushButton[size="icon"] {{ padding: 0; min-width: 34px; max-width: 34px; min-height: 33px; font-size: 13px; }}
+
     QLineEdit, QComboBox {{
-        background: {_rgba(BTN2, 235)};
-        border: 1px solid {_rgba(CYAN, 90)};
+        background: {_rgba(ENTRY, 235)};
+        border: 1px solid {_rgba(CYAN, 75)};
         border-radius: 10px;
+        padding: 9px 12px;
+        color: {TEXT};
+        font-size: 13px;
+        selection-background-color: {SEL};
+    }}
+    QLineEdit:hover {{ border-color: {_rgba(CYAN, 150)}; }}
+    QLineEdit:focus {{ border: 1px solid {CYAN}; background: {_rgba(SEL, 185)}; }}
+    QLineEdit::placeholder {{ color: {_rgba(MUTED, 205)}; }}
+    QLineEdit[mono="true"] {{ font-family: {FONT_MONO}; font-size: 12.5px; }}
+    QComboBox::drop-down {{ width: 26px; border: none; }}
+    QComboBox::down-arrow {{
+        width: 0; height: 0;
+        border-left: 4px solid transparent;
+        border-right: 4px solid transparent;
+        border-top: 5px solid {MUTED};
+        margin-right: 9px;
+    }}
+    QComboBox QAbstractItemView {{
+        background: {PANEL_2}; color: {TEXT};
+        border: 1px solid {STROKE};
+        selection-background-color: {SEL};
+        outline: none;
+    }}
+
+    QTextEdit {{
+        background: {_rgba(LIST, 205)};
+        border: 1px solid {_rgba(STROKE, 115)};
+        border-radius: 10px;
+        color: {TEXT};
+        padding: 8px;
+        font-size: 12.5px;
+        selection-background-color: {SEL};
+    }}
+    QTextEdit#ChatFlow, QTextEdit#FeedView {{ background: transparent; border: none; padding: 0; }}
+    QTextEdit#TermView {{
+        background: {_rgba(TERM, 228)};
+        border: 1px solid {_rgba(STROKE, 118)};
+        border-radius: 10px;
+        font-family: {FONT_MONO};
+        font-size: 11px;
         padding: 8px 10px;
-        color: {TEXT};
-        font-size: 12px;
-        selection-background-color: {SEL};
     }}
-    QLineEdit:hover {{ border: 1px solid {_rgba(CYAN, 160)}; }}
-    QLineEdit:focus {{
-        border: 1px solid {CYAN};
-        background: {_rgba(SEL, 200)};
-    }}
-    QLineEdit::placeholder {{ color: {MUTED}; }}
-    QTextEdit, QPlainTextEdit {{
-        background: {_rgba(TERM, 220)};
-        border: 1px solid {_rgba(STROKE, 160)};
-        border-radius: 10px;
-        color: {TEXT};
-        padding: 6px;
-        font-family: 'Consolas', 'Cascadia Mono', monospace;
-        font-size: 12px;
-        selection-background-color: {SEL};
-    }}
+
     QListWidget {{
-        background: {_rgba(LIST, 220)};
-        border: 1px solid {_rgba(STROKE, 160)};
+        background: {_rgba(LIST, 202)};
+        border: 1px solid {_rgba(STROKE, 112)};
         border-radius: 10px;
         color: {TEXT};
-        font-size: 12px;
+        font-size: 12.5px;
         padding: 4px;
+        outline: none;
     }}
-    QListWidget::item {{ padding: 5px; border-radius: 6px; }}
-    QListWidget::item:selected {{ background: {SEL}; }}
+    QListWidget::item {{ padding: 6px 9px; border-radius: 6px; margin: 1px 2px; }}
+    QListWidget::item:hover {{ background: {_rgba(CHIP, 150)}; }}
+    QListWidget::item:selected {{ background: {SEL}; color: {TEXT}; }}
+
     QProgressBar {{
         background: {_rgba(TERM, 200)};
-        border: 1px solid {_rgba(STROKE, 140)};
-        border-radius: 6px;
+        border: 1px solid {_rgba(STROKE, 120)};
+        border-radius: 5px;
         height: 10px;
         text-align: center;
+        color: transparent;
     }}
-    QProgressBar::chunk {{ background: {CYAN}; border-radius: 5px; }}
+    QProgressBar::chunk {{
+        background: qlineargradient(x1:0, y1:0, x2:1, y2:0, stop:0 {CYAN}, stop:1 {INDIGO});
+        border-radius: 4px;
+    }}
+
     QScrollArea {{ border: none; background: transparent; }}
-    QScrollBar:vertical {{
-        background: transparent; width: 10px; margin: 2px;
-    }}
-    QScrollBar::handle:vertical {{
-        background: {_rgba(CHIP, 200)}; border-radius: 5px; min-height: 30px;
-    }}
-    QScrollBar::handle:vertical:hover {{ background: {_rgba(CHIP_HI, 220)}; }}
+    QScrollBar:vertical {{ background: transparent; width: 8px; margin: 2px; }}
+    QScrollBar::handle:vertical {{ background: {_rgba(CHIP_HI, 175)}; border-radius: 4px; min-height: 28px; }}
+    QScrollBar::handle:vertical:hover {{ background: {_rgba(CHIP_HI, 230)}; }}
     QScrollBar::add-line:vertical, QScrollBar::sub-line:vertical {{ height: 0; }}
-    QScrollBar:horizontal {{
-        background: transparent; height: 10px; margin: 2px;
-    }}
-    QScrollBar::handle:horizontal {{
-        background: {_rgba(CHIP, 200)}; border-radius: 5px; min-width: 30px;
-    }}
+    QScrollBar::add-page:vertical, QScrollBar::sub-page:vertical {{ background: transparent; }}
+    QScrollBar:horizontal {{ background: transparent; height: 8px; margin: 2px; }}
+    QScrollBar::handle:horizontal {{ background: {_rgba(CHIP_HI, 175)}; border-radius: 4px; min-width: 28px; }}
+    QScrollBar::handle:horizontal:hover {{ background: {_rgba(CHIP_HI, 230)}; }}
     QScrollBar::add-line:horizontal, QScrollBar::sub-line:horizontal {{ width: 0; }}
-    QMenu {{ background: {PANEL_2}; color: {TEXT}; border: 1px solid {STROKE}; padding: 4px; }}
-    QMenu::item {{ padding: 6px 18px; border-radius: 6px; }}
+    QScrollBar::add-page:horizontal, QScrollBar::sub-page:horizontal {{ background: transparent; }}
+
+    QMenu {{
+        background: {PANEL_2}; color: {TEXT};
+        border: 1px solid {_rgba(STROKE, 200)};
+        border-radius: 10px;
+        padding: 6px;
+    }}
+    QMenu::item {{ padding: 7px 22px; border-radius: 6px; font-size: 12px; }}
     QMenu::item:selected {{ background: {SEL}; }}
-    QTabWidget::pane {{ border: 1px solid {_rgba(STROKE, 160)}; border-radius: 10px; background: {_rgba(TERM, 180)}; }}
-    QTabBar::tab {{ background: {_rgba(CHIP, 180)}; color: {MUTED}; padding: 7px 16px; border-radius: 8px 8px 0 0; margin-right: 3px; font-weight: 600; }}
+    QMenu::item:disabled {{ color: {MUTED}; }}
+    QMenu::separator {{ height: 1px; background: {_rgba(STROKE, 150)}; margin: 5px 8px; }}
+
+    QTabWidget::pane {{ border: none; top: 6px; }}
+    QTabBar::tab {{
+        background: {_rgba(CHIP, 180)}; color: {MUTED};
+        padding: 7px 16px; border-radius: 8px;
+        margin-right: 4px; font-size: 11.5px; font-weight: 700;
+    }}
     QTabBar::tab:selected {{ background: {SEL}; color: {TEXT}; }}
-    QSplitter::handle {{ background: {_rgba(STROKE, 120)}; border-radius: 2px; }}
+
+    QSplitter::handle {{ background: {_rgba(STROKE, 60)}; }}
+    QSplitter::handle:hover {{ background: {_rgba(CYAN, 130)}; }}
+    QSplitter::handle:horizontal {{ width: 3px; }}
+
     QToolTip {{
         background: {TOOLTIP}; color: {TEXT};
         border: 1px solid {TOOLTIP_BORDER};
-        padding: 5px; border-radius: 6px;
+        padding: 6px 9px; border-radius: 6px; font-size: 12px;
     }}
+
+    QGroupBox {{
+        color: {title};
+        border: 1px solid {_rgba(STROKE, 130)};
+        border-radius: 10px;
+        margin-top: 15px;
+        padding: 12px 10px 10px 10px;
+        font-size: 11px; font-weight: 700;
+    }}
+    QGroupBox::title {{
+        subcontrol-origin: margin; left: 10px; top: 5px;
+        padding: 0 5px; background: {CANVAS}; letter-spacing: 1.2px;
+    }}
+
+    QRadioButton {{ color: {TEXT}; font-size: 12.5px; spacing: 7px; }}
+    QRadioButton::indicator {{
+        width: 15px; height: 15px; border-radius: 8px;
+        border: 1px solid {_rgba(STROKE, 220)};
+        background: {_rgba(ENTRY, 200)};
+    }}
+    QRadioButton::indicator:checked {{
+        border: 1px solid {CYAN};
+        background: qradialgradient(cx:0.5, cy:0.5, radius:0.45, fx:0.5, fy:0.5, stop:0 {CYAN}, stop:0.55 {CYAN}, stop:0.8 rgba(0,0,0,0), stop:1 rgba(0,0,0,0));
+    }}
+
+    QSlider::groove:horizontal {{ height: 4px; background: {_rgba(CHIP_HI, 200)}; border-radius: 2px; }}
+    QSlider::sub-page:horizontal {{ background: {_rgba(CYAN, 170)}; border-radius: 2px; }}
+    QSlider::handle:horizontal {{
+        width: 15px; height: 15px; margin: -6px 0;
+        border-radius: 8px; background: {CYAN}; border: 2px solid {BG};
+    }}
+
     QFrame#Toast {{
         background: {PANEL_2};
-        border: 1px solid {_rgba(STROKE, 180)};
+        border: 1px solid {_rgba(STROKE, 190)};
         border-radius: 12px;
     }}
     QLabel#ToastTitle {{ color: {TEXT}; font-size: 13px; font-weight: 700; }}
-    QLabel#ToastMsg {{ color: {MUTED}; font-size: 11px; }}
+    QLabel#ToastMsg {{ color: {MUTED}; font-size: 11.5px; }}
     QLabel#ToastClose {{ color: {MUTED}; font-size: 14px; }}
     """
 
@@ -256,7 +366,7 @@ class Backdrop(QWidget):
         self._gfx_full = False
         self._timer = QTimer(self)
         self._timer.timeout.connect(self._animate)
-        self._timer.start(40)
+        self._timer.start(50)
 
     def set_bg(self, mode: str, value: str = "") -> None:
         self._mode = mode
@@ -277,17 +387,17 @@ class Backdrop(QWidget):
         self._particles.clear()
 
     def _animate(self) -> None:
-        self._angle += 0.03
+        self._angle += 0.02
         if not self._particles and self.width() > 10:
             w, h = self.width(), self.height()
-            count = 50 if self._gfx_full else 14
+            count = 44 if self._gfx_full else 12
             for _ in range(count):
                 self._particles.append(
                     {
                         "x": random.uniform(0, w),
                         "y": random.uniform(0, h),
-                        "r": random.uniform(1.5, 4.0),
-                        "speed": random.uniform(0.2, 0.9),
+                        "r": random.uniform(1.0, 2.6),
+                        "speed": random.uniform(0.15, 0.7),
                     }
                 )
         self.update()
@@ -304,7 +414,7 @@ class Backdrop(QWidget):
             x = (scaled.width() - w) // 2
             y = (scaled.height() - h) // 2
             p.drawPixmap(0, 0, scaled, x, y, w, h)
-            p.fillRect(0, 0, w, h, QColor(4, 8, 20, 170))
+            p.fillRect(0, 0, w, h, QColor(4, 8, 20, 178))
         elif self._mode == "gradient":
             idx = int(self._value or 0) % len(self.GRADIENTS)
             _name, top, bottom = self.GRADIENTS[idx]
@@ -314,23 +424,21 @@ class Backdrop(QWidget):
             p.fillRect(0, 0, w, h, grad)
         else:
             grad = QLinearGradient(0, 0, 0, h)
-            grad.setColorAt(0, QColor("#050a14"))
-            grad.setColorAt(1, QColor("#0e1b33"))
+            grad.setColorAt(0, QColor("#04091a"))
+            grad.setColorAt(1, QColor("#0c1830"))
             p.fillRect(0, 0, w, h, grad)
-            # aurora blobs
-            self._draw_blob(p, w * 0.22, h * 0.35, 320 + 30 * math.sin(self._angle), INDIGO, 26)
-            self._draw_blob(p, w * 0.8, h * 0.7, 380 + 40 * math.cos(self._angle * 0.7), CYAN, 18)
+            self._draw_blob(p, w * 0.18, h * 0.30, 340 + 26 * math.sin(self._angle), INDIGO, 20)
+            self._draw_blob(p, w * 0.82, h * 0.72, 400 + 34 * math.cos(self._angle * 0.7), CYAN, 13)
 
-        # particles
         for part in self._particles:
             part["y"] += part["speed"]
-            part["x"] += math.sin(self._angle + part["y"] * 0.02) * 0.4
+            part["x"] += math.sin(self._angle + part["y"] * 0.02) * 0.3
             if part["y"] > h + 8:
                 part["y"] = -8
                 part["x"] = random.uniform(0, w)
             r = part["r"]
             p.setPen(Qt.PenStyle.NoPen)
-            p.setBrush(QColor(129, 140, 248, 150))
+            p.setBrush(QColor(129, 140, 248, 85))
             p.drawEllipse(QPointF(part["x"], part["y"]), r, r)
 
         p.end()
@@ -348,7 +456,109 @@ class Backdrop(QWidget):
         p.drawEllipse(QPointF(x, y), radius, radius)
 
 
+class CoreOrb(QWidget):
+    """Subtle rotating-ring core visualization for the assistant idle state."""
+
+    def __init__(self) -> None:
+        super().__init__()
+        self._t = 0.0
+        self.setFixedSize(180, 180)
+        self._timer = QTimer(self)
+        self._timer.timeout.connect(self._tick)
+        self._timer.start(50)
+
+    def _tick(self) -> None:
+        if not self.isVisible():
+            return
+        self._t += 0.02
+        self.update()
+
+    def paintEvent(self, event) -> None:
+        p = QPainter(self)
+        p.setRenderHint(QPainter.RenderHint.Antialiasing)
+        cx = self.width() / 2
+        cy = self.height() / 2
+
+        pen = QPen(QColor(CYAN), 2)
+        pen.setCapStyle(Qt.PenCapStyle.RoundCap)
+        c = QColor(CYAN)
+        c.setAlpha(115)
+        pen.setColor(c)
+        p.setPen(pen)
+        p.setBrush(Qt.BrushStyle.NoBrush)
+        p.drawArc(QRectF(cx - 74, cy - 74, 148, 148), int(-self._t * 57.3 * 16) % 5760, 100 * 16)
+
+        pen2 = QPen(QColor(INDIGO), 2)
+        pen2.setCapStyle(Qt.PenCapStyle.RoundCap)
+        c2 = QColor(INDIGO)
+        c2.setAlpha(80)
+        pen2.setColor(c2)
+        p.setPen(pen2)
+        p.drawArc(QRectF(cx - 56, cy - 56, 112, 112), int(self._t * 92 * 16) % 5760, 62 * 16)
+
+        pen3 = QPen(QColor(CYAN), 1)
+        c3 = QColor(CYAN)
+        c3.setAlpha(45)
+        pen3.setColor(c3)
+        p.setPen(pen3)
+        p.drawArc(QRectF(cx - 38, cy - 38, 76, 76), int(-self._t * 41 * 16) % 5760, 140 * 16)
+
+        pulse = abs(math.sin(self._t * 1.6))
+        halo_r = 22 + pulse * 5
+        grad = QLinearGradient(cx - halo_r, cy, cx + halo_r, cy)
+        hc = QColor(CYAN)
+        hc.setAlpha(int(42 + pulse * 28))
+        grad.setColorAt(0, hc)
+        hf = QColor(CYAN)
+        hf.setAlpha(0)
+        grad.setColorAt(1, hf)
+        p.setPen(Qt.PenStyle.NoPen)
+        p.setBrush(grad)
+        p.drawEllipse(QPointF(cx, cy), halo_r, halo_r)
+
+        core = QColor(CYAN)
+        core.setAlpha(210)
+        p.setBrush(core)
+        p.drawEllipse(QPointF(cx, cy), 6 + pulse * 1.6, 6 + pulse * 1.6)
+
+        p.end()
+
+
+class IdlePanel(QWidget):
+    """Premium empty state shown until the first conversation message arrives."""
+
+    def __init__(self) -> None:
+        super().__init__()
+        lay = QVBoxLayout(self)
+        lay.setContentsMargins(20, 12, 20, 12)
+        lay.setSpacing(6)
+        lay.addStretch(3)
+        self.orb = CoreOrb()
+        lay.addWidget(self.orb, 0, Qt.AlignmentFlag.AlignHCenter)
+        lay.addSpacing(10)
+        title = QLabel("JARVIS")
+        title.setAlignment(Qt.AlignmentFlag.AlignHCenter)
+        title.setStyleSheet(f"color: {TEXT}; font-size: 27px; font-weight: 800; letter-spacing: 11px;")
+        lay.addWidget(title)
+        state = QLabel("READY")
+        state.setAlignment(Qt.AlignmentFlag.AlignHCenter)
+        state.setStyleSheet(f"color: {GREEN}; font-size: 12px; font-weight: 700; letter-spacing: 4px;")
+        lay.addWidget(state)
+        cap = QLabel("System operational — awaiting your command")
+        cap.setObjectName("MetaLabel")
+        cap.setAlignment(Qt.AlignmentFlag.AlignHCenter)
+        lay.addWidget(cap)
+        lay.addStretch(2)
+        hint = QLabel("Try  ·  system status  ·  open chrome  ·  apply for data scientist  ·  what can you do?")
+        hint.setObjectName("MetaLabel")
+        hint.setAlignment(Qt.AlignmentFlag.AlignHCenter)
+        lay.addWidget(hint)
+        lay.addStretch(1)
+
+
 class WaveWidget(QWidget):
+    """Clickable voice waveform visualizer."""
+
     def __init__(self, on_click: Callable[[], None]) -> None:
         super().__init__()
         self._on_click = on_click
@@ -357,7 +567,7 @@ class WaveWidget(QWidget):
         self._color = MUTED
         self._amp = 6.0
         self._speed = 0.18
-        self.setMinimumHeight(64)
+        self.setMinimumHeight(52)
         self.setCursor(Qt.CursorShape.PointingHandCursor)
         self._timer = QTimer(self)
         self._timer.timeout.connect(self._step)
@@ -365,7 +575,8 @@ class WaveWidget(QWidget):
 
     def _step(self) -> None:
         self._phase += self._speed
-        self.update()
+        if self.isVisible():
+            self.update()
 
     def update_status(self, label: str, color: str, amp: float, speed: float) -> None:
         self._label = label
@@ -383,7 +594,28 @@ class WaveWidget(QWidget):
         w = max(1, self.width())
         h = max(1, self.height())
         c = h // 2
+
+        base = QColor(self._color)
+        base.setAlpha(36)
+        p.setPen(QPen(base, 1))
+        p.drawLine(0, c, w, c)
+
+        echo = QColor(self._color)
+        echo.setAlpha(70)
+        p.setPen(QPen(echo, 1))
+        path_e = QPainterPath()
+        first = True
+        for x in range(0, w + 1, 6):
+            y = c + math.sin((x * 0.045) + self._phase * 0.82 + 1.4) * self._amp * 0.55
+            if first:
+                path_e.moveTo(x, y)
+                first = False
+            else:
+                path_e.lineTo(x, y)
+        p.drawPath(path_e)
+
         pen = QPen(QColor(self._color), 2)
+        pen.setCapStyle(Qt.PenCapStyle.RoundCap)
         p.setPen(pen)
         path = QPainterPath()
         first = True
@@ -395,11 +627,37 @@ class WaveWidget(QWidget):
             else:
                 path.lineTo(x, y)
         p.drawPath(path)
-        p.setPen(QColor(self._color))
-        font = QFont("Segoe UI", 9)
-        font.setBold(True)
-        p.setFont(font)
-        p.drawText(10, 16, f"VOICE {self._label}")
+        p.end()
+
+
+class MeterBar(QWidget):
+    """Tiny inline telemetry bar."""
+
+    def __init__(self, color: str, width: int = 84, height: int = 6) -> None:
+        super().__init__()
+        self._value = 0.0
+        self._color = color
+        self.setFixedSize(width, height)
+
+    def set_value(self, value: float) -> None:
+        self._value = max(0.0, min(100.0, float(value)))
+        self.update()
+
+    def paintEvent(self, event) -> None:
+        p = QPainter(self)
+        p.setRenderHint(QPainter.RenderHint.Antialiasing)
+        p.setPen(Qt.PenStyle.NoPen)
+        p.setBrush(QColor(TERM))
+        p.drawRoundedRect(self.rect(), 3, 3)
+        fill_w = int((self.width() - 2) * (self._value / 100.0))
+        if fill_w > 2:
+            c = QColor(self._color)
+            if self._value >= 90:
+                c = QColor(RED)
+            elif self._value >= 75:
+                c = QColor(AMBER)
+            p.setBrush(c)
+            p.drawRoundedRect(1, 1, fill_w, self.height() - 2, 2, 2)
         p.end()
 
 
@@ -410,8 +668,8 @@ class JarvisHudApp(QMainWindow):
         self._hub = EventHub()
         self.runtime = build_runtime(events=self._hub)
         self._monitor = self.runtime.monitor
-        self.setWindowTitle("JARVIS AI Command HUD")
-        self.setMinimumSize(1280, 820)
+        self.setWindowTitle("JARVIS — AI Command Console")
+        self.setMinimumSize(1120, 700)
 
         self._ui_config_path = Path(__file__).resolve().parent.parent / "data" / "jarvis_ui.json"
         self.mini = MiniHud(
@@ -426,6 +684,8 @@ class JarvisHudApp(QMainWindow):
         self._scene_angle = 0.0
         self._pending_ids: list[str] = []
         self._chat_streaming = False
+        self._chat_responding = False
+        self._ai_state_key = "idle"
         self._chat_history: list[dict[str, str]] = []
         self._cmd_history: list[str] = []
         self._cmd_history_index = -1
@@ -477,10 +737,6 @@ class JarvisHudApp(QMainWindow):
         self.runtime.scheduler.start()
         self._job_tick()
 
-        # Auto-start voice if enabled in config
-        #if self.runtime.settings.voice_enabled:
-        #    QTimer.singleShot(2000, self._auto_start_voice)
-
     def _startup_greeting(self) -> None:
         settings = self.runtime.settings
         if not settings.startup_greeting_enabled:
@@ -507,37 +763,75 @@ class JarvisHudApp(QMainWindow):
         except Exception:
             pass
 
-    # ------------------------------------------------------------ UI build
+    # ------------------------------------------------------------ shared builders
 
-    def _make_card(self, title: str, subtitle: str = "") -> tuple[QFrame, QWidget]:
+    def _make_card(self, title: str, subtitle: str = "", extra: QWidget | None = None) -> tuple[QFrame, QWidget]:
         card = QFrame()
         card.setObjectName("Card")
         lay = QVBoxLayout(card)
-        lay.setContentsMargins(14, 10, 14, 14)
-        lay.setSpacing(8)
-        head = QFrame()
-        head.setObjectName("CardTitleBar")
-        head_lay = QHBoxLayout(head)
-        head_lay.setContentsMargins(0, 0, 0, 0)
+        lay.setContentsMargins(16, 12, 16, 14)
+        lay.setSpacing(10)
+        head = QHBoxLayout()
+        head.setContentsMargins(0, 0, 0, 0)
+        head.setSpacing(8)
+        bar = QFrame()
+        bar.setObjectName("AccentBar")
+        bar.setFixedSize(3, 13)
+        head.addWidget(bar)
         title_label = QLabel(title.upper())
         title_label.setObjectName("CardTitle")
-        head_lay.addWidget(title_label, 1)
+        head.addWidget(title_label)
+        head.addStretch(1)
         if subtitle:
             sub = QLabel(subtitle)
             sub.setObjectName("CardSubtitle")
-            head_lay.addWidget(sub)
-        lay.addWidget(head)
+            head.addWidget(sub)
+        if extra is not None:
+            head.addWidget(extra)
+        lay.addLayout(head)
         body = QWidget()
-        body.setObjectName("CardBody")
         lay.addWidget(body, 1)
         return card, body
 
-    def _chip(self, text: str, command, primary: bool = False) -> QPushButton:
+    def _section_label(self, text: str) -> QLabel:
+        lbl = QLabel(text.upper())
+        lbl.setObjectName("SectionLabel")
+        return lbl
+
+    def _button(
+        self,
+        text: str,
+        callback: Callable[..., None],
+        kind: str = "secondary",
+        small: bool = False,
+        tooltip: str = "",
+    ) -> QPushButton:
         btn = QPushButton(text)
-        btn.setObjectName("Primary" if primary else "Chip")
+        btn.setProperty("kind", kind)
+        if small:
+            btn.setProperty("size", "small")
         btn.setCursor(Qt.CursorShape.PointingHandCursor)
-        btn.clicked.connect(lambda: command())
+        if tooltip:
+            btn.setToolTip(tooltip)
+        btn.clicked.connect(lambda: callback())
         return btn
+
+    def _chip(self, text: str, command, primary: bool = False) -> QPushButton:
+        return self._button(text, command, kind="primary" if primary else "secondary")
+
+    def _vsep(self) -> QFrame:
+        f = QFrame()
+        f.setFixedSize(1, 18)
+        f.setStyleSheet(f"background: {_rgba(STROKE, 165)}; border: none;")
+        return f
+
+    def _hsep(self) -> QFrame:
+        f = QFrame()
+        f.setObjectName("HSep")
+        f.setFixedHeight(1)
+        return f
+
+    # ------------------------------------------------------------ UI build
 
     def _build_ui(self) -> None:
         self.backdrop = Backdrop()
@@ -547,96 +841,113 @@ class JarvisHudApp(QMainWindow):
         self.setStyleSheet(_build_qss())
 
         root_lay = QVBoxLayout(self.backdrop)
-        root_lay.setContentsMargins(18, 14, 18, 14)
-        root_lay.setSpacing(12)
+        root_lay.setContentsMargins(16, 12, 16, 12)
+        root_lay.setSpacing(10)
 
-        # ------------------------------------------------------- header
+        root_lay.addWidget(self._build_header())
+
+        splitter = QSplitter(Qt.Orientation.Horizontal)
+        splitter.setChildrenCollapsible(False)
+        splitter.setHandleWidth(6)
+
+        left = self._build_left_column()
+        left.setMinimumWidth(320)
+        center = self._build_center_column()
+        center.setMinimumWidth(430)
+        right_scroll = self._build_right_column()
+        splitter.addWidget(left)
+        splitter.addWidget(center)
+        splitter.addWidget(right_scroll)
+        splitter.setStretchFactor(0, 2)
+        splitter.setStretchFactor(1, 4)
+        splitter.setStretchFactor(2, 2)
+        splitter.setSizes([430, 660, 370])
+
+        root_lay.addWidget(splitter, 1)
+        root_lay.addWidget(self._build_status_bar())
+
+        self._refresh_status_meters()
+
+    def _build_header(self) -> QFrame:
         header = QFrame()
-        header.setObjectName("Header")
+        header.setObjectName("Shell")
         header_lay = QHBoxLayout(header)
-        header_lay.setContentsMargins(16, 10, 16, 10)
+        header_lay.setContentsMargins(18, 10, 14, 10)
         header_lay.setSpacing(8)
 
+        brand_box = QVBoxLayout()
+        brand_box.setSpacing(0)
+        brand_row = QHBoxLayout()
+        brand_row.setSpacing(8)
+        dot = QLabel("●")
+        dot.setObjectName("BrandDot")
+        brand_row.addWidget(dot)
         brand = QLabel("JARVIS")
-        brand_font = QFont("Segoe UI", 18)
-        brand_font.setBold(True)
-        brand.setFont(brand_font)
-        brand.setStyleSheet(f"color: {CYAN};")
-        header_lay.addWidget(brand)
+        brand.setObjectName("Brand")
+        brand_row.addWidget(brand)
+        brand_box.addLayout(brand_row)
+        sub = QLabel("AI COMMAND CONSOLE")
+        sub.setObjectName("BrandSub")
+        brand_box.addWidget(sub)
+        header_lay.addLayout(brand_box)
+        header_lay.addSpacing(10)
 
-        self.online_label = QLabel("STATUS: ONLINE")
-        self.online_label.setStyleSheet(f"color: {GREEN}; font-weight: 700; font-size: 11px; padding: 4px 10px; background: {_rgba(STATUS, 200)}; border-radius: 8px;")
+        self.online_label = QLabel("● ONLINE")
+        self.online_label.setStyleSheet(
+            f"color: {GREEN}; font-size: 11px; font-weight: 700; letter-spacing: 1px;"
+            f" padding: 4px 12px; background: {_rgba(GREEN, 26)}; border-radius: 9px;"
+        )
         header_lay.addWidget(self.online_label)
 
         header_lay.addStretch(1)
 
-        for txt, cmd, tip in [
-            ("▶", lambda: self._run_preset("youtube pause"), "Toggle YouTube play/pause"),
-            ("⏭", lambda: self._run_preset("youtube next"), "Go to next YouTube video"),
-            ("APPS", lambda: self._run_preset("list apps"), "Show apps in the launcher panel"),
-        ]:
-            b = self._chip(txt, cmd)
-            b.setToolTip(tip)
-            header_lay.addWidget(b)
+        play_btn = self._button("▶", lambda: self._run_preset("youtube pause"), tooltip="Toggle YouTube play/pause")
+        play_btn.setProperty("size", "icon")
+        header_lay.addWidget(play_btn)
+        next_btn = self._button("⏭", lambda: self._run_preset("youtube next"), tooltip="Go to next YouTube video")
+        next_btn.setProperty("size", "icon")
+        header_lay.addWidget(next_btn)
+        header_lay.addWidget(self._button("APPS", lambda: self._run_preset("list apps"), tooltip="Show apps in the launcher panel"))
 
         header_lay.addWidget(self._vsep())
-        b = self._chip("MINI", self.mini.toggle)
-        b.setToolTip("Show/hide the floating mini HUD")
-        header_lay.addWidget(b)
-        b = self._chip("DIAGNOSE", self._diagnose_system)
-        b.setToolTip("Run full system diagnosis (CPU/RAM/GPU + process analysis)")
-        header_lay.addWidget(b)
-        b = self._chip("VOICE SETTINGS", self._open_voice_settings)
-        b.setToolTip("Configure voice engine, speed, devices, and voice name")
-        header_lay.addWidget(b)
-        header_lay.addWidget(self._vsep())
-        self.auto_start_button = self._chip("AUTOSTART", self._toggle_auto_start)
-        self.auto_start_button.setToolTip("Toggle auto-start when this project opens / Windows login")
-        header_lay.addWidget(self.auto_start_button)
-        self.tray_button = self._chip("TRAY", self._toggle_tray)
-        self.tray_button.setToolTip("Minimize to system tray / Ctrl+Shift+J summons the mini HUD")
-        header_lay.addWidget(self.tray_button)
-        self.gfx_button = self._chip("GFX", self._toggle_gfx)
-        self.gfx_button.setToolTip("Toggle Lite / Full graphics effects")
-        header_lay.addWidget(self.gfx_button)
-        self.theme_button = self._chip(f"THEME {self._theme.upper()}", self._cycle_theme)
-        self.theme_button.setToolTip("Cycle Aurora / Cyber / Light themes")
-        header_lay.addWidget(self.theme_button)
+        header_lay.addWidget(self._button("MINI", self.mini.toggle, tooltip="Show/hide the floating mini HUD"))
+        header_lay.addWidget(self._button("DIAGNOSE", self._diagnose_system, tooltip="Run full system diagnosis (CPU/RAM/GPU + process analysis)"))
 
         header_lay.addWidget(self._vsep())
-        more_btn = self._chip("MORE ▾", self._show_more_menu)
-        header_lay.addWidget(more_btn)
+        menu_btn = self._button("MENU ▾", self._show_more_menu, kind="tertiary")
+        header_lay.addWidget(menu_btn)
         self._more_menu = QMenu(self)
         self._more_menu.addAction("HELP  (F1)", self._open_help)
-        self._more_menu.addAction("VOICE SETTINGS", self._open_voice_settings)
         self._more_menu.addAction("SCHEDULER", self._open_scheduler)
         self._more_menu.addAction("HISTORY", self._open_history)
         self._more_menu.addAction("TASKS", self._open_tasks)
         self._more_menu.addAction("MEMORY", self._open_memory)
-        self._more_menu.addSeparator()
         self._more_menu.addAction("BACKGROUNDS", self._open_backgrounds)
-        self._more_btn = more_btn
+        self._more_menu.addSeparator()
+        self._more_menu.addAction("VOICE SETTINGS…", self._open_voice_settings)
+        self.act_autostart = self._more_menu.addAction("AUTOSTART · ON", self._toggle_auto_start)
+        self.act_tray = self._more_menu.addAction("TRAY · OFF", self._toggle_tray)
+        self.act_gfx = self._more_menu.addAction("GRAPHICS · LITE", self._toggle_gfx)
+        self.act_theme = self._more_menu.addAction(f"THEME · {self._theme.upper()}", self._cycle_theme)
+        self._more_btn = menu_btn
 
-        root_lay.addWidget(header)
+        return header
 
-        # ------------------------------------------------------- body
-        splitter = QSplitter(Qt.Orientation.Horizontal)
-        splitter.setChildrenCollapsible(False)
-
+    def _build_left_column(self) -> QWidget:
         left = QWidget()
         left_lay = QVBoxLayout(left)
         left_lay.setContentsMargins(0, 0, 0, 0)
-        left_lay.setSpacing(8)
+        left_lay.setSpacing(10)
 
         cmd_card, cmd_body = self._make_card("Command Center", "Natural-language control")
         cmd_lay = QVBoxLayout(cmd_body)
         cmd_lay.setContentsMargins(0, 0, 0, 0)
-        cmd_lay.setSpacing(8)
+        cmd_lay.setSpacing(9)
         row = QHBoxLayout()
         row.setSpacing(8)
         self.command_entry = QLineEdit()
-        self.command_entry.setPlaceholderText("Type a command, e.g. 'system status'…")
-        self.command_entry.setFont(QFont("Consolas", 12))
+        self.command_entry.setProperty("mono", True)
+        self.command_entry.setPlaceholderText("Type a command… e.g. “system status”")
         self.command_entry.returnPressed.connect(self._run_command)
         self.command_entry.installEventFilter(self)
         row.addWidget(self.command_entry, 1)
@@ -646,160 +957,239 @@ class JarvisHudApp(QMainWindow):
         chips = QHBoxLayout()
         chips.setSpacing(6)
         for label, cmd_str in [
-            ("system status", "system status"),
-            ("metrics", "metrics"),
-            ("list schedules", "list schedules"),
-            ("job status", "job status"),
-            ("time", "get current time"),
+            ("SYSTEM STATUS", "system status"),
+            ("METRICS", "metrics"),
+            ("SCHEDULES", "list schedules"),
+            ("JOB STATUS", "job status"),
+            ("TIME", "get current time"),
         ]:
-            chips.addWidget(self._chip(label, lambda c=cmd_str: self._run_preset(c)))
+            chips.addWidget(self._button(label, lambda c=cmd_str: self._run_preset(c), kind="tertiary", small=True))
         chips.addStretch(1)
         cmd_lay.addLayout(chips)
         left_lay.addWidget(cmd_card)
 
-        feed_card, feed_body = self._make_card("Activity Feed", "Commands, agents and scheduler events")
+        feed_card, feed_body = self._make_card("Activity Feed", "Commands · agents · scheduler")
         feed_lay = QVBoxLayout(feed_body)
         feed_lay.setContentsMargins(0, 0, 0, 0)
         feed_lay.setSpacing(6)
         feed_head = QHBoxLayout()
         feed_head.addStretch(1)
-        clear_feed = self._chip("CLEAR", self._clear_feed)
-        feed_head.addWidget(clear_feed)
+        feed_head.addWidget(self._button("CLEAR", self._clear_feed, kind="tertiary", small=True))
         feed_lay.addLayout(feed_head)
         self.feed_text = QTextEdit()
+        self.feed_text.setObjectName("FeedView")
         self.feed_text.setReadOnly(True)
-        self.feed_text.setMaximumHeight(120)
-        feed_lay.addWidget(self.feed_text)
-        left_lay.addWidget(feed_card, 1)
+        self.feed_text.setMinimumHeight(110)
+        feed_lay.addWidget(self.feed_text, 1)
+        left_lay.addWidget(feed_card, 2)
 
-        term_card, term_body = self._make_card("Live Terminal", "Command, agent and scheduler logs")
+        term_card, term_body = self._make_card("Live Terminal", "Console output")
         term_lay = QVBoxLayout(term_body)
         term_lay.setContentsMargins(0, 0, 0, 0)
         term_lay.setSpacing(6)
         term_head = QHBoxLayout()
-        term_label = QLabel("ALL EVENTS STREAM HERE")
-        term_label.setStyleSheet(f"color: {MUTED}; font-size: 10px;")
-        term_head.addWidget(term_label, 1)
-        term_head.addWidget(self._chip("CLEAR", self._clear_terminal))
+        term_hint = QLabel("Ctrl+L clears")
+        term_hint.setObjectName("MetaLabel")
+        term_head.addWidget(term_hint, 1)
+        term_head.addWidget(self._button("CLEAR", self._clear_terminal, kind="tertiary", small=True))
         term_lay.addLayout(term_head)
         self.terminal = QTextEdit()
+        self.terminal.setObjectName("TermView")
         self.terminal.setReadOnly(True)
-        self.terminal.setMaximumHeight(200)
+        self.terminal.setMinimumHeight(160)
         term_lay.addWidget(self.terminal, 1)
-        left_lay.addWidget(term_card, 2)
-        splitter.addWidget(left)
+        left_lay.addWidget(term_card, 3)
 
-        # ------------------------------------------------------- AI assistant
-        ai_card, ai_body = self._make_card("AI Assistant", "Jarvis plans, executes and streams answers")
+        return left
+
+    def _build_center_column(self) -> QFrame:
+        self.ai_state_chip = QLabel("● READY")
+        self.ai_state_chip.setStyleSheet(self._ai_chip_qss(GREEN))
+
+        ai_card, ai_body = self._make_card("AI Assistant", "Plans · executes · answers", extra=self.ai_state_chip)
         ai_lay = QVBoxLayout(ai_body)
         ai_lay.setContentsMargins(0, 0, 0, 0)
-        ai_lay.setSpacing(8)
+        ai_lay.setSpacing(10)
+
+        self.ai_stack = QStackedWidget()
+        self.idle_panel = IdlePanel()
         self.chat_text = QTextEdit()
+        self.chat_text.setObjectName("ChatFlow")
         self.chat_text.setReadOnly(True)
-        self.chat_text.setFont(QFont("Consolas", 11))
-        ai_lay.addWidget(self.chat_text, 1)
-        chat_inp = QHBoxLayout()
-        chat_inp.setSpacing(8)
+        self.ai_stack.addWidget(self.idle_panel)
+        self.ai_stack.addWidget(self.chat_text)
+        ai_lay.addWidget(self.ai_stack, 1)
+
+        composer = QFrame()
+        composer_lay = QHBoxLayout(composer)
+        composer_lay.setContentsMargins(0, 0, 0, 0)
+        composer_lay.setSpacing(8)
         self.chat_entry = QLineEdit()
+        self.chat_entry.setMinimumHeight(40)
         self.chat_entry.setPlaceholderText("Ask JARVIS anything…")
         self.chat_entry.returnPressed.connect(self._ask_chatbot)
-        chat_inp.addWidget(self.chat_entry, 1)
-        chat_inp.addWidget(self._chip("ASK", self._ask_chatbot, primary=True))
-        ai_lay.addLayout(chat_inp)
-        splitter.addWidget(ai_card)
+        composer_lay.addWidget(self.chat_entry, 1)
+        self.ask_button = self._chip("ASK", self._ask_chatbot, primary=True)
+        self.ask_button.setMinimumHeight(40)
+        composer_lay.addWidget(self.ask_button)
+        ai_lay.addWidget(composer)
 
-        # ------------------------------------------------------- right column
+        return ai_card
+
+    @staticmethod
+    def _ai_chip_qss(color: str) -> str:
+        return (
+            f"color: {color}; font-size: 11px; font-weight: 700; letter-spacing: 1.2px;"
+            f" padding: 3px 11px; background: {_rgba(color, 28)}; border-radius: 9px;"
+        )
+
+    def _set_ai_state(self, key: str) -> None:
+        states = {
+            "idle": ("READY", GREEN),
+            "thinking": ("THINKING", INDIGO),
+            "processing": ("PROCESSING", CYAN),
+            "responding": ("RESPONDING", GREEN),
+            "error": ("ERROR", RED),
+        }
+        self._ai_state_key = key
+        label, color = states.get(key, states["idle"])
+        self.ai_state_chip.setText(f"● {label}")
+        self.ai_state_chip.setStyleSheet(self._ai_chip_qss(color))
+
+    def _flash_ai_error(self) -> None:
+        self._set_ai_state("error")
+        QTimer.singleShot(3500, self._clear_ai_error)
+
+    def _clear_ai_error(self) -> None:
+        if self._ai_state_key == "error":
+            self._set_ai_state("idle")
+
+    def _ensure_chat_visible(self) -> None:
+        if self.ai_stack.currentIndex() != 1:
+            self.ai_stack.setCurrentIndex(1)
+
+    def _build_right_column(self) -> QScrollArea:
         right_scroll = QScrollArea()
         right_scroll.setWidgetResizable(True)
         right_scroll.setFrameShape(QFrame.Shape.NoFrame)
         right_scroll.setHorizontalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAlwaysOff)
-        right_scroll.setMinimumWidth(340)
-        right_scroll.setStyleSheet("QScrollArea { border: none; background: transparent; }")
+        right_scroll.setMinimumWidth(330)
 
         right = QWidget()
-        right.setMinimumWidth(320)
+        right.setMinimumWidth(310)
         right_lay = QVBoxLayout(right)
         right_lay.setContentsMargins(0, 0, 0, 0)
-        right_lay.setSpacing(10)
+        right_lay.setSpacing(12)
 
-        voice_card, voice_body = self._make_card("Voice Engine", "Click to toggle voice")
+        # ---- Voice engine
+        self.voice_dot = QLabel("●")
+        self.voice_dot.setStyleSheet(f"color: {MUTED}; font-size: 12px;")
+        voice_card, voice_body = self._make_card("Voice Engine", "Wake word + speech", extra=self.voice_dot)
         voice_lay = QVBoxLayout(voice_body)
         voice_lay.setContentsMargins(0, 0, 0, 0)
-        voice_lay.setSpacing(8)
-        self.voice_switch_button = QPushButton("VOICE OFF")
-        self.voice_switch_button.setObjectName("Primary")
-        self.voice_switch_button.setFixedHeight(40)
-        self.voice_switch_button.setCursor(Qt.CursorShape.PointingHandCursor)
-        self.voice_switch_button.clicked.connect(self._toggle_voice)
-        voice_lay.addWidget(self.voice_switch_button)
-        self.voice_status_label = QLabel("IDLE")
-        self.voice_status_label.setStyleSheet(f"color: {MUTED}; font-size: 11px; text-align: center;")
+        voice_lay.setSpacing(7)
+        self.voice_state_label = QLabel("OFFLINE")
+        self.voice_state_label.setStyleSheet(f"color: {MUTED}; font-size: 17px; font-weight: 800; letter-spacing: 2px;")
+        voice_lay.addWidget(self.voice_state_label)
+        self.voice_status_label = QLabel("Voice engine idle")
+        self.voice_status_label.setObjectName("MetaLabel")
         voice_lay.addWidget(self.voice_status_label)
+        self.voice_wave = WaveWidget(self._toggle_voice)
+        voice_lay.addWidget(self.voice_wave)
+        self.voice_switch_button = self._button("ENABLE MICROPHONE", self._toggle_voice, kind="primary")
+        self.voice_switch_button.setMinimumHeight(38)
+        voice_lay.addWidget(self.voice_switch_button)
+        voice_lay.addWidget(self._button("VOICE SETTINGS…", self._open_voice_settings, kind="tertiary", small=True))
         right_lay.addWidget(voice_card)
 
-        job_card, job_body = self._make_card("Job Agent", "Autonomous job-application hunter")
+        # ---- Job agent
+        job_card, job_body = self._make_card("Job Agent", "Autonomous hunter")
         job_lay = QVBoxLayout(job_body)
         job_lay.setContentsMargins(0, 0, 0, 0)
         job_lay.setSpacing(8)
-        self.job_status_label = QLabel("No job-application task running.")
-        self.job_status_label.setWordWrap(True)
-        self.job_status_label.setStyleSheet(f"color: {MUTED}; font-size: 11px;")
-        job_lay.addWidget(self.job_status_label)
+        status_row = QHBoxLayout()
+        status_row.setSpacing(8)
+        self.job_state_label = QLabel("IDLE")
+        self.job_state_label.setStyleSheet(
+            f"color: {MUTED}; font-size: 11px; font-weight: 800; letter-spacing: 1px;"
+            f" padding: 3px 11px; background: {_rgba(MUTED, 24)}; border-radius: 9px;"
+        )
+        status_row.addWidget(self.job_state_label)
+        status_row.addStretch(1)
+        self.job_phase_label = QLabel("-")
+        self.job_phase_label.setObjectName("MetaLabel")
+        status_row.addWidget(self.job_phase_label)
+        job_lay.addLayout(status_row)
+        self.job_reason_label = QLabel("")
+        self.job_reason_label.setStyleSheet(f"color: {AMBER}; font-size: 11px;")
+        self.job_reason_label.setWordWrap(True)
+        self.job_reason_label.hide()
+        job_lay.addWidget(self.job_reason_label)
+        self.job_progress = QProgressBar()
+        self.job_progress.setMaximum(100)
+        self.job_progress.setValue(0)
+        self.job_progress.setTextVisible(False)
+        job_lay.addWidget(self.job_progress)
+
         job_stats = QGridLayout()
-        job_stats.setSpacing(4)
-        self.job_stat_labels: dict[str, QLabel] = {}
+        job_stats.setSpacing(6)
         stat_colors = {
             "APPLIED": GREEN, "SKIPPED": AMBER, "FAILED": RED,
             "INTERVIEW": CYAN, "OFFER": GREEN, "REJECTED": RED,
         }
+        self.job_stat_labels: dict[str, QLabel] = {}
         for i, name in enumerate(("APPLIED", "SKIPPED", "FAILED", "INTERVIEW", "OFFER", "REJECTED")):
-            lbl = QLabel(f"{name} 0")
-            lbl.setStyleSheet(f"color: {stat_colors[name]}; font-weight: 700; font-size: 10px;")
-            job_stats.addWidget(lbl, i // 3, i % 3)
-            self.job_stat_labels[name] = lbl
+            cell = QVBoxLayout()
+            cell.setSpacing(0)
+            val = QLabel("0")
+            val.setStyleSheet(f"color: {stat_colors[name]}; font-size: 16px; font-weight: 800;")
+            cap = QLabel(name)
+            cap.setStyleSheet(f"color: {MUTED}; font-size: 9px; font-weight: 700; letter-spacing: 1px;")
+            cell.addWidget(val)
+            cell.addWidget(cap)
+            wrap = QWidget()
+            wrap.setLayout(cell)
+            job_stats.addWidget(wrap, i // 3, i % 3)
+            self.job_stat_labels[name] = val
         job_lay.addLayout(job_stats)
-        self.job_progress = QProgressBar()
-        self.job_progress.setMaximum(100)
-        self.job_progress.setValue(0)
-        job_lay.addWidget(self.job_progress)
+
+        job_lay.addWidget(self._hsep())
+
         qrow = QHBoxLayout()
-        qrow.setSpacing(6)
+        qrow.setSpacing(8)
         self.job_query_entry = QLineEdit()
-        self.job_query_entry.setPlaceholderText("role query…")
+        self.job_query_entry.setPlaceholderText("Role query — e.g. python developer")
         self.job_query_entry.returnPressed.connect(self._start_job_apply)
         qrow.addWidget(self.job_query_entry, 1)
         qrow.addWidget(self._chip("APPLY", self._start_job_apply, primary=True))
         job_lay.addLayout(qrow)
+
         ctrl = QHBoxLayout()
-        ctrl.addWidget(self._chip("STATUS", self._refresh_job_status))
-        ctrl.addWidget(self._chip("CANCEL", self._cancel_job))
-        ctrl.addWidget(self._chip("RESUME", self._resume_job))
+        ctrl.setSpacing(6)
+        ctrl.addWidget(self._button("STATUS", self._refresh_job_status, kind="tertiary", small=True))
+        ctrl.addWidget(self._button("CANCEL", self._cancel_job, kind="tertiary", small=True))
+        ctrl.addWidget(self._button("RESUME", self._resume_job, kind="tertiary", small=True))
         ctrl.addStretch(1)
         job_lay.addLayout(ctrl)
-        recent_label = QLabel("RECENT APPLICATIONS")
-        recent_label.setStyleSheet(f"color: {MUTED}; font-size: 10px; font-weight: 700;")
-        job_lay.addWidget(recent_label)
+
+        job_lay.addWidget(self._section_label("Recent applications"))
         self.recent_list = QListWidget()
-        self.recent_list.setMaximumHeight(90)
-        self.recent_list.setMinimumHeight(70)
-        job_lay.addWidget(self.recent_list)
+        self.recent_list.setMinimumHeight(96)
+        job_lay.addWidget(self.recent_list, 1)
         right_lay.addWidget(job_card)
 
-        agent_card, agent_body = self._make_card("Agent Status", "Pending approval requests")
+        # ---- Approvals
+        self._approval_badge = QLabel("0")
+        self._approval_badge.setStyleSheet(
+            f"color: {TEXT}; background: {_rgba(BTN2, 220)}; padding: 2px 9px; border-radius: 9px; font-weight: 700; font-size: 11px;"
+        )
+        agent_card, agent_body = self._make_card("Agent Approvals", "Pending requests", extra=self._approval_badge)
         agent_lay = QVBoxLayout(agent_body)
         agent_lay.setContentsMargins(0, 0, 0, 0)
-        agent_lay.setSpacing(8)
-        agent_head = QHBoxLayout()
-        lbl = QLabel("PENDING APPROVALS")
-        lbl.setStyleSheet(f"color: {MUTED}; font-size: 10px; font-weight: 700;")
-        agent_head.addWidget(lbl, 1)
-        self._approval_badge = QLabel("0")
-        self._approval_badge.setStyleSheet(f"color: {TEXT}; background: {_rgba(BTN2, 220)}; padding: 2px 8px; border-radius: 8px; font-weight: 700;")
-        agent_head.addWidget(self._approval_badge)
-        agent_lay.addLayout(agent_head)
+        agent_lay.setSpacing(6)
         self.approval_scroll = QScrollArea()
         self.approval_scroll.setWidgetResizable(True)
-        self.approval_scroll.setMaximumHeight(140)
+        self.approval_scroll.setMaximumHeight(150)
         self.approval_scroll.setHorizontalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAlwaysOff)
         self.approval_inner = QWidget()
         self.approval_lay = QVBoxLayout(self.approval_inner)
@@ -810,7 +1200,8 @@ class JarvisHudApp(QMainWindow):
         agent_lay.addWidget(self.approval_scroll)
         right_lay.addWidget(agent_card)
 
-        apps_card, apps_body = self._make_card("Available Apps", "Alt+1..9 to launch")
+        # ---- App launcher
+        apps_card, apps_body = self._make_card("App Launcher", "Alt+1–9 to launch")
         apps_lay = QVBoxLayout(apps_body)
         apps_lay.setContentsMargins(0, 0, 0, 0)
         apps_lay.setSpacing(8)
@@ -819,45 +1210,50 @@ class JarvisHudApp(QMainWindow):
         self.app_filter_var.textChanged.connect(self._apply_app_filter)
         apps_lay.addWidget(self.app_filter_var)
         self.app_listbox = QListWidget()
-        self.app_listbox.setMaximumHeight(120)
-        self.app_listbox.setMinimumHeight(90)
+        self.app_listbox.setMinimumHeight(104)
         self.app_listbox.itemDoubleClicked.connect(lambda _: self._open_selected_app())
-        apps_lay.addWidget(self.app_listbox)
+        apps_lay.addWidget(self.app_listbox, 1)
         right_lay.addWidget(apps_card)
 
-        right_lay.addStretch(1)
         right_scroll.setWidget(right)
-        splitter.addWidget(right_scroll)
+        return right_scroll
 
-        splitter.setSizes([480, 480, 400])
-        root_lay.addWidget(splitter, 1)
-
-        # ------------------------------------------------------- status bar
+    def _build_status_bar(self) -> QFrame:
         status = QFrame()
-        status.setObjectName("Header")
+        status.setObjectName("Shell")
         status_lay = QHBoxLayout(status)
-        status_lay.setContentsMargins(16, 6, 16, 6)
-        status_lay.setSpacing(12)
-        self.cpu_status = QLabel("CPU --%")
-        self.ram_status = QLabel("RAM --%")
-        self.net_status = QLabel("NET --/--")
-        self.status_hint = QLabel("Say 'jarvis' + your command · Ctrl+Shift+J summons mini HUD")
-        self.status_hint.setStyleSheet(f"color: {MUTED}; font-size: 11px;")
-        for w in (self.cpu_status, self.ram_status, self.net_status):
-            w.setStyleSheet(f"color: {TEXT}; font-size: 11px; font-weight: 600;")
-            status_lay.addWidget(w)
+        status_lay.setContentsMargins(16, 8, 16, 8)
+        status_lay.setSpacing(14)
+
+        status_lay.addWidget(self._section_label("System"))
+
+        self.cpu_bar = MeterBar(CYAN)
+        self.mem_bar = MeterBar(INDIGO)
+        self.cpu_status = QLabel("--%")
+        self.ram_status = QLabel("--%")
+        self.net_status = QLabel("↓-- ↑-- KB/s")
+
+        for bar, lbl, name in ((self.cpu_bar, self.cpu_status, "CPU"), (self.mem_bar, self.ram_status, "MEM")):
+            cell = QHBoxLayout()
+            cell.setSpacing(7)
+            cap = QLabel(name)
+            cap.setStyleSheet(f"color: {MUTED}; font-size: 10px; font-weight: 700; letter-spacing: 1px;")
+            cell.addWidget(cap)
+            cell.addWidget(bar)
+            lbl.setStyleSheet(f"color: {TEXT}; font-size: 11.5px; font-weight: 600;")
+            cell.addWidget(lbl)
+            wrap = QWidget()
+            wrap.setLayout(cell)
+            status_lay.addWidget(wrap)
+
+        self.net_status.setStyleSheet(f"color: {TEXT}; font-size: 11.5px; font-weight: 600;")
+        status_lay.addWidget(self.net_status)
         status_lay.addStretch(1)
+
+        self.status_hint = QLabel("Say “Jarvis” + your command   ·   Ctrl+Shift+J summons the mini HUD")
+        self.status_hint.setObjectName("MetaLabel")
         status_lay.addWidget(self.status_hint)
-        root_lay.addWidget(status)
-
-        self._refresh_status_meters()
-
-    def _vsep(self) -> QFrame:
-        f = QFrame()
-        f.setFrameShape(QFrame.Shape.VLine)
-        f.setStyleSheet(f"color: {_rgba(STROKE, 160)}; background: {_rgba(STROKE, 160)};")
-        f.setFixedWidth(2)
-        return f
+        return status
 
     def _show_more_menu(self) -> None:
         self._more_menu.exec(self._more_btn.mapToGlobal(self._more_btn.rect().bottomLeft()))
@@ -865,9 +1261,11 @@ class JarvisHudApp(QMainWindow):
     def _refresh_status_meters(self) -> None:
         try:
             snap = self._monitor.snapshot()
-            self.cpu_status.setText(f"CPU {snap.cpu_percent:.0f}%")
-            self.ram_status.setText(f"RAM {snap.memory_percent:.0f}%")
-            self.net_status.setText(f"NET ↓{snap.net_recv_kbps:.0f} ↑{snap.net_sent_kbps:.0f} kbps")
+            self.cpu_status.setText(f"{snap.cpu_percent:.0f}%")
+            self.ram_status.setText(f"{snap.memory_percent:.0f}%")
+            self.net_status.setText(f"↓{snap.net_recv_kbps:.1f} ↑{snap.net_sent_kbps:.1f} KB/s")
+            self.cpu_bar.set_value(snap.cpu_percent)
+            self.mem_bar.set_value(snap.memory_percent)
         except Exception:
             pass
 
@@ -894,7 +1292,7 @@ class JarvisHudApp(QMainWindow):
         idx = THEME_ORDER.index(_current_theme)
         self._theme = THEME_ORDER[(idx + 1) % len(THEME_ORDER)]
         _apply_palette(self._theme)
-        self.theme_button.setText(f"THEME {self._theme.upper()}")
+        self.act_theme.setText(f"THEME · {self._theme.upper()}")
         self._rebuild_ui()
         self._save_prefs()
 
@@ -905,11 +1303,7 @@ class JarvisHudApp(QMainWindow):
         self._save_prefs()
 
     def _refresh_gfx_button(self) -> None:
-        self.gfx_button.setText("GFX FULL" if self._gfx_full else "GFX LITE")
-        if self._gfx_full:
-            self.gfx_button.setStyleSheet(f"color: {GREEN}; background: {_rgba(OK, 220)};")
-        else:
-            self.gfx_button.setStyleSheet("")
+        self.act_gfx.setText(f"GRAPHICS · {'FULL' if self._gfx_full else 'LITE'}")
 
     def _apply_background(self, mode: str, value: str = "") -> None:
         self._bg = {"mode": mode, "value": value}
@@ -926,8 +1320,8 @@ class JarvisHudApp(QMainWindow):
         lay = QVBoxLayout(win)
 
         head = QHBoxLayout()
-        title = QLabel("BACKGROUND")
-        title.setStyleSheet(f"color: {TEXT}; font-size: 15px; font-weight: 800;")
+        title = QLabel("BACKGROUND SCENE")
+        title.setStyleSheet(f"color: {TEXT}; font-size: 15px; font-weight: 800; letter-spacing: 0.5px;")
         head.addWidget(title)
         head.addStretch(1)
         lay.addLayout(head)
@@ -968,7 +1362,7 @@ class JarvisHudApp(QMainWindow):
             files = list_background_images(_backgrounds_dir())
             if not files:
                 hint = QLabel("No images yet — pick one above, or drop a .png/.gif in data/backgrounds/.")
-                hint.setStyleSheet(f"color: {MUTED};")
+                hint.setObjectName("MetaLabel")
                 body_lay.addWidget(hint)
             grid = QHBoxLayout()
             for item in files:
@@ -978,8 +1372,8 @@ class JarvisHudApp(QMainWindow):
                 grid.addWidget(btn)
             body_lay.addLayout(grid)
         else:
-            hint = QLabel("Animated aurora scene with drifting particles. Toggle GFX for more/fewer particles.")
-            hint.setStyleSheet(f"color: {MUTED};")
+            hint = QLabel("Animated aurora scene with drifting particles. Toggle MENU → GRAPHICS for more/fewer particles.")
+            hint.setObjectName("MetaLabel")
             body_lay.addWidget(hint)
 
         lay.addWidget(body, 1)
@@ -1024,25 +1418,36 @@ class JarvisHudApp(QMainWindow):
 
     def _append_terminal(self, kind: str, text: str) -> None:
         ts = datetime.now().strftime("%H:%M:%S")
-        tag = {"CMD": CYAN, "OK": GREEN, "WARN": AMBER, "ERR": RED, "SYS": INDIGO, "JARVIS": GREEN}.get(kind, MUTED)
+        tag_colors = {
+            "CMD": CYAN, "OK": GREEN, "WARN": AMBER, "ERR": RED,
+            "SYS": INDIGO, "JARVIS": GREEN,
+        }
+        tag = tag_colors.get(kind, MUTED)
         safe = text.replace("&", "&amp;").replace("<", "&lt;").replace(">", "&gt;")
         self.terminal.append(
-            f'<span style="color:{MUTED}">[{ts}]</span> <span style="color:{tag}">{safe}</span>'
+            f'<span style="color:{MUTED}">{ts}</span> '
+            f'<span style="color:{tag}; font-weight:700">[{kind}]</span> '
+            f'<span style="color:{TEXT}">{safe}</span>'
         )
         self.terminal.verticalScrollBar().setValue(self.terminal.verticalScrollBar().maximum())
 
     def _append_feed(self, tag: str, text: str) -> None:
+        ts = datetime.now().strftime("%H:%M")
         color = {
             "feed_cmd": CYAN, "feed_ok": GREEN, "feed_pending": AMBER,
             "feed_err": RED, "feed_sys": MUTED,
         }.get(tag, MUTED)
         safe = text.replace("&", "&amp;").replace("<", "&lt;").replace(">", "&gt;")
-        self.feed_text.append(f'<span style="color:{color}">{safe}</span>')
+        self.feed_text.append(
+            f'<span style="color:{MUTED}; font-size:10px">{ts}</span> '
+            f'<span style="color:{color}">{safe}</span>'
+        )
         self.feed_text.verticalScrollBar().setValue(self.feed_text.verticalScrollBar().maximum())
 
     def _set_busy(self, busy: bool) -> None:
         self._busy = busy
         self.run_button.setEnabled(not busy)
+        self.ask_button.setEnabled(not busy)
 
     def _next_busy_seq(self) -> int:
         """Allocate the watchdog token for a new command run."""
@@ -1096,9 +1501,10 @@ class JarvisHudApp(QMainWindow):
             return
         self._push_history(command)
         self._append_terminal("CMD", f"> {command}")
-        self._append_feed("feed_cmd", f"▶ {command}")
+        self._append_feed("feed_cmd", f"▸ {command}")
         self.mini.notify_command(command)
         self._set_busy(True)
+        self._set_ai_state("processing")
         seq = self._next_busy_seq()
 
         def watchdog() -> None:
@@ -1178,19 +1584,35 @@ class JarvisHudApp(QMainWindow):
         except Exception:
             status = {}
         phase, color, amp, speed = voice_phase(status)
-        if hasattr(self, "voice_status_label"):
-            self.voice_status_label.setText(phase)
-            self.voice_status_label.setStyleSheet(f"color: {color}; font-size: 11px; font-weight: 600;")
-        if running:
-            self.voice_switch_button.setText("VOICE ON")
-            self.voice_switch_button.setStyleSheet(f"color: {GREEN}; background: {_rgba(OK, 220)};")
-            self.online_label.setText("STATUS: STREAMING")
-            self.online_label.setStyleSheet(f"color: {CYAN}; font-weight: 700; font-size: 11px; padding: 4px 10px; background: {_rgba(STATUS, 200)}; border-radius: 8px;")
-        else:
-            self.voice_switch_button.setText("VOICE OFF")
+        self.voice_wave.update_status(phase, color, amp, speed)
+        self.voice_dot.setStyleSheet(f"color: {color}; font-size: 12px;")
+        if not running:
+            self.voice_state_label.setText("OFFLINE")
+            self.voice_state_label.setStyleSheet(f"color: {MUTED}; font-size: 17px; font-weight: 800; letter-spacing: 2px;")
+            self.voice_status_label.setText("Voice engine idle — click to activate")
+            self.voice_switch_button.setText("ENABLE MICROPHONE")
             self.voice_switch_button.setStyleSheet("")
-            self.online_label.setText("STATUS: ONLINE")
-            self.online_label.setStyleSheet(f"color: {GREEN}; font-weight: 700; font-size: 11px; padding: 4px 10px; background: {_rgba(STATUS, 200)}; border-radius: 8px;")
+            self.online_label.setText("● ONLINE")
+            self.online_label.setStyleSheet(
+                f"color: {GREEN}; font-size: 11px; font-weight: 700; letter-spacing: 1px;"
+                f" padding: 4px 12px; background: {_rgba(GREEN, 26)}; border-radius: 9px;"
+            )
+        else:
+            subs = {
+                "LISTENING": "Listening — say “Jarvis” + your command",
+                "PROCESSING": "Transcribing your command…",
+                "ATTENTION": "Needs attention — check the terminal",
+            }
+            self.voice_state_label.setText(phase)
+            self.voice_state_label.setStyleSheet(f"color: {color}; font-size: 17px; font-weight: 800; letter-spacing: 2px;")
+            self.voice_status_label.setText(subs.get(phase, "Microphone live"))
+            self.voice_switch_button.setText("DISABLE MICROPHONE")
+            self.voice_switch_button.setStyleSheet(f"color: {GREEN}; background: {_rgba(OK, 220)};")
+            self.online_label.setText("● STREAMING")
+            self.online_label.setStyleSheet(
+                f"color: {CYAN}; font-size: 11px; font-weight: 700; letter-spacing: 1px;"
+                f" padding: 4px 12px; background: {_rgba(CYAN, 26)}; border-radius: 9px;"
+            )
 
     # ------------------------------------------------------------ job agent
 
@@ -1254,17 +1676,23 @@ class JarvisHudApp(QMainWindow):
         failed = int(task.get("failed") or 0)
         reason = str(task.get("paused_reason") or "").strip()
         color = {"idle": MUTED, "running": CYAN, "paused": AMBER, "completed": GREEN, "canceled": MUTED}.get(status, MUTED)
-        text = f"[{status.upper()} · {phase}]"
-        if reason:
-            text += f"\nPaused: {reason}"
-        self.job_status_label.setText(text)
-        self.job_status_label.setStyleSheet(f"color: {color}; font-size: 11px;")
-        self.job_stat_labels["APPLIED"].setText(f"APPLIED {applied}")
-        self.job_stat_labels["SKIPPED"].setText(f"SKIPPED {skipped}")
-        self.job_stat_labels["FAILED"].setText(f"FAILED {failed}")
+        self.job_state_label.setText(status.upper())
+        self.job_state_label.setStyleSheet(
+            f"color: {color}; font-size: 11px; font-weight: 800; letter-spacing: 1px;"
+            f" padding: 3px 11px; background: {_rgba(color, 26)}; border-radius: 9px;"
+        )
+        self.job_phase_label.setText(phase)
+        if reason and status == "paused":
+            self.job_reason_label.setText(f"Paused · {reason}")
+            self.job_reason_label.show()
+        else:
+            self.job_reason_label.hide()
+        self.job_stat_labels["APPLIED"].setText(str(applied))
+        self.job_stat_labels["SKIPPED"].setText(str(skipped))
+        self.job_stat_labels["FAILED"].setText(str(failed))
         totals = payload.get("totals") or (task.get("totals") if isinstance(task, dict) else None) or {}
         for name in ("INTERVIEW", "OFFER", "REJECTED"):
-            self.job_stat_labels[name].setText(f"{name} {int(totals.get(name.lower(), 0))}")
+            self.job_stat_labels[name].setText(str(int(totals.get(name.lower(), 0))))
         try:
             max_apps = int(task.get("max_applications") or 0)
             pct = round((applied / max_apps) * 100) if max_apps else 0
@@ -1304,28 +1732,28 @@ class JarvisHudApp(QMainWindow):
         self._pending_ids = [str(a.get("id") or a.get("approval_id") or "") for a in items]
         for a in items:
             card = QFrame()
-            card.setObjectName("Card")
-            card.setStyleSheet(f"background: {_rgba(INNER, 200)}; border: 1px solid {_rgba(STROKE, 180)}; border-radius: 10px;")
+            card.setStyleSheet(f"background: {_rgba(INNER, 205)}; border: 1px solid {_rgba(STROKE, 165)}; border-radius: 8px;")
             lay = QVBoxLayout(card)
             lay.setContentsMargins(10, 8, 10, 8)
             lay.setSpacing(4)
             prompt = str(a.get("prompt") or a.get("command") or "")
             p = QLabel(prompt[:120] or "(no prompt)")
             p.setWordWrap(True)
-            p.setStyleSheet(f"color: {TEXT}; font-size: 11px; font-weight: 700;")
+            p.setStyleSheet(f"color: {TEXT}; font-size: 11.5px; font-weight: 700;")
             lay.addWidget(p)
             detail = str(a.get("reason") or a.get("summary") or a.get("description") or "")
             if detail:
                 d = QLabel(detail[:160])
                 d.setWordWrap(True)
-                d.setStyleSheet(f"color: {MUTED}; font-size: 10px;")
+                d.setStyleSheet(f"color: {MUTED}; font-size: 10.5px;")
                 lay.addWidget(d)
             act = QHBoxLayout()
+            act.setSpacing(6)
             approval_id = str(a.get("id") or a.get("approval_id") or "")
-            approve = self._chip("APPROVE", lambda aid=approval_id: self._approve_id(aid))
-            approve.setStyleSheet(f"color: {GREEN}; background: {_rgba(OK, 220)};")
-            reject = self._chip("REJECT", lambda aid=approval_id: self._reject_id(aid))
-            reject.setStyleSheet(f"color: {RED}; background: {_rgba(DANGER, 220)};")
+            approve = self._button("APPROVE", lambda aid=approval_id: self._approve_id(aid), kind="tertiary", small=True)
+            approve.setStyleSheet(f"color: {GREEN}; background: {_rgba(OK, 220)}; border-color: {_rgba(OK, 240)};")
+            reject = self._button("REJECT", lambda aid=approval_id: self._reject_id(aid), kind="tertiary", small=True)
+            reject.setStyleSheet(f"color: {RED}; background: {_rgba(DANGER, 220)}; border-color: {_rgba(DANGER, 240)};")
             act.addWidget(approve)
             act.addWidget(reject)
             act.addStretch(1)
@@ -1336,7 +1764,8 @@ class JarvisHudApp(QMainWindow):
         count = len(items)
         self._approval_badge.setText(str(count) if count else "0")
         self._approval_badge.setStyleSheet(
-            f"color: {'#021018' if count else TEXT}; background: {_rgba(AMBER if count else BTN2, 220)}; padding: 2px 8px; border-radius: 8px; font-weight: 700;"
+            f"color: {'#021018' if count else TEXT}; background: {_rgba(AMBER if count else BTN2, 220)};"
+            f" padding: 2px 9px; border-radius: 9px; font-weight: 700; font-size: 11px;"
         )
         if len(items) > self._last_pending_count and items:
             self._toaster.notify("Approval pending", f"{len(items)} action(s) waiting for you.", AMBER, on_click=self._raise_main_window)
@@ -1428,6 +1857,7 @@ class JarvisHudApp(QMainWindow):
 
     def _handle_command_result(self, payload: dict[str, Any]) -> None:
         self._set_busy(False)
+        self._set_ai_state("idle")
         self._append_terminal("OK", payload.get("response_text", ""))
         has_failure = False
         has_pending = False
@@ -1479,13 +1909,7 @@ class JarvisHudApp(QMainWindow):
                 event, payload = self._events.get_nowait()
             except queue.Empty:
                 break
-            if event == "agent_step":
-                # Cap per-tick widget churn during agent step storms.
-                if rendered_agent_steps >= _AGENT_STEP_BUDGET_PER_TICK:
-                    dropped_agent_steps += 1
-                    continue
-                rendered_agent_steps += 1
-            elif event == "command_result":
+            if event == "command_result":
                 seq, payload = payload
                 self._done_seqs.add(seq)
                 self._handle_command_result(payload)
@@ -1494,10 +1918,16 @@ class JarvisHudApp(QMainWindow):
                 if seq not in self._done_seqs:
                     deadline = max(5, int(getattr(self.runtime.settings, "command_busy_timeout_seconds", 180)))
                     self._set_busy(False)
+                    self._set_ai_state("idle")
                     self._append_terminal("ERR", f"Command exceeded the {deadline}s busy deadline; input re-enabled. It may still be running in the background.")
                     self._append_feed("feed_err", f"✗ command timed out after {deadline}s")
                     self._toaster.notify("Command timeout", f"No result after {deadline}s.", RED)
             elif event == "agent_step":
+                # Cap per-tick widget churn during agent step storms.
+                if rendered_agent_steps >= _AGENT_STEP_BUDGET_PER_TICK:
+                    dropped_agent_steps += 1
+                    continue
+                rendered_agent_steps += 1
                 self._handle_agent_step(payload)
             elif event == "voice":
                 self._set_busy(False)
@@ -1519,6 +1949,7 @@ class JarvisHudApp(QMainWindow):
                 self._request_quit()
             elif event == "approval_result":
                 self._set_busy(False)
+                self._set_ai_state("idle")
                 self._append_terminal("OK", payload.get("message", ""))
                 self._refresh_approvals()
             elif event == "app_launcher":
@@ -1526,9 +1957,11 @@ class JarvisHudApp(QMainWindow):
             elif event == "chat_stream_chunk":
                 self._append_chat_stream_chunk(str(payload))
             elif event == "chat_stream_done":
+                done = str(payload or "").strip()
                 self._finish_chat_stream()
                 self._set_busy(False)
-                done = str(payload or "").strip()
+                if done.lower().startswith("error"):
+                    self._flash_ai_error()
                 if done:
                     self._chat_history.append({"role": "assistant", "content": done})
                     self._chat_history = self._chat_history[-12:]
@@ -1536,6 +1969,7 @@ class JarvisHudApp(QMainWindow):
                 self._update_job_panel(payload)
             elif event == "job_msg":
                 self._set_busy(False)
+                self._set_ai_state("idle")
                 self._append_terminal("OK", str(payload))
                 self._append_feed("feed_sys", str(payload))
             elif event == "sched_run":
@@ -1566,6 +2000,7 @@ class JarvisHudApp(QMainWindow):
                 self._handle_diagnosis_error(str(payload))
             elif event == "error":
                 self._set_busy(False)
+                self._flash_ai_error()
                 self._append_terminal("ERR", str(payload))
                 self._toaster.notify("JARVIS error", str(payload), RED)
         if dropped_agent_steps:
@@ -1624,26 +2059,41 @@ class JarvisHudApp(QMainWindow):
     # ------------------------------------------------------------ chat
 
     def _append_chat(self, role: str, text: str) -> None:
+        self._ensure_chat_visible()
         safe = text.replace("&", "&amp;").replace("<", "&lt;").replace(">", "&gt;")
+        ts = datetime.now().strftime("%H:%M")
         if role == "user":
-            self.chat_text.append(f'<span style="color:{CYAN}; font-weight:700; font-size:10px;">YOU</span>')
-            self.chat_text.append(f'<span style="color:{TEXT}">{safe}</span>')
+            self.chat_text.append(
+                f'<table width="100%" cellspacing="0" cellpadding="6"><tr>'
+                f'<td bgcolor="{ENTRY}">'
+                f'<span style="color:{CYAN}; font-size:10px; font-weight:700;">YOU · {ts}</span><br>'
+                f'<span style="color:{TEXT}; font-size:13px;">{safe}</span>'
+                f"</td></tr></table>"
+            )
+            self.chat_text.append("<br>")
         else:
-            self.chat_text.append(f'<span style="color:{INDIGO}; font-weight:700; font-size:10px;">JARVIS</span>')
-            self.chat_text.append(f'<span style="color:{TEXT}">{safe}</span>')
+            self.chat_text.append(f'<span style="color:{INDIGO}; font-weight:700; font-size:10px;">JARVIS · {ts}</span>')
+            self.chat_text.append(f'<span style="color:{TEXT}; font-size:13px;">{safe}</span>')
+            self.chat_text.append("<br>")
         self.chat_text.verticalScrollBar().setValue(self.chat_text.verticalScrollBar().maximum())
 
     def _start_chat_stream(self) -> None:
-        self.chat_text.append(f'<span style="color:{INDIGO}; font-weight:700; font-size:10px;">JARVIS</span>')
-        self._chat_streaming = True
+        self._ensure_chat_visible()
+        self._chat_responding = False
+        ts = datetime.now().strftime("%H:%M")
+        self.chat_text.append(f'<span style="color:{INDIGO}; font-weight:700; font-size:10px;">JARVIS · {ts}</span>')
+        self.chat_text.verticalScrollBar().setValue(self.chat_text.verticalScrollBar().maximum())
 
     def _append_chat_stream_chunk(self, chunk: str) -> None:
         if not self._chat_streaming:
             return
+        if not self._chat_responding:
+            self._chat_responding = True
+            self._set_ai_state("responding")
         safe = chunk.replace("&", "&amp;").replace("<", "&lt;").replace(">", "&gt;")
         cursor = self.chat_text.textCursor()
         cursor.movePosition(QTextCursor.MoveOperation.End)
-        cursor.insertHtml(f'<span style="color:{TEXT}">{safe}</span>')
+        cursor.insertHtml(f'<span style="color:{TEXT}; font-size:13px;">{safe}</span>')
         self.chat_text.setTextCursor(cursor)
         self.chat_text.verticalScrollBar().setValue(self.chat_text.verticalScrollBar().maximum())
 
@@ -1651,15 +2101,18 @@ class JarvisHudApp(QMainWindow):
         if not self._chat_streaming:
             return
         self.chat_text.append("")
+        self.chat_text.append("<br>")
         self._chat_streaming = False
+        self._set_ai_state("idle")
 
     def _ask_chatbot(self) -> None:
         q = self.chat_entry.text().strip()
-        if not q:
+        if not q or self._busy:
             return
         self.chat_entry.clear()
         self._append_chat("user", q)
         self._set_busy(True)
+        self._set_ai_state("thinking")
         self._start_chat_stream()
         self._chat_history.append({"role": "user", "content": q})
         self._chat_history = self._chat_history[-12:]
@@ -1740,14 +2193,10 @@ class JarvisHudApp(QMainWindow):
         win.resize(760, 520)
         lay = QVBoxLayout(win)
 
-        add_panel = QFrame()
-        add_panel.setObjectName("Card")
-        add_lay = QVBoxLayout(add_panel)
-        add_lay.setContentsMargins(12, 10, 12, 10)
+        add_card, add_body = self._make_card("New schedule", "Natural recurrence language")
+        add_lay = QVBoxLayout(add_body)
+        add_lay.setContentsMargins(0, 0, 0, 0)
         add_lay.setSpacing(6)
-        lbl = QLabel("NEW SCHEDULE")
-        lbl.setStyleSheet(f"color: {MUTED}; font-size: 11px; font-weight: 700;")
-        add_lay.addWidget(lbl)
         row1 = QHBoxLayout()
         cmd_entry = QLineEdit()
         cmd_entry.setPlaceholderText("command…")
@@ -1757,31 +2206,29 @@ class JarvisHudApp(QMainWindow):
         row1.addWidget(rec_entry, 1)
         add_lay.addLayout(row1)
         hint = QLabel("e.g. daily at 09:00  ·  hourly  ·  every 30 minutes  ·  weekly on monday at 10:00")
-        hint.setStyleSheet(f"color: {MUTED}; font-size: 10px;")
+        hint.setObjectName("MetaLabel")
         add_lay.addWidget(hint)
         btn_row = QHBoxLayout()
         btn_row.addStretch(1)
         btn_row.addWidget(self._chip("SCHEDULE", lambda: self._add_schedule(cmd_entry, rec_entry), primary=True))
         add_lay.addLayout(btn_row)
-        lay.addWidget(add_panel)
+        lay.addWidget(add_card)
 
-        list_panel = QFrame()
-        list_panel.setObjectName("Card")
-        list_lay = QVBoxLayout(list_panel)
-        list_lay.setContentsMargins(12, 10, 12, 10)
+        list_card, list_body = self._make_card("Scheduled jobs", "")
+        list_lay = QVBoxLayout(list_body)
+        list_lay.setContentsMargins(0, 0, 0, 0)
+        list_lay.setSpacing(6)
         head = QHBoxLayout()
-        lbl = QLabel("SCHEDULED JOBS")
-        lbl.setStyleSheet(f"color: {MUTED}; font-size: 11px; font-weight: 700;")
-        head.addWidget(lbl, 1)
+        head.addStretch(1)
         head.addWidget(self._chip("REFRESH", self._scheduler_load))
         list_lay.addLayout(head)
         self._sched_listbox = QListWidget()
         list_lay.addWidget(self._sched_listbox)
-        lay.addWidget(list_panel, 1)
+        lay.addWidget(list_card, 1)
 
         actions = QHBoxLayout()
         self._sched_status = QLabel("")
-        self._sched_status.setStyleSheet(f"color: {MUTED}; font-size: 10px;")
+        self._sched_status.setObjectName("MetaLabel")
         actions.addWidget(self._sched_status, 1)
         actions.addWidget(self._chip("ENABLE / DISABLE", self._toggle_schedule))
         actions.addWidget(self._chip("DELETE", self._delete_schedule))
@@ -1894,7 +2341,7 @@ class JarvisHudApp(QMainWindow):
             self._hist_texts[tab_name] = text
         lay.addWidget(tabs, 1)
         status = QLabel("")
-        status.setStyleSheet(f"color: {MUTED}; font-size: 10px;")
+        status.setObjectName("MetaLabel")
         lay.addWidget(status)
         self._hist_status = status
 
@@ -1975,35 +2422,29 @@ class JarvisHudApp(QMainWindow):
         lay = QVBoxLayout(win)
         head = QHBoxLayout()
         title = QLabel("TASKS & PROGRESS")
-        title.setStyleSheet(f"color: {CYAN}; font-size: 14px; font-weight: 800;")
+        title.setStyleSheet(f"color: {CYAN}; font-size: 14px; font-weight: 800; letter-spacing: 1px;")
         head.addWidget(title, 1)
         head.addWidget(self._chip("REFRESH", self._tasks_load))
         lay.addLayout(head)
 
-        list_panel = QFrame()
-        list_panel.setObjectName("Card")
-        list_lay = QVBoxLayout(list_panel)
-        lbl = QLabel("TRACKED TASKS")
-        lbl.setStyleSheet(f"color: {MUTED}; font-size: 11px; font-weight: 700;")
-        list_lay.addWidget(lbl)
+        list_card, list_body = self._make_card("Tracked tasks", "")
+        list_lay = QVBoxLayout(list_body)
+        list_lay.setContentsMargins(0, 0, 0, 0)
         self._tasks_listbox = QListWidget()
         self._tasks_listbox.currentRowChanged.connect(lambda _: self._show_task_detail())
         list_lay.addWidget(self._tasks_listbox)
-        lay.addWidget(list_panel, 1)
+        lay.addWidget(list_card, 1)
 
-        detail_panel = QFrame()
-        detail_panel.setObjectName("Card")
-        detail_lay = QVBoxLayout(detail_panel)
-        lbl = QLabel("TASK DETAIL")
-        lbl.setStyleSheet(f"color: {MUTED}; font-size: 11px; font-weight: 700;")
-        detail_lay.addWidget(lbl)
+        detail_card, detail_body = self._make_card("Task detail", "")
+        detail_lay = QVBoxLayout(detail_body)
+        detail_lay.setContentsMargins(0, 0, 0, 0)
         self._task_detail_text = QTextEdit()
         self._task_detail_text.setReadOnly(True)
         detail_lay.addWidget(self._task_detail_text)
-        lay.addWidget(detail_panel, 2)
+        lay.addWidget(detail_card, 2)
 
         status = QLabel("")
-        status.setStyleSheet(f"color: {MUTED}; font-size: 10px;")
+        status.setObjectName("MetaLabel")
         lay.addWidget(status)
         self._tasks_status = status
 
@@ -2096,7 +2537,7 @@ class JarvisHudApp(QMainWindow):
         lay = QVBoxLayout(win)
         head = QHBoxLayout()
         title = QLabel("MEMORY & KNOWLEDGE")
-        title.setStyleSheet(f"color: {CYAN}; font-size: 14px; font-weight: 800;")
+        title.setStyleSheet(f"color: {CYAN}; font-size: 14px; font-weight: 800; letter-spacing: 1px;")
         head.addWidget(title, 1)
         self._mem_query = QLineEdit()
         self._mem_query.setPlaceholderText("Search knowledge…")
@@ -2115,7 +2556,7 @@ class JarvisHudApp(QMainWindow):
             self._mem_texts[tab_name] = text
         lay.addWidget(tabs, 1)
         status = QLabel("")
-        status.setStyleSheet(f"color: {MUTED}; font-size: 10px;")
+        status.setObjectName("MetaLabel")
         lay.addWidget(status)
         self._mem_status = status
 
@@ -2217,9 +2658,9 @@ class JarvisHudApp(QMainWindow):
 
         win = QDialog(self)
         win.setWindowTitle("JARVIS — Voice Settings")
-        win.resize(520, 520)
+        win.resize(520, 540)
         outer = QVBoxLayout(win)
-        outer.setContentsMargins(12, 12, 12, 12)
+        outer.setContentsMargins(14, 14, 14, 14)
         outer.setSpacing(10)
 
         scroll = QScrollArea()
@@ -2227,10 +2668,9 @@ class JarvisHudApp(QMainWindow):
         container = QWidget()
         lay = QVBoxLayout(container)
         lay.setContentsMargins(0, 0, 0, 0)
-        lay.setSpacing(10)
+        lay.setSpacing(12)
 
-        # -- TTS Engine --
-        eng_group = QGroupBox("TTS Engine")
+        eng_group = QGroupBox("TTS ENGINE")
         eng_lay = QHBoxLayout(eng_group)
         engine_buttons: dict[str, QRadioButton] = {}
         current_mode = speaker.status().get("mode", "sapi")
@@ -2253,8 +2693,7 @@ class JarvisHudApp(QMainWindow):
             rb.toggled.connect(on_engine_change)
         lay.addWidget(eng_group)
 
-        # -- Kokoro Voice --
-        voice_group = QGroupBox("Kokoro Voice Name")
+        voice_group = QGroupBox("KOKORO VOICE NAME")
         voice_lay = QHBoxLayout(voice_group)
         voice_combo = QComboBox()
         voice_combo.setEditable(True)
@@ -2273,8 +2712,7 @@ class JarvisHudApp(QMainWindow):
         voice_combo.currentTextChanged.connect(on_voice_change)
         lay.addWidget(voice_group)
 
-        # -- Language --
-        lang_group = QGroupBox("Kokoro Language")
+        lang_group = QGroupBox("KOKORO LANGUAGE")
         lang_lay = QHBoxLayout(lang_group)
         lang_combo = QComboBox()
         current_lang = speaker.status().get("kokoro_lang_code", "a")
@@ -2296,8 +2734,7 @@ class JarvisHudApp(QMainWindow):
         lang_combo.currentIndexChanged.connect(on_lang_change)
         lay.addWidget(lang_group)
 
-        # -- Speed --
-        speed_group = QGroupBox("Playback Speed")
+        speed_group = QGroupBox("PLAYBACK SPEED")
         speed_lay = QHBoxLayout(speed_group)
         speed_slider = QSlider(Qt.Orientation.Horizontal)
         speed_slider.setRange(50, 200)
@@ -2316,8 +2753,7 @@ class JarvisHudApp(QMainWindow):
         speed_slider.valueChanged.connect(on_speed_change)
         lay.addWidget(speed_group)
 
-        # -- Audio Output --
-        out_group = QGroupBox("Audio Output Device")
+        out_group = QGroupBox("AUDIO OUTPUT DEVICE")
         out_lay = QHBoxLayout(out_group)
         out_combo = QComboBox()
         out_devices = voice.list_output_devices()
@@ -2333,14 +2769,13 @@ class JarvisHudApp(QMainWindow):
         out_lay.addWidget(out_combo, 1)
 
         def on_out_change(index: int) -> None:
-            idx = out_combo.itemData(index)
-            voice.set_output_device(idx)
+            oidx = out_combo.itemData(index)
+            voice.set_output_device(oidx)
 
         out_combo.currentIndexChanged.connect(on_out_change)
         lay.addWidget(out_group)
 
-        # -- Microphone --
-        mic_group = QGroupBox("Microphone")
+        mic_group = QGroupBox("MICROPHONE")
         mic_lay = QHBoxLayout(mic_group)
         mic_combo = QComboBox()
         mic_devices = voice.list_input_devices()
@@ -2349,28 +2784,22 @@ class JarvisHudApp(QMainWindow):
         mic_lay.addWidget(mic_combo, 1)
 
         def on_mic_change(index: int) -> None:
-            idx = mic_combo.itemData(index)
-            voice.set_input_device(idx)
+            midx = mic_combo.itemData(index)
+            voice.set_input_device(midx)
 
         mic_combo.currentIndexChanged.connect(on_mic_change)
         lay.addWidget(mic_group)
 
-        # -- Test button --
         btn_row = QHBoxLayout()
 
         def test_voice() -> None:
             voice._speak_async("Hello Boss Sahu, testing voice.")
 
-        test_btn = QPushButton("Speak Test")
-        test_btn.setObjectName("Primary")
-        test_btn.setCursor(Qt.CursorShape.PointingHandCursor)
-        test_btn.clicked.connect(test_voice)
+        test_btn = self._chip("SPEAK TEST", test_voice, primary=True)
         btn_row.addWidget(test_btn)
 
         btn_row.addStretch(1)
-        close_btn = QPushButton("Close")
-        close_btn.setCursor(Qt.CursorShape.PointingHandCursor)
-        close_btn.clicked.connect(win.close)
+        close_btn = self._chip("CLOSE", win.close)
         btn_row.addWidget(close_btn)
         lay.addLayout(btn_row)
 
@@ -2384,10 +2813,11 @@ class JarvisHudApp(QMainWindow):
     def _open_help(self) -> None:
         win = QDialog(self)
         win.setWindowTitle("JARVIS — What can I do?")
-        win.resize(740, 580)
+        win.resize(760, 600)
         lay = QVBoxLayout(win)
         text = QTextEdit()
         text.setReadOnly(True)
+        text.setFont(QFont("Consolas", 11))
         entries: list[str] = [
             "VOICE + DOCK",
             "  youtube pause          toggle play/pause",
@@ -2438,11 +2868,7 @@ class JarvisHudApp(QMainWindow):
 
     def _refresh_auto_start_button(self) -> None:
         on = self._auto_start_enabled()
-        self.auto_start_button.setText("AUTOSTART ON" if on else "AUTOSTART OFF")
-        if on:
-            self.auto_start_button.setStyleSheet(f"color: {GREEN}; background: {_rgba(OK, 220)};")
-        else:
-            self.auto_start_button.setStyleSheet(f"color: {AMBER}; background: {_rgba(DANGER, 220)};")
+        self.act_autostart.setText(f"AUTOSTART · {'ON' if on else 'OFF'}")
 
     def _toggle_tray(self) -> None:
         if not self._tray.available:
@@ -2454,8 +2880,7 @@ class JarvisHudApp(QMainWindow):
         if not self._tray.start():
             self._raise_main_window()
             return
-        self.tray_button.setText("TRAY ON")
-        self.tray_button.setStyleSheet(f"color: {GREEN}; background: {_rgba(OK, 220)};")
+        self.act_tray.setText("TRAY · ON")
         self._toaster.notify(
             "JARVIS in tray", "HUD is running in the tray.\nUse the JARVIS icon or Ctrl+Shift+J to bring it back.", GREEN
         )
@@ -2497,7 +2922,7 @@ class JarvisHudApp(QMainWindow):
                 self._theme = "aurora"
             _apply_palette(self._theme)
             apply_mini_palette(PALETTES[self._theme])
-            self.theme_button.setText(f"THEME {self._theme.upper()}")
+            self.act_theme.setText(f"THEME · {self._theme.upper()}")
             self.backdrop.set_bg(self._bg.get("mode", "aurora"), self._bg.get("value", ""))
             self.backdrop.set_gfx(self._gfx_full)
             self.setStyleSheet(_build_qss())
@@ -2615,9 +3040,11 @@ def _qt_message_handler(msg_type, context, message):
 
     if msg_type == QtMsgType.QtWarningMsg:
         import sys
+
         print(f"Qt WARNING: {message}", file=sys.stderr)
     elif msg_type in (QtMsgType.QtCriticalMsg, QtMsgType.QtFatalMsg):
         import sys
+
         print(f"Qt CRITICAL: {message}", file=sys.stderr)
 
 
@@ -2638,6 +3065,7 @@ def main() -> None:
         window.run()
     except Exception:
         import traceback
+
         traceback.print_exc()
         raise
 

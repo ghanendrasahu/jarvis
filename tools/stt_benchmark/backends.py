@@ -35,7 +35,8 @@ class Backend(ABC):
     @abstractmethod
     def transcribe(self, wav_path: Path) -> str: ...
 
-    def unload(self) -> None: ...
+    def unload(self) -> None:
+        return None
 
     def disk_bytes(self) -> int | None:
         return None
