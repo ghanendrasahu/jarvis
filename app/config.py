@@ -237,8 +237,6 @@ class Settings(BaseSettings):
             "where",
             "dir",
             "git",
-            "python",
-            "pip",
         ]
     )
     allowed_roots: Annotated[list[str], NoDecode] = Field(default_factory=list)
