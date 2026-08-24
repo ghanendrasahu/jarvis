@@ -491,6 +491,11 @@ def _user_friendly_error(code: str, provider: str) -> str:
 # FallbackPlanner — tries primary provider, then fallbacks in order
 # ---------------------------------------------------------------------------
 
+# Summary marker on the total-failure Plan so callers can distinguish a real
+# plan from "every provider failed" without string-guessing downstream.
+ALL_PROVIDERS_FAILED_SUMMARY = "All LLM providers failed"
+
+
 class FallbackPlanner:
     """Wraps a primary planner with automatic fallback to other providers.
 
@@ -538,7 +543,10 @@ class FallbackPlanner:
                 logger.warning("planner deadline (%.0fs) reached before %s", self._deadline_seconds, type(planner).__name__)
                 break
             provider_name = type(planner).__name__
-            attempts = self._max_retries + 1 if provider_idx > 0 else 1
+            # Uniform retry policy: every provider (including the primary) gets
+            # max_retries + 1 attempts. The single wall-clock deadline bounds
+            # the whole chain regardless of how many attempts are allowed.
+            attempts = self._max_retries + 1
 
             for attempt in range(attempts):
                 try:
@@ -592,7 +600,7 @@ class FallbackPlanner:
         self._last_error = error_msg
         logger.error("all planners failed: %s", last_exc)
         return Plan(
-            summary="All LLM providers failed",
+            summary=ALL_PROVIDERS_FAILED_SUMMARY,
             actions=[],
             final_response=error_msg,
         )

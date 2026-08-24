@@ -21,7 +21,7 @@ from app.core.redact import redact_object, redact_text
 from app.core.router import DirectCommandRouter, _normalize_command
 from app.core.suggest import SuggestionEngine
 from app.core.task_engine import TaskEngine
-from app.llm.planner import BasePlanner
+from app.llm.planner import ALL_PROVIDERS_FAILED_SUMMARY, BasePlanner
 from app.models.schemas import (
     CommandStatus,
     ExecuteApprovalResponse,
@@ -410,6 +410,15 @@ class JarvisOrchestrator:
             except Exception as exc:
                 logger.warning("planner failed for command: %s", cleaned)
                 return self._failed_response(cleaned, source, f"Planning failed: {exc}")
+
+        # A total planner failure arrives as an error Plan (no actions). It must
+        # be recorded as a failed execution, never as a zero-action success.
+        if not plan.actions and plan.summary == ALL_PROVIDERS_FAILED_SUMMARY:
+            logger.warning("all planners failed for command: %s", cleaned)
+            return self._failed_response(
+                cleaned, source, plan.final_response or "All LLM providers failed."
+            )
+
         valid_tools = {item["name"] for item in self.registry.catalog()}
         filtered_actions = [action for action in plan.actions if action.tool in valid_tools]
         if len(filtered_actions) != len(plan.actions):
