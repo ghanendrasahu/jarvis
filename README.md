@@ -171,7 +171,7 @@ scan/audit/monitor/analyze/check if run through the multi-iteration agent loop i
 
 1. Edit `config/job_profile.yaml` with your real identity, skills, work history, and form-field answers.
 2. Edit `config/site_profiles.yaml` to enable/disable boards and fix selectors if a site's DOM changes.
-3. Set `JOB_TARGET_SITES=linkedin,indeed,...` and `RESUME_PDF=data/resume/CV.pdf` in `.env`.
+3. Set `JOB_TARGET_SITES=linkedin,indeed,...` and `RESUME_PDF_PATH=data/resume/CV.pdf` in `.env`.
 4. Run: `apply for python developer`.
 
 Behavior notes:

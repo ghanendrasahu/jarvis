@@ -1,0 +1,78 @@
+"""Guard against .env.example drift: B7 (encoding) and B8 (key/value parity).
+
+pydantic-settings reads .env with encoding="utf-8" (app/config.py), so the
+example must be valid UTF-8 without a BOM, and every key/value must mirror
+the Settings model.
+"""
+
+from __future__ import annotations
+
+import re
+from pathlib import Path
+
+from dotenv import dotenv_values
+
+from app.config import Settings
+
+EXAMPLE_PATH = Path(__file__).resolve().parent.parent / ".env.example"
+
+# Intentionally commented out: an empty env value crashes Settings because
+# jarvis_chat_fallback_providers lacks the CSV before-validator that
+# llm_fallback_providers has (app/config.py). Keep until that is fixed.
+INTENTIONALLY_COMMENTED = {"JARVIS_CHAT_FALLBACK_PROVIDERS"}
+
+
+def test_env_example_is_strict_utf8_without_bom() -> None:
+    raw = EXAMPLE_PATH.read_bytes()
+    assert not raw.startswith(b"\xef\xbb\xbf"), "UTF-8 BOM found"
+    assert not raw.startswith(b"\xff\xfe"), "UTF-16 LE BOM found"
+    assert b"\x00" not in raw, "NUL bytes suggest UTF-16 encoding"
+    raw.decode("utf-8", errors="strict")
+
+
+def test_env_example_keys_match_settings_model_exactly() -> None:
+    values = dotenv_values(EXAMPLE_PATH, encoding="utf-8")
+    keys = [key for key in values if key is not None]
+    duplicates = sorted({key for key in keys if keys.count(key) > 1})
+    assert not duplicates, f"duplicate keys in .env.example: {duplicates}"
+
+    commented_text = EXAMPLE_PATH.read_text(encoding="utf-8")
+    commented = {
+        match.group(1).upper()
+        for match in (re.match(r"\s*#\s*([A-Z0-9_]+)\s*=", line) for line in commented_text.splitlines())
+        if match
+    }
+    assert INTENTIONALLY_COMMENTED <= commented, (
+        f"allowlisted keys must stay commented in .env.example: {INTENTIONALLY_COMMENTED - commented}"
+    )
+
+    known = {name.upper() for name in Settings.model_fields}
+    unknown = sorted(set(keys) - known)
+    missing = (known - set(keys)) - INTENTIONALLY_COMMENTED
+    assert not unknown, f"stale keys not in Settings: {unknown}"
+    assert not missing, f"Settings fields missing from .env.example: {missing}"
+
+
+def test_env_example_parses_with_project_defaults(monkeypatch) -> None:
+    """The example must load under the project's own env-file semantics."""
+    for name in (
+        "LLM_PROVIDER",
+        "TTS_ENGINE",
+        "RAG_ENABLED",
+        "RAG_EMBEDDINGS_ENABLED",
+        "MAX_HISTORY_ITEMS",
+        "JARVIS_CHAT_PROVIDER",
+        "JARVIS_CHAT_MODEL",
+        "JOB_PROFILE_PATH",
+    ):
+        monkeypatch.delenv(name, raising=False)
+
+    settings = Settings(_env_file=EXAMPLE_PATH, _env_file_encoding="utf-8")
+    assert settings.llm_provider == "openai"
+    assert settings.tts_engine == "kokoro"
+    assert settings.rag_enabled is False
+    assert settings.rag_embeddings_enabled is False
+    assert settings.max_history_items == 20
+    assert settings.jarvis_chat_provider == "opencode"
+    assert settings.jarvis_chat_model == ""
+    assert settings.job_profile_path == "config/job_profile.yaml"
