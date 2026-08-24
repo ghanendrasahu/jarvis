@@ -62,7 +62,7 @@ def main() -> int:
     args = parser.parse_args()
 
     from app.config import get_settings
-    from app.voice.listener import VoiceListener
+    from app.voice.listener import ListenResult, VoiceListener
 
     settings = get_settings()
     listener = VoiceListener(settings)
@@ -85,7 +85,7 @@ def main() -> int:
     listener._get_qwen()._ensure_loaded()
     print(f"Model ready in {time.perf_counter() - t0:.0f}s.\n", flush=True)
 
-    rows: list[tuple[str, object]] = []
+    rows: list[tuple[str, ListenResult]] = []
     for phrase in phrases:
         result, round_seconds = listen_with_prompt(listener, phrase)
         if result.issue in {"timeout", "no_speech"} and not result.transcript:

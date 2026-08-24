@@ -85,7 +85,7 @@ def capture(max_seconds: float, silence_seconds: float, threshold: float = 200.0
             if level >= threshold:
                 speech_started = True
                 last_voice_at = time.perf_counter()
-            elif speech_started and time.perf_counter() - last_voice_at >= silence_seconds:
+            elif speech_started and last_voice_at is not None and time.perf_counter() - last_voice_at >= silence_seconds:
                 break
     finally:
         stream.stop()

@@ -289,9 +289,11 @@ class VoiceListener:
         """Transcribe via the configured backend chain, falling back on failure.
 
         Order comes from VOICE_STT_BACKEND / VOICE_STT_FALLBACK (qwen3 -> groq by
-        default). Duck-typed settings without those fields keep the exact legacy
+        default).         Duck-typed settings without those fields keep the exact legacy
         behavior (groq if a key exists, else openai/google web speech).
         """
+        import speech_recognition as sr
+
         primary = str(getattr(self.settings, "voice_stt_backend", "") or "").strip().lower()
         fallback = str(getattr(self.settings, "voice_stt_fallback", "") or "").strip().lower()
         groq_available = bool(self.settings.groq_api_key)

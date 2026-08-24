@@ -3,7 +3,9 @@ from __future__ import annotations
 
 import gc
 from abc import ABC, abstractmethod
+from collections.abc import Callable
 from pathlib import Path
+from typing import Any
 
 BASE_DIR = Path(__file__).resolve().parent
 REPO_ROOT = BASE_DIR.parents[1]
@@ -45,7 +47,7 @@ class GroqBackend(Backend):
     def __init__(self, language: str | None = None, label: str | None = None) -> None:
         self.name = label or "Whisper Turbo (Groq API)"
         self.language = language
-        self._client = None
+        self._client: Any = None
 
     def load(self) -> None:
         from openai import OpenAI
@@ -78,8 +80,8 @@ class QwenBackend(Backend):
         self.model_id = model_id
         self.size = model_id.split("-ASR-")[1].removesuffix("-hf")
         self.name = f"Qwen3-ASR {self.size} (CPU fp32)"
-        self._model = None
-        self._processor = None
+        self._model: Any = None
+        self._processor: Any = None
 
     def load(self) -> None:
         import torch
@@ -134,7 +136,7 @@ class QwenBackend(Backend):
 class ParakeetBackend(Backend):
     def __init__(self) -> None:
         self.name = "Parakeet TDT 0.6B v3 (ONNX int8)"
-        self._model = None
+        self._model: Any = None
 
     def load(self) -> None:
         import onnx_asr
@@ -160,7 +162,7 @@ class ParakeetBackend(Backend):
         return None
 
 
-BUILDERS: dict[str, callable] = {
+BUILDERS: dict[str, Callable[[], Backend]] = {
     "groq": GroqBackend,
     "groq_en": lambda: GroqBackend(language="en", label="Whisper Turbo (Groq, lang=en)"),
     "qwen06": lambda: QwenBackend("Qwen/Qwen3-ASR-0.6B-hf"),

@@ -16,8 +16,9 @@ from pathlib import Path
 
 import psutil
 
-if hasattr(sys.stdout, "reconfigure"):
-    sys.stdout.reconfigure(encoding="utf-8", errors="replace")
+reconfigure = getattr(sys.stdout, "reconfigure", None)
+if callable(reconfigure):
+    reconfigure(encoding="utf-8", errors="replace")
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 
