@@ -7,7 +7,6 @@ the Settings model.
 
 from __future__ import annotations
 
-import re
 from pathlib import Path
 
 from dotenv import dotenv_values
@@ -15,11 +14,6 @@ from dotenv import dotenv_values
 from app.config import Settings
 
 EXAMPLE_PATH = Path(__file__).resolve().parent.parent / ".env.example"
-
-# Intentionally commented out: an empty env value crashes Settings because
-# jarvis_chat_fallback_providers lacks the CSV before-validator that
-# llm_fallback_providers has (app/config.py). Keep until that is fixed.
-INTENTIONALLY_COMMENTED = {"JARVIS_CHAT_FALLBACK_PROVIDERS"}
 
 
 def test_env_example_is_strict_utf8_without_bom() -> None:
@@ -36,19 +30,9 @@ def test_env_example_keys_match_settings_model_exactly() -> None:
     duplicates = sorted({key for key in keys if keys.count(key) > 1})
     assert not duplicates, f"duplicate keys in .env.example: {duplicates}"
 
-    commented_text = EXAMPLE_PATH.read_text(encoding="utf-8")
-    commented = {
-        match.group(1).upper()
-        for match in (re.match(r"\s*#\s*([A-Z0-9_]+)\s*=", line) for line in commented_text.splitlines())
-        if match
-    }
-    assert INTENTIONALLY_COMMENTED <= commented, (
-        f"allowlisted keys must stay commented in .env.example: {INTENTIONALLY_COMMENTED - commented}"
-    )
-
     known = {name.upper() for name in Settings.model_fields}
     unknown = sorted(set(keys) - known)
-    missing = (known - set(keys)) - INTENTIONALLY_COMMENTED
+    missing = sorted(known - set(keys))
     assert not unknown, f"stale keys not in Settings: {unknown}"
     assert not missing, f"Settings fields missing from .env.example: {missing}"
 
@@ -76,3 +60,35 @@ def test_env_example_parses_with_project_defaults(monkeypatch) -> None:
     assert settings.jarvis_chat_provider == "opencode"
     assert settings.jarvis_chat_model == ""
     assert settings.job_profile_path == "config/job_profile.yaml"
+
+
+# --------------------------------------------------------------------------- B11-followup: CSV list fields
+
+
+def test_chat_fallback_providers_env_values_parse_like_sibling_fields(
+    monkeypatch,
+) -> None:
+    """Empty and comma-separated values must not crash Settings (startup bug)."""
+    for name in ("JARVIS_CHAT_FALLBACK_PROVIDERS", "LLM_FALLBACK_PROVIDERS"):
+        monkeypatch.delenv(name, raising=False)
+
+    empty = Settings(llm_provider="groq", llm_cache_enabled=False, jarvis_chat_fallback_providers="")
+    assert empty.jarvis_chat_fallback_providers == []
+
+    csv = Settings(llm_provider="groq", llm_cache_enabled=False, jarvis_chat_fallback_providers="groq:m9,cerebras:m3")
+    assert csv.jarvis_chat_fallback_providers == ["groq:m9", "cerebras:m3"]
+
+
+def test_extra_chat_fallback_providers_extend_the_service_chain() -> None:
+    from app.llm.chat import ChatService
+
+    settings = Settings(
+        llm_provider="groq",
+        llm_cache_enabled=False,
+        jarvis_chat_fallback_providers="ollama:llama3.1:8b",
+    )
+    chain = [spec.name for spec in ChatService(settings).chain]
+
+    assert chain[0] == "opencode"
+    assert chain[-1] == "ollama", "extra fallback providers must be appended to the chain"
+    assert len(chain) == len(set(chain)), "duplicate provider names are de-duplicated"

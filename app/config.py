@@ -241,7 +241,14 @@ class Settings(BaseSettings):
     )
     allowed_roots: Annotated[list[str], NoDecode] = Field(default_factory=list)
 
-    @field_validator("allowed_shell_commands", "allowed_roots", "job_target_sites", "llm_fallback_providers", mode="before")
+    @field_validator(
+        "allowed_shell_commands",
+        "allowed_roots",
+        "job_target_sites",
+        "llm_fallback_providers",
+        "jarvis_chat_fallback_providers",
+        mode="before",
+    )
     @classmethod
     def _coerce_csv_lists(cls, value: Any) -> list[str]:
         return _parse_csv(value)
