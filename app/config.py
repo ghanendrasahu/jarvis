@@ -30,6 +30,7 @@ class Settings(BaseSettings):
         env_file=".env",
         env_file_encoding="utf-8",
         extra="ignore",
+        populate_by_name=True,
     )
 
     app_name: str = "JARVIS"
@@ -66,6 +67,34 @@ class Settings(BaseSettings):
     openrouter_api_key: str | None = None
     openrouter_base_url: str = "https://openrouter.ai/api/v1"
     openrouter_model: str = "google/gemma-4-31b-it:free"
+
+    # ------------------------------------------------------------- AI Assistant Chat
+    # Dedicated conversational model layer (streaming). Fully env-driven; these
+    # values control the live chat client (unlike the planner's fixed timeouts).
+    # NOTE: field names intentionally mirror their environment variables
+    # (pydantic-settings matches case-insensitively): jarvis_chat_provider
+    # <-> JARVIS_CHAT_PROVIDER, etc.
+    # Provider names: opencode|zen, groq, cerebras, openrouter, ollama.
+    opencode_base_url: str = "https://opencode.ai/zen/v1"
+    opencode_api_key: str | None = None
+    jarvis_chat_provider: str = "opencode"
+    jarvis_chat_model: str = ""  # empty -> provider default (opencode: nemotron-3-ultra-free)
+    jarvis_chat_fallback_1: str = "zen:nemotron-3.5-lightning-free"
+    jarvis_chat_fallback_2: str = "groq:llama-3.1-8b-instant"
+    jarvis_chat_fallback_3: str = "cerebras:gpt-oss-120b"
+    # Extra fallbacks appended after FALLBACK_1..3. Format: "provider:model".
+    jarvis_chat_fallback_providers: Annotated[list[str], NoDecode] = Field(default_factory=list)
+    jarvis_chat_timeout_seconds: int = 30
+    jarvis_chat_max_retries: int = 1
+    # Hard wall-clock budget for the whole chain (all providers + retries).
+    jarvis_chat_deadline_seconds: int = 90
+    # Kept as strings so empty .env values ("") do not break int/float parsing.
+    jarvis_chat_max_tokens: str | None = None
+    jarvis_chat_temperature: str | None = None
+    jarvis_chat_history_window: int = 12
+    # Send attached images to the model (requires a vision-capable chat model).
+    # When False, images still render in the GUI but are stripped from requests.
+    jarvis_chat_vision_enabled: bool = False
 
     # Fast-planner result cache (repeat commands skip the LLM call entirely).
     llm_cache_enabled: bool = True

@@ -5,6 +5,7 @@ import json
 import math
 import queue
 import random
+import re
 import shutil
 import sys
 import threading
@@ -54,11 +55,13 @@ from PySide6.QtWidgets import (
 )
 
 from app.bootstrap import build_runtime
+from app.core.chat_router import classify_user_input
 from app.core.events import EventHub
 from app.core.media import background_image_path, list_background_images
 from app.core.palette import PALETTES, THEME_ORDER
 from app.core.utils import build_startup_greeting
 from app.hotkey import GlobalHotkey
+from app.llm.chat import ChatService, build_history_from_memory
 from app.minihud import MiniHud, voice_phase
 from app.minihud import apply_palette as apply_mini_palette
 from app.toast import Toaster
@@ -119,6 +122,82 @@ def _blend(c1: str, c2: str, t: float) -> str:
 
 def _title_color() -> str:
     return _blend(TEXT, MUTED, 0.42)
+
+
+# --------------------------------------------------------------------- markdown
+
+_MD_ESCAPE = ("&", "&amp;"), ("<", "&lt;"), (">", "&gt;")
+_FENCED_RE = re.compile(r"```[\w+-]*\n?(.*?)```", re.DOTALL)
+_HEADING_RE = re.compile(r"^(#{1,4})\s+(.+)$")
+_LIST_RE = re.compile(r"^(\s*)[-*]\s+(.+)$")
+_BOLD_RE = re.compile(r"\*\*([^*\n]+)\*\*")
+_ITALIC_RE = re.compile(r"(?<!\*)\*([^*\n]+)\*(?!\*)")
+_CODE_SPAN_RE = re.compile(r"`([^`\n]+)`")
+_LINK_RE = re.compile(r"\[([^\]\n]+)\]\((https?://[^)\s]+)\)")
+_HEADING_SIZES = {1: 16, 2: 15, 3: 14, 4: 13}
+
+
+def _md_inline(text: str) -> str:
+    text = _CODE_SPAN_RE.sub(
+        rf'<span style="font-family:Consolas,monospace; background-color:{_rgba(CHIP, 220)}; color:{CYAN};">\1</span>',
+        text,
+    )
+    text = _BOLD_RE.sub(r"<b>\1</b>", text)
+    text = _ITALIC_RE.sub(r"<i>\1</i>", text)
+    text = _LINK_RE.sub(r'<a href="\2" style="color:' + CYAN + r';">\1</a>', text)
+    return text
+
+
+def markdown_to_html(raw: str) -> str:
+    """Render a small, safe Markdown subset to Qt rich-text.
+
+    Supports fenced code blocks, inline code, headings 1-4, bullet lists,
+    blockquotes, **bold**, *italic*, and links. No external dependency.
+    """
+    if not raw or not raw.strip():
+        return ""
+    esc: str = raw
+    for old, new in _MD_ESCAPE:
+        esc = esc.replace(old, new)
+
+    blocks: list[str] = []
+
+    def _stash(match: re.Match[str]) -> str:
+        code_lines = []
+        for line in match.group(1).split("\n"):
+            line = line.replace("\t", "&nbsp;" * 4)
+            line = re.sub(r"  ", "&nbsp;&nbsp;", line)
+            code_lines.append(line.replace(" ", "&nbsp;") or "")
+        blocks.append(
+            f'<table width="100%" cellspacing="0" cellpadding="7"><tr>'
+            f'<td bgcolor="{TERM}"><span style="font-family:Consolas,monospace; '
+            f'color:{TEXT}; font-size:11.5px;">{"<br>".join(code_lines)}</span></td></tr></table>'
+        )
+        return f"\x00{len(blocks) - 1}\x00"
+
+    esc = _FENCED_RE.sub(_stash, esc)
+
+    out_lines: list[str] = []
+    for line in esc.split("\n"):
+        heading = _HEADING_RE.match(line.strip())
+        bullet = _LIST_RE.match(line.rstrip())
+        if line.strip().startswith("&gt;"):
+            out_lines.append(f'<i style="color:{MUTED};">{_md_inline(line.strip()[4:].strip())}</i>')
+        elif heading:
+            size = _HEADING_SIZES[len(heading.group(1))]
+            out_lines.append(f'<b style="color:{TEXT}; font-size:{size}px;">{_md_inline(heading.group(2))}</b>')
+        elif bullet:
+            indent = "&nbsp;" * (len(bullet.group(1)) // 2)
+            out_lines.append(f"{indent}&nbsp;&nbsp;•&nbsp;&nbsp;{_md_inline(bullet.group(2))}")
+        else:
+            out_lines.append(_md_inline(line))
+    body = "<br>".join(out_lines)
+
+    def _unstash(match: re.Match[str]) -> str:
+        idx = int(match.group(1))
+        return blocks[idx] if 0 <= idx < len(blocks) else ""
+
+    return re.sub(r"\x00(\d+)\x00", _unstash, body).replace("<br><br><table", "<br><table")
 
 
 def _build_qss() -> str:
@@ -687,6 +766,12 @@ class JarvisHudApp(QMainWindow):
         self._chat_responding = False
         self._ai_state_key = "idle"
         self._chat_history: list[dict[str, str]] = []
+        self._chat_service = ChatService(self.runtime.settings)
+        self._chat_cancel: threading.Event | None = None
+        self._chat_stream_start_offset = -1
+        self._chat_stream_text: list[str] = []
+        self._last_user_text = ""
+        self._pending_images: list[str] = []
         self._cmd_history: list[str] = []
         self._cmd_history_index = -1
         self._scheduler_announce: Callable[[dict[str, Any], str, str], None] | None = None
@@ -1021,17 +1106,37 @@ class JarvisHudApp(QMainWindow):
         ai_lay.addWidget(self.ai_stack, 1)
 
         composer = QFrame()
-        composer_lay = QHBoxLayout(composer)
+        composer_lay = QVBoxLayout(composer)
         composer_lay.setContentsMargins(0, 0, 0, 0)
-        composer_lay.setSpacing(8)
+        composer_lay.setSpacing(6)
+        input_row = QHBoxLayout()
+        input_row.setSpacing(8)
+        self.chat_image_button = self._button(
+            "IMAGE", self._attach_chat_images, kind="tertiary", small=True, tooltip="Attach an image for a vision-capable chat model"
+        )
+        input_row.addWidget(self.chat_image_button)
         self.chat_entry = QLineEdit()
         self.chat_entry.setMinimumHeight(40)
-        self.chat_entry.setPlaceholderText("Ask JARVIS anything…")
-        self.chat_entry.returnPressed.connect(self._ask_chatbot)
-        composer_lay.addWidget(self.chat_entry, 1)
-        self.ask_button = self._chip("ASK", self._ask_chatbot, primary=True)
+        self.chat_entry.setPlaceholderText("Ask JARVIS anything…  (commands like “open chrome” run directly)")
+        self.chat_entry.returnPressed.connect(self._on_ask_clicked)
+        input_row.addWidget(self.chat_entry, 1)
+        self.ask_button = self._chip("ASK", self._on_ask_clicked, primary=True)
         self.ask_button.setMinimumHeight(40)
-        composer_lay.addWidget(self.ask_button)
+        self.ask_button.setToolTip("Send · while streaming this becomes STOP")
+        input_row.addWidget(self.ask_button)
+        composer_lay.addLayout(input_row)
+
+        meta_row = QHBoxLayout()
+        meta_row.setSpacing(8)
+        primary_spec = self._chat_service.chain[0] if self._chat_service.chain else None
+        self.chat_status_label = QLabel(
+            f"{primary_spec.name} · {primary_spec.model}" if primary_spec else "no chat provider configured"
+        )
+        self.chat_status_label.setObjectName("MetaLabel")
+        meta_row.addWidget(self.chat_status_label, 1)
+        meta_row.addWidget(self._button("RETRY", self._retry_last_chat, kind="tertiary", small=True, tooltip="Re-send the last message"))
+        meta_row.addWidget(self._button("CLEAR", self._clear_conversation, kind="tertiary", small=True, tooltip="Clear the conversation view (Ctrl+Shift+C)"))
+        composer_lay.addLayout(meta_row)
         ai_lay.addWidget(composer)
 
         return ai_card
@@ -1447,7 +1552,10 @@ class JarvisHudApp(QMainWindow):
     def _set_busy(self, busy: bool) -> None:
         self._busy = busy
         self.run_button.setEnabled(not busy)
-        self.ask_button.setEnabled(not busy)
+        # While a chat stream is active the ASK button doubles as STOP and must
+        # stay clickable; every other busy source disables it as before.
+        if not self._chat_streaming:
+            self.ask_button.setEnabled(not busy)
 
     def _next_busy_seq(self) -> int:
         """Allocate the watchdog token for a new command run."""
@@ -1957,14 +2065,9 @@ class JarvisHudApp(QMainWindow):
             elif event == "chat_stream_chunk":
                 self._append_chat_stream_chunk(str(payload))
             elif event == "chat_stream_done":
-                done = str(payload or "").strip()
-                self._finish_chat_stream()
-                self._set_busy(False)
-                if done.lower().startswith("error"):
-                    self._flash_ai_error()
-                if done:
-                    self._chat_history.append({"role": "assistant", "content": done})
-                    self._chat_history = self._chat_history[-12:]
+                self._handle_chat_done(dict(payload or {}))
+            elif event == "chat_stream_error":
+                self._handle_chat_error(str(payload))
             elif event == "job_status":
                 self._update_job_panel(payload)
             elif event == "job_msg":
@@ -2058,15 +2161,20 @@ class JarvisHudApp(QMainWindow):
 
     # ------------------------------------------------------------ chat
 
-    def _append_chat(self, role: str, text: str) -> None:
+    def _append_chat(self, role: str, text: str, images: list[str] | None = None) -> None:
         self._ensure_chat_visible()
         safe = text.replace("&", "&amp;").replace("<", "&lt;").replace(">", "&gt;")
         ts = datetime.now().strftime("%H:%M")
         if role == "user":
+            img_html = ""
+            for img in images or []:
+                src = Path(img).as_posix()
+                img_html += f'<img src="file:///{src}" width="220"><br>'
             self.chat_text.append(
                 f'<table width="100%" cellspacing="0" cellpadding="6"><tr>'
                 f'<td bgcolor="{ENTRY}">'
                 f'<span style="color:{CYAN}; font-size:10px; font-weight:700;">YOU · {ts}</span><br>'
+                f"{img_html}"
                 f'<span style="color:{TEXT}; font-size:13px;">{safe}</span>'
                 f"</td></tr></table>"
             )
@@ -2080,13 +2188,19 @@ class JarvisHudApp(QMainWindow):
     def _start_chat_stream(self) -> None:
         self._ensure_chat_visible()
         self._chat_responding = False
+        self._chat_streaming = True
+        self._chat_stream_text = []
         ts = datetime.now().strftime("%H:%M")
-        self.chat_text.append(f'<span style="color:{INDIGO}; font-weight:700; font-size:10px;">JARVIS · {ts}</span>')
+        self.chat_text.append(
+            f'<span style="color:{INDIGO}; font-weight:700; font-size:10px;">JARVIS · {ts}</span><br>'
+        )
+        self._chat_stream_start_offset = len(self.chat_text.toPlainText())
         self.chat_text.verticalScrollBar().setValue(self.chat_text.verticalScrollBar().maximum())
 
     def _append_chat_stream_chunk(self, chunk: str) -> None:
         if not self._chat_streaming:
             return
+        self._chat_stream_text.append(chunk)
         if not self._chat_responding:
             self._chat_responding = True
             self._set_ai_state("responding")
@@ -2097,64 +2211,194 @@ class JarvisHudApp(QMainWindow):
         self.chat_text.setTextCursor(cursor)
         self.chat_text.verticalScrollBar().setValue(self.chat_text.verticalScrollBar().maximum())
 
-    def _finish_chat_stream(self) -> None:
+    def _finish_chat_stream_text(self, text: str, stopped: bool) -> None:
+        """Swap the streamed plain text for the rendered Markdown version."""
         if not self._chat_streaming:
             return
-        self.chat_text.append("")
-        self.chat_text.append("<br>")
+        html = markdown_to_html(text)
+        suffix = f' <span style="color:{AMBER}; font-size:10px;">· stopped</span>' if stopped else ""
+        start = int(getattr(self, "_chat_stream_start_offset", -1))
+        end = len(self.chat_text.toPlainText())
+        cursor = self.chat_text.textCursor()
+        if start >= 0 and end > start:
+            cursor.setPosition(start)
+            cursor.setPosition(end, QTextCursor.MoveMode.KeepAnchor)
+            cursor.removeSelectedText()
+            cursor.insertHtml(html + suffix + "<br><br>")
+        else:
+            self.chat_text.append(html + suffix)
+            self.chat_text.append("<br>")
+        self._chat_stream_start_offset = -1
+        self._chat_stream_text = []
         self._chat_streaming = False
+        self.ask_button.setText("ASK")
+        self.ask_button.setEnabled(True)
         self._set_ai_state("idle")
 
-    def _ask_chatbot(self) -> None:
-        q = self.chat_entry.text().strip()
-        if not q or self._busy:
+    # -- ask / stop / retry / clear -------------------------------------------
+
+    def _on_ask_clicked(self) -> None:
+        if self._chat_streaming:
+            self._stop_chat_stream()
+            return
+        text = self.chat_entry.text().strip()
+        if not text:
             return
         self.chat_entry.clear()
-        self._append_chat("user", q)
+        self._ask_chatbot(text)
+
+    def _ask_chatbot(self, text: str) -> None:
+        text = (text or "").strip()
+        if not text:
+            return
+        if self._chat_streaming or (self._busy and not self._chat_streaming):
+            return
+
+        route = classify_user_input(text)
+        self._last_user_text = text
+        images = list(self._pending_images)
+        self._pending_images = []
+        self._refresh_image_button()
+        self._append_chat("user", text, images)
+
+        if route == "command":
+            self.chat_text.append(
+                f'<span style="color:{MUTED}; font-size:11px;">→ routed to command system</span><br>'
+            )
+            self._run_command_text(text)
+            return
+
+        window = max(2, int(getattr(self.runtime.settings, "jarvis_chat_history_window", 12)))
+        history = build_history_from_memory(self.runtime.memory, window)
         self._set_busy(True)
         self._set_ai_state("thinking")
+        self._chat_cancel = threading.Event()
+        self.ask_button.setText("STOP")
         self._start_chat_stream()
-        self._chat_history.append({"role": "user", "content": q})
-        self._chat_history = self._chat_history[-12:]
 
         def worker() -> None:
+            cancel = self._chat_cancel or threading.Event()
             try:
-                if not self._stream_chatbot_openai(q):
-                    hist = self.runtime.memory.recent_conversation(limit=12)
-                    plan = self.runtime.planner.plan(q, [], hist)
-                    ans = (plan.final_response or "").strip()
-                    if not ans:
-                        ans = self.runtime.orchestrator.execute_command(command=q, source="gui_chat", auto_approve=False).response_text
-                    self._enqueue(("chat_stream_chunk", ans))
-                    self._enqueue(("chat_stream_done", ans))
-            except Exception as exc:
-                self._enqueue(("chat_stream_chunk", f"Error: {exc}"))
-                self._enqueue(("chat_stream_done", f"Error: {exc}"))
+                for event in self._chat_service.stream_chat(text, history, cancel):
+                    kind = event.get("type")
+                    if kind == "delta":
+                        self._enqueue(("chat_stream_chunk", str(event.get("text", ""))))
+                    elif kind == "done":
+                        self._enqueue(
+                            (
+                                "chat_stream_done",
+                                {
+                                    "text": str(event.get("text", "")),
+                                    "stopped": bool(event.get("stopped")),
+                                    "meta": dict(event.get("meta") or {}),
+                                },
+                            )
+                        )
+                    elif kind == "error":
+                        self._enqueue(("chat_stream_error", str(event.get("message", "Chat failed."))))
+            except Exception as exc:  # provider construction errors land here
+                self._enqueue(("chat_stream_error", f"Unexpected chat error: {exc}"))
 
-        threading.Thread(target=worker, daemon=True).start()
+        threading.Thread(target=worker, daemon=True, name="jarvis-chat").start()
 
-    def _stream_chatbot_openai(self, q: str) -> bool:
-        if str(getattr(self.runtime.settings, "llm_provider", "")).lower() != "openai" or not getattr(self.runtime.settings, "openai_api_key", None):
-            return False
-        try:
-            from openai import OpenAI
-        except Exception:
-            return False
-        client = OpenAI(api_key=self.runtime.settings.openai_api_key, timeout=120.0, max_retries=0)
-        model = str(getattr(self.runtime.settings, "openai_model", "gpt-4.1-mini"))
-        msgs: list[Any] = [{"role": "system", "content": "You are AI Bot inside Jarvis HUD. Keep answers concise and useful."}]
-        msgs.extend(self._chat_history[-10:])
-        msgs.append({"role": "user", "content": q})
-        stream = client.chat.completions.create(model=model, messages=msgs, stream=True, temperature=0.3)
-        built: list[str] = []
-        for chunk in stream:
-            delta = chunk.choices[0].delta.content if chunk.choices and chunk.choices[0].delta else None
-            if not delta:
-                continue
-            built.append(delta)
-            self._enqueue(("chat_stream_chunk", delta))
-        self._enqueue(("chat_stream_done", "".join(built).strip()))
-        return True
+    def _stop_chat_stream(self) -> None:
+        if self._chat_cancel is not None:
+            self._chat_cancel.set()
+        self.ask_button.setText("…")
+        self.ask_button.setEnabled(False)
+
+    def _retry_last_chat(self) -> None:
+        if not self._last_user_text:
+            return
+        self._ask_chatbot(self._last_user_text)
+
+    def _clear_conversation(self) -> None:
+        was_streaming = self._chat_streaming
+        if was_streaming:
+            self._stop_chat_stream()
+        self._chat_streaming = False
+        self._chat_stream_start_offset = -1
+        self._chat_stream_text = []
+        self._chat_cancel = None
+        self.chat_text.clear()
+        self.ai_stack.setCurrentIndex(0)
+        self.ask_button.setText("ASK")
+        self.ask_button.setEnabled(True)
+        self._set_ai_state("idle")
+        if was_streaming and self._busy:
+            self._set_busy(False)
+
+    def _attach_chat_images(self) -> None:
+        paths, _ = QFileDialog.getOpenFileNames(
+            self,
+            "Attach images",
+            "",
+            "Image files (*.png *.jpg *.jpeg *.webp *.bmp *.gif);;All files (*.*)",
+        )
+        for path in paths[:3]:
+            if path and path not in self._pending_images:
+                self._pending_images.append(path)
+        self._refresh_image_button()
+
+    def _refresh_image_button(self) -> None:
+        n = len(self._pending_images)
+        self.chat_image_button.setText(f"IMAGE ×{n}" if n else "IMAGE")
+
+    def _handle_chat_done(self, payload: dict[str, Any]) -> None:
+        text = str(payload.get("text") or "")
+        stopped = bool(payload.get("stopped"))
+        meta = dict(payload.get("meta") or {})
+        self._finish_chat_stream_text(text, stopped)
+        self._set_busy(False)
+        self._update_chat_status(meta)
+        if meta:
+            logger_note = "fallback" if meta.get("fallback_used") else "ok"
+            self._append_terminal(
+                "SYS",
+                f"chat {meta.get('provider')} · {meta.get('model')} — "
+                f"{meta.get('first_token_ms', -1)}ms first token, {meta.get('total_ms', -1)}ms total [{logger_note}]",
+            )
+            if meta.get("fallback_used"):
+                self._toaster.notify("Chat fallback", f"Served by {meta.get('provider')} · {meta.get('model')}", AMBER, duration_ms=3500)
+        if text and not stopped:
+            try:
+                self.runtime.memory.log_command(source="chat", command=self._last_user_text or "(chat)", response_text=text)
+            except Exception:
+                pass
+
+    def _handle_chat_error(self, message: str) -> None:
+        self._chat_streaming = False
+        self._chat_stream_start_offset = -1
+        self._chat_stream_text = []
+        self.ask_button.setText("ASK")
+        self.ask_button.setEnabled(True)
+        self._set_busy(False)
+        self._flash_ai_error()
+        safe = message.replace("&", "&amp;").replace("<", "&lt;").replace(">", "&gt;")
+        self.chat_text.append(
+            f'<table width="100%" cellspacing="0" cellpadding="6"><tr>'
+            f'<td bgcolor="{DANGER}"><span style="color:{RED}; font-size:12px; font-weight:700;">CHAT ERROR</span><br>'
+            f'<span style="color:{TEXT}; font-size:12px;">{safe}</span>'
+            f"</td></tr></table><br>"
+        )
+        self.chat_text.verticalScrollBar().setValue(self.chat_text.verticalScrollBar().maximum())
+
+    def _update_chat_status(self, meta: dict[str, Any]) -> None:
+        if not meta:
+            return
+        ttft = meta.get("first_token_ms", -1)
+        total = meta.get("total_ms", -1)
+        bits = [f"{meta.get('provider', '?')}", f"{meta.get('model', '?')}"]
+        if isinstance(ttft, int) and ttft >= 0:
+            bits.append(f"{ttft}ms TTFT")
+        if isinstance(total, int) and total >= 0:
+            bits.append(f"{total / 1000:.1f}s")
+        if meta.get("fallback_used"):
+            bits.append("fallback")
+        color = AMBER if meta.get("fallback_used") else MUTED
+        self.chat_status_label.setText(" · ".join(bits))
+        self.chat_status_label.setStyleSheet(f"color: {color}; font-size: 11px;")
+
 
     # ------------------------------------------------------------ hotkeys
 
@@ -2168,6 +2412,8 @@ class JarvisHudApp(QMainWindow):
         sc.activated.connect(self._clear_terminal)
         sc = QShortcut(QKeySequence("Ctrl+K"), self)
         sc.activated.connect(self._clear_feed)
+        sc = QShortcut(QKeySequence("Ctrl+Shift+C"), self)
+        sc.activated.connect(self._clear_conversation)
 
     # ------------------------------------------------------------ scheduler
 

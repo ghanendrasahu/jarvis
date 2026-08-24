@@ -215,6 +215,21 @@ class MemoryStore:
             ).fetchall()
         return [dict(row) for row in rows]
 
+    def recent_chat(self, limit: int = 12) -> list[dict[str, Any]]:
+        """AI-assistant chat turns (source='chat' rows), oldest first."""
+        with self._lock:
+            rows = self._conn.execute(
+                """
+                SELECT created_at, source, command, response_text
+                FROM command_history
+                WHERE source = 'chat'
+                ORDER BY id DESC
+                LIMIT ?
+                """,
+                (limit,),
+            ).fetchall()
+        return [dict(row) for row in reversed(rows)]
+
     def recent_tool_history(self, limit: int = 30) -> list[dict[str, Any]]:
         with self._lock:
             rows = self._conn.execute(
