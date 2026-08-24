@@ -14,6 +14,7 @@ import time
 from collections.abc import Callable, Iterator
 from dataclasses import dataclass, field
 from pathlib import Path
+from queue import Empty, Queue
 from typing import Any, Protocol
 
 from app.config import Settings
@@ -52,6 +53,15 @@ _PROVIDER_SETTINGS: dict[str, tuple[str, str | None]] = {
 }
 
 _RETRYABLE_KINDS = {"timeout", "rate_limit", "connection"}
+
+# B2: provider streaming is pumped on a dedicated thread while stream_chat's
+# consumer waits on a queue with this supervision slice. A stalled HTTP read
+# emits no chunks, so without the slice STOP would only be observed after the
+# full read timeout. 0.2s bounds observed cancel/deadline latency without any
+# busy-waiting (the consumer blocks on the queue between ticks). This is the
+# documented limitation: true mid-socket-read interruption is not available
+# from the synchronous SDK, so responsiveness is bounded by this constant.
+_CANCEL_SUPERVISION_SECONDS = 0.2
 
 
 # --------------------------------------------------------------------------- messages
@@ -192,6 +202,22 @@ class OpenAICompatChatProvider:
             timeout=60.0,
             max_retries=0,  # retries are owned by ChatService, never the SDK
         )
+        self._active_response: Any = None
+
+    def interrupt(self) -> None:
+        """Abort an in-flight streaming response (safe from another thread).
+
+        Closing the HTTP response unblocks a stalled socket read so that
+        cancellation is observed promptly instead of waiting for the read
+        timeout. Idempotent; a no-op when nothing is in flight.
+        """
+        response = self._active_response
+        if response is None:
+            return
+        try:
+            response.close()
+        except Exception:
+            pass
 
     def stream(
         self,
@@ -217,6 +243,7 @@ class OpenAICompatChatProvider:
         except Exception as exc:
             raise ChatStreamError(_classify_provider_exception(exc), str(exc)) from exc
 
+        self._active_response = response
         try:
             for chunk in response:
                 if cancel_event is not None and cancel_event.is_set():
@@ -234,6 +261,7 @@ class OpenAICompatChatProvider:
         except Exception as exc:
             raise ChatStreamError(_classify_provider_exception(exc), str(exc)) from exc
         finally:
+            self._active_response = None
             try:
                 response.close()  # type: ignore[attr-defined]
             except Exception:
@@ -381,71 +409,144 @@ class ChatService:
                 if time.perf_counter() >= deadline:
                     break
                 aggregated.clear()  # every retry/provider attempt owns isolated response state
-                chunks = provider.stream(
+                events: Queue[Any] = Queue()
+                gen = provider.stream(
                     api_messages,
                     temperature=temperature,
                     max_tokens=max_tokens,
                     timeout_s=min(timeout_s, max(5.0, deadline - time.perf_counter())),
                     cancel_event=cancel_event,
                 )
-                try:
-                    for event in chunks:
-                        if "delta" in event:
-                            if pending_reset:
-                                pending_reset = False
-                                yield {"type": "stream_reset"}
-                            if first_token_ms is None:
-                                first_token_ms = elapsed_ms()
-                            aggregated.append(event["delta"])
-                            yield {"type": "delta", "text": event["delta"], "provider": spec.name, "model": spec.model}
-                        elif event.get("done"):
+
+                def _pump(events: Queue[Any] = events, gen: Any = gen) -> None:
+                    """Pull the provider generator on its own thread so a stalled
+                    HTTP read can never block stream_chat's supervision loop."""
+                    try:
+                        for event in gen:
+                            events.put(event)
+                    except ChatStreamError as stream_exc:
+                        events.put({"provider_error": stream_exc})
+                    except Exception as unexpected:  # defensive: classify pump failures
+                        events.put(
+                            {"provider_error": ChatStreamError(_classify_provider_exception(unexpected), str(unexpected))}
+                        )
+                    finally:
+                        events.put({"pump_done": True})
+
+                threading.Thread(target=_pump, daemon=True, name=f"jarvis-chat-pump-{spec.name}").start()
+
+                def _abandon(provider: Any = provider, gen: Any = gen) -> None:
+                    """Release provider resources when leaving an attempt early.
+
+                    ``interrupt`` unblocks a stalled read; ``close`` terminates
+                    the generator (its finally closes the HTTP response)."""
+                    interrupt = getattr(provider, "interrupt", None)
+                    if callable(interrupt):
+                        try:
+                            interrupt()
+                        except Exception:
+                            pass
+                    try:
+                        gen.close()
+                    except Exception:
+                        pass
+
+                reason = ""  # "", "stop", "retry", "next", "deadline", "stream_end"
+                while True:
+                    remaining = deadline - time.perf_counter()
+                    try:
+                        event = events.get(timeout=max(0.05, min(_CANCEL_SUPERVISION_SECONDS, remaining)))
+                    except Empty:
+                        if cancel_event is not None and cancel_event.is_set():
+                            logger.info("chat_cancelled_during_stall provider=%s attempt=%d", spec.name, attempt)
+                            reason = "stop"
                             break
-                except ChatStreamError as exc:
-                    if exc.kind == "cancelled":
-                        aggregated_text = "".join(aggregated)
-                        yield {
-                            "type": "done",
-                            "text": aggregated_text,
-                            "stopped": True,
-                            "meta": self._meta(spec, first_token_ms, elapsed_ms(), index > 0, aggregated_text, api_messages),
-                        }
-                        return
-                    logger.warning(
-                        "chat_provider_failed provider=%s model=%s kind=%s detail=%.200s",
-                        spec.name,
-                        spec.model,
-                        exc.kind,
-                        exc.detail,
-                    )
-                    pending_reset = pending_reset or bool(aggregated)
-                    aggregated.clear()
-                    if exc.kind in _RETRYABLE_KINDS and attempt < attempts - 1:
-                        self._interruptible_backoff(min(0.8 * (2**attempt), 2.0), deadline, cancel_event)
-                        continue
-                    break  # next provider
-                else:
-                    text = "".join(aggregated).strip()
-                    if not text:
+                        if time.perf_counter() >= deadline:
+                            logger.warning(
+                                "chat_attempt_deadline provider=%s model=%s elapsed_ms=%d",
+                                spec.name,
+                                spec.model,
+                                elapsed_ms(),
+                            )
+                            reason = "deadline"
+                            break
+                        continue  # supervision tick: re-check cancel/deadline, keep waiting
+                    if event.get("pump_done"):
+                        reason = "stream_end"
+                        break
+                    if "provider_error" in event:
+                        exc: ChatStreamError = event["provider_error"]
+                        if exc.kind == "cancelled":
+                            reason = "stop"
+                            break
                         logger.warning(
-                            "chat_provider_failed provider=%s model=%s kind=empty detail=empty response",
+                            "chat_provider_failed provider=%s model=%s kind=%s detail=%.200s",
                             spec.name,
                             spec.model,
+                            exc.kind,
+                            exc.detail,
                         )
-                        break  # treat as provider failure -> next provider
-                    total = elapsed_ms()
-                    meta = self._meta(spec, first_token_ms, total, index > 0, text, api_messages)
-                    logger.info(
-                        "chat provider=%s model=%s first_token_ms=%d total_ms=%d fallback=%s in_tok=%d out_tok=%d",
+                        pending_reset = pending_reset or bool(aggregated)
+                        aggregated.clear()
+                        if exc.kind in _RETRYABLE_KINDS and attempt < attempts - 1:
+                            self._interruptible_backoff(min(0.8 * (2**attempt), 2.0), deadline, cancel_event)
+                            reason = "retry"
+                        else:
+                            reason = "next"
+                        break
+                    if "delta" in event:
+                        if pending_reset:
+                            pending_reset = False
+                            yield {"type": "stream_reset"}
+                        if first_token_ms is None:
+                            first_token_ms = elapsed_ms()
+                        aggregated.append(event["delta"])
+                        yield {"type": "delta", "text": event["delta"], "provider": spec.name, "model": spec.model}
+                    elif event.get("done"):
+                        reason = "stream_end"
+                        break
+
+                if reason in {"stop", "retry", "next", "deadline"}:
+                    _abandon()
+                elif reason == "stream_end" and not "".join(aggregated).strip():
+                    _abandon()
+
+                if reason == "stop":
+                    aggregated_text = "".join(aggregated)
+                    yield {
+                        "type": "done",
+                        "text": aggregated_text,
+                        "stopped": True,
+                        "meta": self._meta(spec, first_token_ms, elapsed_ms(), index > 0, aggregated_text, api_messages),
+                    }
+                    return
+                if reason == "retry":
+                    continue
+                if reason in {"next", "deadline"}:
+                    break  # advance to the next provider (deadline is authoritative)
+
+                text = "".join(aggregated).strip()
+                if not text:
+                    logger.warning(
+                        "chat_provider_failed provider=%s model=%s kind=empty detail=empty response",
                         spec.name,
                         spec.model,
-                        meta["first_token_ms"],
-                        meta["total_ms"],
-                        str(meta["fallback_used"]).lower(),
-                        meta["input_tokens"],
-                        meta["output_tokens"],
                     )
-                    yield {"type": "done", "text": text, "stopped": False, "meta": meta}
-                    return
+                    break  # treat as provider failure -> next provider
+                total = elapsed_ms()
+                meta = self._meta(spec, first_token_ms, total, index > 0, text, api_messages)
+                logger.info(
+                    "chat provider=%s model=%s first_token_ms=%d total_ms=%d fallback=%s in_tok=%d out_tok=%d",
+                    spec.name,
+                    spec.model,
+                    meta["first_token_ms"],
+                    meta["total_ms"],
+                    str(meta["fallback_used"]).lower(),
+                    meta["input_tokens"],
+                    meta["output_tokens"],
+                )
+                yield {"type": "done", "text": text, "stopped": False, "meta": meta}
+                return
 
         message = (
             "All chat providers failed"

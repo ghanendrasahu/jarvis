@@ -26,8 +26,11 @@ class FakeProvider:
       - "ok"                  -> streams "Hello", " ", "world"
       - ("deltas", [..])      -> streams the given deltas
       - ("fail", kind)        -> raises ChatStreamError(kind)
+      - ("partial_fail", [deltas], kind) -> streams deltas then raises
       - ("slow", seconds, then) -> sleeps, then behaves according to `then`
       - "cancel_aware"        -> yields one delta, then honours cancellation
+      - ("hold_first", event) -> blocks until `event` (or cancel) before first delta
+      - ("stall_forever", started_event?) -> silent stalled read; never emits
       - "empty"               -> yields nothing
     """
 
@@ -35,7 +38,12 @@ class FakeProvider:
         self.spec = spec
         self.behavior = behavior
         self.calls = 0
+        self.interrupted = False
         self.seen_messages: list[list[dict[str, Any]]] = []
+
+    def interrupt(self) -> None:
+        """Mirror OpenAICompatChatProvider.interrupt: unblock a stalled read."""
+        self.interrupted = True
 
     def _resolve(self, cancel_event: threading.Event | None) -> Iterator[dict[str, Any]]:
         behavior = self.behavior
@@ -53,6 +61,19 @@ class FakeProvider:
                 yield {"delta": delta}
             raise ChatStreamError(str(args[1]) if len(args) > 1 else "http")
             yield  # pragma: no cover - generator formalities
+        if tag == "hold_first":
+            started: threading.Event = args[0]
+            started.set()
+            while not (cancel_event is not None and cancel_event.is_set()):
+                time.sleep(0.01)
+            raise ChatStreamError("cancelled")
+            yield  # pragma: no cover - generator formalities
+        if tag == "stall_forever":
+            started_ev: threading.Event = args[0] if args else threading.Event()
+            started_ev.set()
+            time.sleep(600)  # simulate a silent, stalled HTTP read; interrupt() closes it
+            yield {"delta": "never"}  # pragma: no cover - unreachable in tests
+            yield {"done": True}  # pragma: no cover
         if tag == "slow":
             time.sleep(float(args[0]))
             inner = FakeProvider(self.spec, args[1] if len(args) > 1 else "ok")._resolve(cancel_event)
@@ -412,6 +433,203 @@ def test_no_retry_storm_with_default_retries(monkeypatch: pytest.MonkeyPatch) ->
     events = run(service)
     assert flaky.calls == 2, "max_retries=1 means exactly one retry, never more"
     assert events[-1]["type"] == "error"
+
+
+# --------------------------------------------------------------------------- B2: STOP latency during stalled reads
+
+
+def wait_until(predicate: Any, timeout_s: float = 5.0) -> bool:
+    deadline = time.monotonic() + timeout_s
+    while time.monotonic() < deadline:
+        if predicate():
+            return True
+        time.sleep(0.01)
+    return bool(predicate())
+
+
+def collect(service: ChatService, cancel: threading.Event | None, done: threading.Event) -> list[dict[str, Any]]:
+    events: list[dict[str, Any]] = []
+
+    def consume() -> None:
+        try:
+            for event in service.stream_chat("hi there", [], cancel):
+                events.append(event)
+        finally:
+            done.set()
+
+    threading.Thread(target=consume, daemon=True, name="test-consumer").start()
+    return events
+
+
+def test_cancel_during_silent_stall_is_responsive(monkeypatch: pytest.MonkeyPatch) -> None:
+    """B2 core regression: STOP must land even when the provider emits no chunks."""
+    started = threading.Event()
+    primary = FakeProvider(ProviderSpec("opencode", "m1"), ("stall_forever", started))
+    fallback = FakeProvider(ProviderSpec("groq", "m2"))
+    service = make_service(
+        monkeypatch,
+        {"opencode": primary, "groq": fallback},
+        jarvis_chat_fallback_1="groq:m2",
+    )
+    cancel = threading.Event()
+    finished = threading.Event()
+    events = collect(service, cancel, finished)
+
+    assert started.wait(5.0), "provider never began its stalled read"
+    t0 = time.perf_counter()
+    cancel.set()
+    assert finished.wait(5.0), "STOP did not take effect while the read was stalled"
+    elapsed = time.perf_counter() - t0
+
+    assert elapsed < 4.0, "cancellation must not wait for the provider read timeout"
+    done = events[-1]
+    assert done["type"] == "done" and done["stopped"] is True
+    assert primary.calls == 1
+    assert fallback.calls == 0, "cancelled attempt must never reach the fallback provider"
+    assert primary.interrupted, "stalled HTTP response must be closed so the pump exits"
+
+
+def test_cancel_before_first_token_returns_empty_stopped_response(monkeypatch: pytest.MonkeyPatch) -> None:
+    entered = threading.Event()
+    primary = FakeProvider(ProviderSpec("opencode", "m1"), ("hold_first", entered))
+    fallback = FakeProvider(ProviderSpec("groq", "m2"))
+    service = make_service(
+        monkeypatch,
+        {"opencode": primary, "groq": fallback},
+        jarvis_chat_fallback_1="groq:m2",
+    )
+    cancel = threading.Event()
+    finished = threading.Event()
+    events = collect(service, cancel, finished)
+
+    assert entered.wait(5.0)
+    cancel.set()
+    assert finished.wait(5.0)
+
+    assert len(events) == 1
+    assert events[0]["type"] == "done"
+    assert events[0]["stopped"] is True
+    assert events[0]["text"] == ""
+    assert primary.calls == 1 and fallback.calls == 0
+
+
+def test_cancel_does_not_retry_or_advance_to_fallback(monkeypatch: pytest.MonkeyPatch) -> None:
+    started = threading.Event()
+    primary = FakeProvider(ProviderSpec("opencode", "m1"), ("stall_forever", started))
+    fallback = FakeProvider(ProviderSpec("groq", "m2"))
+    service = make_service(
+        monkeypatch,
+        {"opencode": primary, "groq": fallback},
+        jarvis_chat_max_retries=2,
+        jarvis_chat_fallback_1="groq:m2",
+    )
+    cancel = threading.Event()
+    finished = threading.Event()
+    events = collect(service, cancel, finished)
+
+    assert started.wait(5.0)
+    cancel.set()
+    assert finished.wait(5.0)
+
+    assert primary.calls == 1, "cancellation must not consume retry attempts"
+    assert fallback.calls == 0
+    assert events[-1]["stopped"] is True
+
+
+def test_deadline_terminates_silent_stall_without_user_cancel(monkeypatch: pytest.MonkeyPatch) -> None:
+    started = threading.Event()
+    primary = FakeProvider(ProviderSpec("opencode", "m1"), ("stall_forever", started))
+    fallback = FakeProvider(ProviderSpec("groq", "m2"))
+    service = make_service(
+        monkeypatch,
+        {"opencode": primary, "groq": fallback},
+        jarvis_chat_deadline_seconds=1,
+        jarvis_chat_fallback_1="groq:m2",
+    )
+    t0 = time.perf_counter()
+    events = run(service)
+    elapsed = time.perf_counter() - t0
+
+    assert events[-1]["type"] == "error", "deadline stays authoritative for a stalled request"
+    assert "failed" in events[-1]["message"].lower()
+    assert elapsed < 6.0, f"stalled request must be bounded by deadline, took {elapsed:.1f}s"
+    assert primary.interrupted, "stalled response closed on deadline cleanup"
+    assert fallback.calls == 0, "deadline must prevent later providers from starting"
+
+
+def test_openai_provider_interrupt_closes_active_response(monkeypatch: pytest.MonkeyPatch) -> None:
+    """interrupt() closes the live HTTP response; the stalled read then fails fast."""
+    from types import SimpleNamespace
+
+    from app.llm.chat import OpenAICompatChatProvider
+
+    class _Delta:
+        content = "Hi "
+
+    class _Choice:
+        delta = _Delta()
+
+    class _Chunk:
+        choices = [_Choice()]
+
+    class _StubResponse:
+        def __init__(self) -> None:
+            self.closed = False
+            self._emitted = False
+
+        def __iter__(self):
+            return self
+
+        def __next__(self):
+            if self.closed:
+                raise RuntimeError("connection aborted")
+            if self._emitted:
+                time.sleep(300)  # stalled read; only close() ends it
+            self._emitted = True
+            return _Chunk()
+
+        def close(self) -> None:
+            self.closed = True
+
+    stub = _StubResponse()
+    spec = ProviderSpec("opencode", "m1")
+    provider = OpenAICompatChatProvider(spec, "http://localhost/v1", "k")
+    monkeypatch.setattr(
+        provider,
+        "_client",
+        SimpleNamespace(chat=SimpleNamespace(completions=SimpleNamespace(create=lambda **_kw: stub))),
+    )
+
+    gen = provider.stream([{"role": "user", "content": "hi"}], timeout_s=30, cancel_event=None)
+    assert next(gen) == {"delta": "Hi "}
+    assert provider._active_response is stub
+
+    provider.interrupt()
+    assert stub.closed, "interrupt must close the underlying response"
+
+    with pytest.raises(ChatStreamError) as excinfo:
+        next(gen)
+    assert excinfo.value.kind in {"connection", "timeout", "http"}
+    assert provider._active_response is None, "finally must clear the active response"
+
+
+def test_repeated_cancel_calls_are_idempotent(monkeypatch: pytest.MonkeyPatch) -> None:
+    entered = threading.Event()
+    primary = FakeProvider(ProviderSpec("opencode", "m1"), ("hold_first", entered))
+    service = make_service(monkeypatch, {"opencode": primary})
+    cancel = threading.Event()
+    finished = threading.Event()
+    events = collect(service, cancel, finished)
+
+    assert entered.wait(5.0)
+    cancel.set()
+    cancel.set()
+    cancel.set()
+    assert finished.wait(5.0)
+
+    done_events = [e for e in events if e["type"] == "done"]
+    assert len(done_events) == 1, "repeated STOP must produce exactly one stopped response"
+    assert not any(e["type"] == "error" for e in events), "cancellation must never become an error"
 
 
 def test_vision_gating_on_message_payload() -> None:
