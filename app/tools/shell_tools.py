@@ -55,10 +55,25 @@ ENCODED_COMMAND_PATTERNS = [
 # each line of -Command input separately).
 COMPOUND_SEPARATORS = [";", "&&", "||", "|", "`n", "\n", "\r", "\0"]
 
-# PowerShell expression/eval primitives: subexpressions, escape sequences,
-# static member invocation, and script-block literals all enable arbitrary
-# code execution behind an allowed first token.
-BLOCKED_METACHARACTERS = ["$(", "`", "::", "{", "}"]
+# S2 hardening — characters that let an apparently-safe first token turn into
+# something else entirely. Everything listed here is rejected anywhere in the
+# command (inside quotes included; this boundary deliberately fails closed):
+#   $        variables, $() subexpressions, ${}, $env:, splatting inputs
+#   `        escape sequences that can splice tokens together
+#   ::       static member invocation ([type]::Method())
+#   {}       script-block literals ({...} | iex-style flows)
+#   ( )      expression grouping: (any-command) evaluates and runs it,
+#            including as an argument to an allowed cmdlet; also @(...)
+#   &        call operator remnants and stream mergers (2>&1)
+#   < >      every redirection form (>, >>, 2>, 2>>, *>, 2>&1, <): they mutate
+#            the filesystem / redirect streams far beyond the allowlist's
+#            read-only intent, so no redirection is permitted
+BLOCKED_METACHARACTERS = ["$", "`", "::", "{", "}", "(", ")", "&", "<", ">"]
+
+# Stripped from the first token before interpreter/allowlist matching so a
+# configured "python.exe"/"powershell.cmd" cannot slip past the interpreter
+# hard-deny under an extension disguise.
+_EXECUTABLE_EXTENSIONS = (".exe", ".bat", ".cmd", ".com", ".ps1")
 
 # Interpreters and script hosts are refused even when a user explicitly adds
 # them to allowed_shell_commands: a single allowlisted interpreter turns the
@@ -142,11 +157,18 @@ def register_shell_tools(registry: ToolRegistry, settings: Settings) -> None:
             raise ValueError("Missing command.")
 
         first_token = command.split(maxsplit=1)[0].strip().lower()
-        if first_token in INTERPRETER_TOKENS:
+        # Extension-normalize so configured "python.exe"/"pwsh.cmd" style
+        # entries cannot smuggle an interpreter past the hard-deny.
+        stem = first_token
+        for extension in _EXECUTABLE_EXTENSIONS:
+            if stem.endswith(extension):
+                stem = stem[: -len(extension)]
+                break
+        if stem in INTERPRETER_TOKENS or first_token in INTERPRETER_TOKENS:
             raise PermissionError(
                 f"Command prefix '{first_token}' can execute arbitrary code and is always disallowed."
             )
-        if first_token not in allowed:
+        if first_token not in allowed and stem not in allowed:
             raise PermissionError(
                 f"Command prefix '{first_token}' is not allowed. Allowed prefixes: {sorted(allowed)}"
             )
