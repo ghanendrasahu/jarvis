@@ -138,6 +138,19 @@ def _title_color() -> str:
 
 # --------------------------------------------------------------------- markdown
 
+def _safe_color(hex_color: str, fallback: str = "#ffffff") -> str:
+    """Return *hex_color* if it is a valid 7-char hex string, else *fallback*.
+
+    Global palette strings can temporarily be "" during theme swaps or before
+    _apply_palette() runs.  Passing "" to QColor() causes Qt to raise inside
+    the C++ paint dispatch, producing the "Error calling Python override"
+    messages we see in the logs.
+    """
+    if isinstance(hex_color, str) and len(hex_color) == 7 and hex_color[0] == "#":
+        return hex_color
+    return fallback
+
+
 _MD_ESCAPE = ("&", "&amp;"), ("<", "&lt;"), (">", "&gt;")
 _FENCED_RE = re.compile(r"```[\w+-]*\n?(.*?)```", re.DOTALL)
 _HEADING_RE = re.compile(r"^(#{1,4})\s+(.+)$")
@@ -478,61 +491,67 @@ class Backdrop(QWidget):
         self._particles.clear()
 
     def _animate(self) -> None:
-        self._angle += 0.02
-        if not self._particles and self.width() > 10:
-            w, h = self.width(), self.height()
-            count = 44 if self._gfx_full else 12
-            for _ in range(count):
-                self._particles.append(
-                    {
-                        "x": random.uniform(0, w),
-                        "y": random.uniform(0, h),
-                        "r": random.uniform(1.0, 2.6),
-                        "speed": random.uniform(0.15, 0.7),
-                    }
-                )
-        self.update()
+        try:
+            self._angle += 0.02
+            if not self._particles and self.width() > 10:
+                w, h = self.width(), self.height()
+                count = 44 if self._gfx_full else 12
+                for _ in range(count):
+                    self._particles.append(
+                        {
+                            "x": random.uniform(0, w),
+                            "y": random.uniform(0, h),
+                            "r": random.uniform(1.0, 2.6),
+                            "speed": random.uniform(0.15, 0.7),
+                        }
+                    )
+            self.update()
+        except Exception:
+            pass
 
     def paintEvent(self, event) -> None:
-        p = QPainter(self)
-        p.setRenderHint(QPainter.RenderHint.Antialiasing)
-        w = max(1, self.width())
-        h = max(1, self.height())
+        try:
+            p = QPainter(self)
+            p.setRenderHint(QPainter.RenderHint.Antialiasing)
+            w = max(1, self.width())
+            h = max(1, self.height())
 
-        if self._mode == "image" and self._image is not None:
-            pix = self._image
-            scaled = pix.scaled(w, h, Qt.AspectRatioMode.KeepAspectRatioByExpanding, Qt.TransformationMode.SmoothTransformation)
-            x = (scaled.width() - w) // 2
-            y = (scaled.height() - h) // 2
-            p.drawPixmap(0, 0, scaled, x, y, w, h)
-            p.fillRect(0, 0, w, h, QColor(4, 8, 20, 178))
-        elif self._mode == "gradient":
-            idx = int(self._value or 0) % len(self.GRADIENTS)
-            _name, top, bottom = self.GRADIENTS[idx]
-            grad = QLinearGradient(0, 0, 0, h)
-            grad.setColorAt(0, QColor(top))
-            grad.setColorAt(1, QColor(bottom))
-            p.fillRect(0, 0, w, h, grad)
-        else:
-            grad = QLinearGradient(0, 0, 0, h)
-            grad.setColorAt(0, QColor("#04091a"))
-            grad.setColorAt(1, QColor("#0c1830"))
-            p.fillRect(0, 0, w, h, grad)
-            self._draw_blob(p, w * 0.18, h * 0.30, 340 + 26 * math.sin(self._angle), INDIGO, 20)
-            self._draw_blob(p, w * 0.82, h * 0.72, 400 + 34 * math.cos(self._angle * 0.7), CYAN, 13)
+            if self._mode == "image" and self._image is not None:
+                pix = self._image
+                scaled = pix.scaled(w, h, Qt.AspectRatioMode.KeepAspectRatioByExpanding, Qt.TransformationMode.SmoothTransformation)
+                x = (scaled.width() - w) // 2
+                y = (scaled.height() - h) // 2
+                p.drawPixmap(0, 0, scaled, x, y, w, h)
+                p.fillRect(0, 0, w, h, QColor(4, 8, 20, 178))
+            elif self._mode == "gradient":
+                idx = int(self._value or 0) % len(self.GRADIENTS)
+                _name, top, bottom = self.GRADIENTS[idx]
+                grad = QLinearGradient(0, 0, 0, h)
+                grad.setColorAt(0, QColor(top))
+                grad.setColorAt(1, QColor(bottom))
+                p.fillRect(0, 0, w, h, grad)
+            else:
+                grad = QLinearGradient(0, 0, 0, h)
+                grad.setColorAt(0, QColor("#04091a"))
+                grad.setColorAt(1, QColor("#0c1830"))
+                p.fillRect(0, 0, w, h, grad)
+                self._draw_blob(p, w * 0.18, h * 0.30, 340 + 26 * math.sin(self._angle), _safe_color(INDIGO, "#4f46e5"), 20)
+                self._draw_blob(p, w * 0.82, h * 0.72, 400 + 34 * math.cos(self._angle * 0.7), _safe_color(CYAN, "#06b6d4"), 13)
 
-        for part in self._particles:
-            part["y"] += part["speed"]
-            part["x"] += math.sin(self._angle + part["y"] * 0.02) * 0.3
-            if part["y"] > h + 8:
-                part["y"] = -8
-                part["x"] = random.uniform(0, w)
-            r = part["r"]
-            p.setPen(Qt.PenStyle.NoPen)
-            p.setBrush(QColor(129, 140, 248, 85))
-            p.drawEllipse(QPointF(part["x"], part["y"]), r, r)
+            for part in self._particles:
+                part["y"] += part["speed"]
+                part["x"] += math.sin(self._angle + part["y"] * 0.02) * 0.3
+                if part["y"] > h + 8:
+                    part["y"] = -8
+                    part["x"] = random.uniform(0, w)
+                r = part["r"]
+                p.setPen(Qt.PenStyle.NoPen)
+                p.setBrush(QColor(129, 140, 248, 85))
+                p.drawEllipse(QPointF(part["x"], part["y"]), r, r)
 
-        p.end()
+            p.end()
+        except Exception:
+            pass
 
     def _draw_blob(self, p: QPainter, x: float, y: float, radius: float, color: str, alpha: int) -> None:
         grad = QLinearGradient(x - radius, y, x + radius, y)
@@ -559,60 +578,69 @@ class CoreOrb(QWidget):
         self._timer.start(50)
 
     def _tick(self) -> None:
-        if not self.isVisible():
-            return
-        self._t += 0.02
-        self.update()
+        try:
+            if not self.isVisible():
+                return
+            self._t += 0.02
+            self.update()
+        except Exception:
+            pass
 
     def paintEvent(self, event) -> None:
-        p = QPainter(self)
-        p.setRenderHint(QPainter.RenderHint.Antialiasing)
-        cx = self.width() / 2
-        cy = self.height() / 2
+        try:
+            p = QPainter(self)
+            p.setRenderHint(QPainter.RenderHint.Antialiasing)
+            cx = self.width() / 2
+            cy = self.height() / 2
 
-        pen = QPen(QColor(CYAN), 2)
-        pen.setCapStyle(Qt.PenCapStyle.RoundCap)
-        c = QColor(CYAN)
-        c.setAlpha(115)
-        pen.setColor(c)
-        p.setPen(pen)
-        p.setBrush(Qt.BrushStyle.NoBrush)
-        p.drawArc(QRectF(cx - 74, cy - 74, 148, 148), int(-self._t * 57.3 * 16) % 5760, 100 * 16)
+            cyan = _safe_color(CYAN, "#06b6d4")
+            indigo = _safe_color(INDIGO, "#4f46e5")
 
-        pen2 = QPen(QColor(INDIGO), 2)
-        pen2.setCapStyle(Qt.PenCapStyle.RoundCap)
-        c2 = QColor(INDIGO)
-        c2.setAlpha(80)
-        pen2.setColor(c2)
-        p.setPen(pen2)
-        p.drawArc(QRectF(cx - 56, cy - 56, 112, 112), int(self._t * 92 * 16) % 5760, 62 * 16)
+            pen = QPen(QColor(cyan), 2)
+            pen.setCapStyle(Qt.PenCapStyle.RoundCap)
+            c = QColor(cyan)
+            c.setAlpha(115)
+            pen.setColor(c)
+            p.setPen(pen)
+            p.setBrush(Qt.BrushStyle.NoBrush)
+            p.drawArc(QRectF(cx - 74, cy - 74, 148, 148), int(-self._t * 57.3 * 16) % 5760, 100 * 16)
 
-        pen3 = QPen(QColor(CYAN), 1)
-        c3 = QColor(CYAN)
-        c3.setAlpha(45)
-        pen3.setColor(c3)
-        p.setPen(pen3)
-        p.drawArc(QRectF(cx - 38, cy - 38, 76, 76), int(-self._t * 41 * 16) % 5760, 140 * 16)
+            pen2 = QPen(QColor(indigo), 2)
+            pen2.setCapStyle(Qt.PenCapStyle.RoundCap)
+            c2 = QColor(indigo)
+            c2.setAlpha(80)
+            pen2.setColor(c2)
+            p.setPen(pen2)
+            p.drawArc(QRectF(cx - 56, cy - 56, 112, 112), int(self._t * 92 * 16) % 5760, 62 * 16)
 
-        pulse = abs(math.sin(self._t * 1.6))
-        halo_r = 22 + pulse * 5
-        grad = QLinearGradient(cx - halo_r, cy, cx + halo_r, cy)
-        hc = QColor(CYAN)
-        hc.setAlpha(int(42 + pulse * 28))
-        grad.setColorAt(0, hc)
-        hf = QColor(CYAN)
-        hf.setAlpha(0)
-        grad.setColorAt(1, hf)
-        p.setPen(Qt.PenStyle.NoPen)
-        p.setBrush(grad)
-        p.drawEllipse(QPointF(cx, cy), halo_r, halo_r)
+            pen3 = QPen(QColor(cyan), 1)
+            c3 = QColor(cyan)
+            c3.setAlpha(45)
+            pen3.setColor(c3)
+            p.setPen(pen3)
+            p.drawArc(QRectF(cx - 38, cy - 38, 76, 76), int(-self._t * 41 * 16) % 5760, 140 * 16)
 
-        core = QColor(CYAN)
-        core.setAlpha(210)
-        p.setBrush(core)
-        p.drawEllipse(QPointF(cx, cy), 6 + pulse * 1.6, 6 + pulse * 1.6)
+            pulse = abs(math.sin(self._t * 1.6))
+            halo_r = 22 + pulse * 5
+            grad = QLinearGradient(cx - halo_r, cy, cx + halo_r, cy)
+            hc = QColor(cyan)
+            hc.setAlpha(int(42 + pulse * 28))
+            grad.setColorAt(0, hc)
+            hf = QColor(cyan)
+            hf.setAlpha(0)
+            grad.setColorAt(1, hf)
+            p.setPen(Qt.PenStyle.NoPen)
+            p.setBrush(grad)
+            p.drawEllipse(QPointF(cx, cy), halo_r, halo_r)
 
-        p.end()
+            core = QColor(cyan)
+            core.setAlpha(210)
+            p.setBrush(core)
+            p.drawEllipse(QPointF(cx, cy), 6 + pulse * 1.6, 6 + pulse * 1.6)
+
+            p.end()
+        except Exception:
+            pass
 
 
 class IdlePanel(QWidget):
@@ -664,9 +692,12 @@ class WaveWidget(QWidget):
         self._timer.start(50)
 
     def _step(self) -> None:
-        self._phase += self._speed
-        if self.isVisible():
-            self.update()
+        try:
+            self._phase += self._speed
+            if self.isVisible():
+                self.update()
+        except Exception:
+            pass
 
     def update_status(self, color: str, amp: float, speed: float) -> None:
         self._color = color
@@ -678,45 +709,50 @@ class WaveWidget(QWidget):
             self._on_click()
 
     def paintEvent(self, event) -> None:
-        p = QPainter(self)
-        p.setRenderHint(QPainter.RenderHint.Antialiasing)
-        w = max(1, self.width())
-        h = max(1, self.height())
-        c = h // 2
+        try:
+            p = QPainter(self)
+            p.setRenderHint(QPainter.RenderHint.Antialiasing)
+            w = max(1, self.width())
+            h = max(1, self.height())
+            c = h // 2
 
-        base = QColor(self._color)
-        base.setAlpha(36)
-        p.setPen(QPen(base, 1))
-        p.drawLine(0, c, w, c)
+            color = _safe_color(self._color, _safe_color(MUTED, "#6b7280"))
 
-        echo = QColor(self._color)
-        echo.setAlpha(70)
-        p.setPen(QPen(echo, 1))
-        path_e = QPainterPath()
-        first = True
-        for x in range(0, w + 1, 6):
-            y = c + math.sin((x * 0.045) + self._phase * 0.82 + 1.4) * self._amp * 0.55
-            if first:
-                path_e.moveTo(x, y)
-                first = False
-            else:
-                path_e.lineTo(x, y)
-        p.drawPath(path_e)
+            base = QColor(color)
+            base.setAlpha(36)
+            p.setPen(QPen(base, 1))
+            p.drawLine(0, c, w, c)
 
-        pen = QPen(QColor(self._color), 2)
-        pen.setCapStyle(Qt.PenCapStyle.RoundCap)
-        p.setPen(pen)
-        path = QPainterPath()
-        first = True
-        for x in range(0, w + 1, 5):
-            y = c + math.sin((x * 0.05) + self._phase) * self._amp
-            if first:
-                path.moveTo(x, y)
-                first = False
-            else:
-                path.lineTo(x, y)
-        p.drawPath(path)
-        p.end()
+            echo = QColor(color)
+            echo.setAlpha(70)
+            p.setPen(QPen(echo, 1))
+            path_e = QPainterPath()
+            first = True
+            for x in range(0, w + 1, 6):
+                y = c + math.sin((x * 0.045) + self._phase * 0.82 + 1.4) * self._amp * 0.55
+                if first:
+                    path_e.moveTo(x, y)
+                    first = False
+                else:
+                    path_e.lineTo(x, y)
+            p.drawPath(path_e)
+
+            pen = QPen(QColor(color), 2)
+            pen.setCapStyle(Qt.PenCapStyle.RoundCap)
+            p.setPen(pen)
+            path = QPainterPath()
+            first = True
+            for x in range(0, w + 1, 5):
+                y = c + math.sin((x * 0.05) + self._phase) * self._amp
+                if first:
+                    path.moveTo(x, y)
+                    first = False
+                else:
+                    path.lineTo(x, y)
+            p.drawPath(path)
+            p.end()
+        except Exception:
+            pass
 
 
 class MeterBar(QWidget):
@@ -733,21 +769,24 @@ class MeterBar(QWidget):
         self.update()
 
     def paintEvent(self, event) -> None:
-        p = QPainter(self)
-        p.setRenderHint(QPainter.RenderHint.Antialiasing)
-        p.setPen(Qt.PenStyle.NoPen)
-        p.setBrush(QColor(TERM))
-        p.drawRoundedRect(self.rect(), 3, 3)
-        fill_w = int((self.width() - 2) * (self._value / 100.0))
-        if fill_w > 2:
-            c = QColor(self._color)
-            if self._value >= 90:
-                c = QColor(RED)
-            elif self._value >= 75:
-                c = QColor(AMBER)
-            p.setBrush(c)
-            p.drawRoundedRect(1, 1, fill_w, self.height() - 2, 2, 2)
-        p.end()
+        try:
+            p = QPainter(self)
+            p.setRenderHint(QPainter.RenderHint.Antialiasing)
+            p.setPen(Qt.PenStyle.NoPen)
+            p.setBrush(QColor(_safe_color(TERM, "#1e293b")))
+            p.drawRoundedRect(self.rect(), 3, 3)
+            fill_w = int((self.width() - 2) * (self._value / 100.0))
+            if fill_w > 2:
+                c = QColor(_safe_color(self._color, "#06b6d4"))
+                if self._value >= 90:
+                    c = QColor(_safe_color(RED, "#ef4444"))
+                elif self._value >= 75:
+                    c = QColor(_safe_color(AMBER, "#f59e0b"))
+                p.setBrush(c)
+                p.drawRoundedRect(1, 1, fill_w, self.height() - 2, 2, 2)
+            p.end()
+        except Exception:
+            pass
 
 
 class JarvisHudApp(QMainWindow):
@@ -1670,13 +1709,16 @@ class JarvisHudApp(QMainWindow):
         self.command_entry.setText(self._cmd_history[idx])
 
     def eventFilter(self, obj, event) -> bool:
-        if obj is self.command_entry and event.type() == QEvent.Type.KeyPress:
-            if event.key() == Qt.Key.Key_Up:
-                self._history_step(-1)
-                return True
-            if event.key() == Qt.Key.Key_Down:
-                self._history_step(1)
-                return True
+        try:
+            if obj is self.command_entry and event.type() == QEvent.Type.KeyPress:
+                if event.key() == Qt.Key.Key_Up:
+                    self._history_step(-1)
+                    return True
+                if event.key() == Qt.Key.Key_Down:
+                    self._history_step(1)
+                    return True
+        except Exception:
+            pass
         return super().eventFilter(obj, event)
 
     # ------------------------------------------------------------ voice
@@ -1698,41 +1740,44 @@ class JarvisHudApp(QMainWindow):
         threading.Thread(target=worker, daemon=True).start()
 
     def _refresh_voice_button(self) -> None:
-        running = self.runtime.voice.is_running()
         try:
-            status = self.runtime.voice.status()
+            running = self.runtime.voice.is_running()
+            try:
+                status = self.runtime.voice.status()
+            except Exception:
+                status = {}
+            phase, color, amp, speed = voice_phase(status)
+            self.voice_wave.update_status(color, amp, speed)
+            self.voice_dot.setStyleSheet(f"color: {color}; font-size: 12px;")
+            if not running:
+                self.voice_state_label.setText("OFFLINE")
+                self.voice_state_label.setStyleSheet(f"color: {MUTED}; font-size: 17px; font-weight: 800; letter-spacing: 2px;")
+                self.voice_status_label.setText("Voice engine idle \u2014 click to activate")
+                self.voice_switch_button.setText("ENABLE MICROPHONE")
+                self.voice_switch_button.setStyleSheet("")
+                self.online_label.setText("\u25cf ONLINE")
+                self.online_label.setStyleSheet(
+                    f"color: {GREEN}; font-size: 11px; font-weight: 700; letter-spacing: 1px;"
+                    f" padding: 4px 12px; background: {_rgba(GREEN, 26)}; border-radius: 9px;"
+                )
+            else:
+                subs = {
+                    "LISTENING": "Listening \u2014 say \u201cJarvis\u201d + your command",
+                    "PROCESSING": "Transcribing your command\u2026",
+                    "ATTENTION": "Needs attention \u2014 check the terminal",
+                }
+                self.voice_state_label.setText(phase)
+                self.voice_state_label.setStyleSheet(f"color: {color}; font-size: 17px; font-weight: 800; letter-spacing: 2px;")
+                self.voice_status_label.setText(subs.get(phase, "Microphone live"))
+                self.voice_switch_button.setText("DISABLE MICROPHONE")
+                self.voice_switch_button.setStyleSheet(f"color: {GREEN}; background: {_rgba(OK, 220)};")
+                self.online_label.setText("\u25cf STREAMING")
+                self.online_label.setStyleSheet(
+                    f"color: {CYAN}; font-size: 11px; font-weight: 700; letter-spacing: 1px;"
+                    f" padding: 4px 12px; background: {_rgba(CYAN, 26)}; border-radius: 9px;"
+                )
         except Exception:
-            status = {}
-        phase, color, amp, speed = voice_phase(status)
-        self.voice_wave.update_status(color, amp, speed)
-        self.voice_dot.setStyleSheet(f"color: {color}; font-size: 12px;")
-        if not running:
-            self.voice_state_label.setText("OFFLINE")
-            self.voice_state_label.setStyleSheet(f"color: {MUTED}; font-size: 17px; font-weight: 800; letter-spacing: 2px;")
-            self.voice_status_label.setText("Voice engine idle — click to activate")
-            self.voice_switch_button.setText("ENABLE MICROPHONE")
-            self.voice_switch_button.setStyleSheet("")
-            self.online_label.setText("● ONLINE")
-            self.online_label.setStyleSheet(
-                f"color: {GREEN}; font-size: 11px; font-weight: 700; letter-spacing: 1px;"
-                f" padding: 4px 12px; background: {_rgba(GREEN, 26)}; border-radius: 9px;"
-            )
-        else:
-            subs = {
-                "LISTENING": "Listening — say “Jarvis” + your command",
-                "PROCESSING": "Transcribing your command…",
-                "ATTENTION": "Needs attention — check the terminal",
-            }
-            self.voice_state_label.setText(phase)
-            self.voice_state_label.setStyleSheet(f"color: {color}; font-size: 17px; font-weight: 800; letter-spacing: 2px;")
-            self.voice_status_label.setText(subs.get(phase, "Microphone live"))
-            self.voice_switch_button.setText("DISABLE MICROPHONE")
-            self.voice_switch_button.setStyleSheet(f"color: {GREEN}; background: {_rgba(OK, 220)};")
-            self.online_label.setText("● STREAMING")
-            self.online_label.setStyleSheet(
-                f"color: {CYAN}; font-size: 11px; font-weight: 700; letter-spacing: 1px;"
-                f" padding: 4px 12px; background: {_rgba(CYAN, 26)}; border-radius: 9px;"
-            )
+            pass
 
     # ------------------------------------------------------------ job agent
 
