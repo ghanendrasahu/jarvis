@@ -35,6 +35,10 @@ dev = [
 litellm = [
     "litellm>=1.60.0",
 ]
+stt-qwen = [
+    "torch",  # CPU build sufficient; Qwen3-ASR runs fp32 on CPU
+    "transformers>=5.13",  # 5.13+ ships Qwen3ASRForConditionalGeneration
+]
 tts = [
     "kokoro>=0.8.0",
     "soundfile>=0.12.0",

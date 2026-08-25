@@ -53,7 +53,16 @@ class Qwen3AsrTranscriber:
             if self.loaded:
                 return
             import torch
-            from transformers import AutoProcessor, Qwen3ASRForConditionalGeneration
+            try:
+                from transformers import AutoProcessor, Qwen3ASRForConditionalGeneration
+            except ImportError as exc:
+                # transformers<5.13 ships no Qwen3-ASR classes; fail with actionable guidance
+                # instead of a bare ImportError deep inside the voice worker thread.
+                raise RuntimeError(
+                    "transformers>=5.13 is required for the Qwen3-ASR STT backend "
+                    f"(missing Qwen3ASRForConditionalGeneration: {exc}). "
+                    'Fix: pip install -U "transformers>=5.13" (or pip install -e ".[stt-qwen]")'
+                ) from exc
 
             torch.set_num_threads(min(4, os.cpu_count() or 1))
             logger.info("[stt:qwen3] loading %s (first use)...", self._model_id)
