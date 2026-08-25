@@ -34,7 +34,6 @@ def _make_hud_stub() -> Any:
     hud._chat_service = MagicMock()
     # Minimal GUI stubs so _on_runtime_ready/_append_terminal don't crash
     hud.terminal = MagicMock()
-    hud.feed_list = MagicMock()
     hud.mini = MagicMock()
     return hud
 

@@ -285,7 +285,7 @@ class TestJobAgentIsolation:
             "active_job": None,
             "paused_reason": None,
         }
-        agent._update = lambda t, **kw: t.update(kw)
+        agent._update = lambda task, **kw: task.update(kw)
 
         agent._run("python dev", task)
         assert any("browser error" in p for p in task.get("progress", []))
@@ -330,7 +330,7 @@ class TestJobAgentIsolation:
             "active_job": None,
             "paused_reason": None,
         }
-        agent._update = lambda t, **kw: t.update(kw)
+        agent._update = lambda task, **kw: task.update(kw)
 
         agent._run("dev", task)
         # Run completed (did not crash), with browser errors logged

@@ -179,26 +179,29 @@ class BrowserSession:
         except Exception as exc:
             if _is_browser_missing_error(exc):
                 # No point retrying — the binary is gone.
-                try:
-                    pw.stop()
-                except Exception:
-                    pass
+                if pw is not None:
+                    try:
+                        pw.stop()
+                    except Exception:
+                        pass
                 raise RuntimeError(
                     "Playwright browser executable is missing. Run: playwright install chromium"
                 ) from exc
             if _is_profile_error(exc):
                 logger.warning("profile launch failed (%s); will try fallback", exc)
+                if pw is not None:
+                    try:
+                        pw.stop()
+                    except Exception:
+                        pass
+                return None
+            # Unknown error — still try fallback.
+            logger.warning("unexpected browser launch error (%s); will try fallback", exc)
+            if pw is not None:
                 try:
                     pw.stop()
                 except Exception:
                     pass
-                return None
-            # Unknown error — still try fallback.
-            logger.warning("unexpected browser launch error (%s); will try fallback", exc)
-            try:
-                pw.stop()
-            except Exception:
-                pass
             return None
 
     def _get_fallback_dir(self) -> Path:

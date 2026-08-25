@@ -12,7 +12,10 @@ import threading
 from collections.abc import Callable
 from datetime import datetime
 from pathlib import Path
-from typing import Any
+from typing import TYPE_CHECKING, Any
+
+if TYPE_CHECKING:
+    from app.bootstrap import Runtime
 
 from PySide6.QtCore import QEvent, QPointF, QRectF, QSignalBlocker, Qt, QTimer
 from PySide6.QtGui import (
@@ -800,8 +803,8 @@ class JarvisHudApp(QMainWindow):
         # ~4s planner/router startup cost.  Many methods guard on
         # ``self._runtime_ready`` before touching ``self.runtime``.
         self._runtime_ready = False
-        self.runtime = None  # type: ignore[assignment]
-        self._monitor = None
+        self.runtime: Runtime = None  # type: ignore[assignment]  # set by _on_runtime_ready
+        self._monitor: ResourceMonitor | None = None
 
         # Lightweight settings + ChatService so the AI chat panel can build
         # its UI immediately (ChatService only needs Settings, not the full
@@ -883,6 +886,12 @@ class JarvisHudApp(QMainWindow):
         # and router init can take ~4s; we don't want to block the Qt event
         # loop for that.
         threading.Thread(target=self._init_runtime_thread, daemon=True, name="jarvis-runtime-init").start()
+
+    @property
+    def _rt(self) -> Runtime:
+        """Typed access to self.runtime; raises if runtime not yet ready."""
+        assert self.runtime is not None, "Runtime not initialized yet"
+        return self.runtime
 
     def _init_runtime_thread(self) -> None:
         """Build the full runtime off the GUI thread, then hand it over."""
