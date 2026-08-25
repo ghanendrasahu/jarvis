@@ -22,16 +22,13 @@ MANIFEST_PATH = RECORDINGS_DIR / "manifest.json"
 SAMPLE_RATE = 16000
 
 PRESET_PHRASES = [
-    "open WhatsApp",
     "open YouTube",
     "open Chrome",
     "open GitHub",
     "open Spotify",
-    "send a WhatsApp message",
     "play music on YouTube",
     "skip this song",
     "search the web for Python tutorials",
-    "open WhatsApp and send a message",
 ]
 
 

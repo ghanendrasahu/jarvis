@@ -14,7 +14,6 @@ from pathlib import Path
 sys.path.insert(0, str(Path(__file__).resolve().parents[2]))
 
 COMMANDS = [
-    "open WhatsApp",
     "open YouTube",
     "open Chrome",
     "open GitHub",

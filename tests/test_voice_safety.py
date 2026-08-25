@@ -6,6 +6,8 @@ import time
 from types import SimpleNamespace
 from typing import cast
 
+import pytest
+
 from app.config import Settings
 from app.core.nlu import build_stt_prompt, has_lexicon_support, strip_prompt_echo
 from app.core.orchestrator import JarvisOrchestrator
@@ -191,7 +193,7 @@ def test_router_open_targets() -> None:
     assert router.route("launch totally unknown thing") == []
 
 
-def test_unknown_app_fails_safely_without_launching() -> None:
+def test_unknown_app_fails_safely_without_launching(monkeypatch: pytest.MonkeyPatch) -> None:
     import app.tools.system_tools as st
 
     registry = ToolRegistry()
@@ -206,5 +208,9 @@ def test_unknown_app_fails_safely_without_launching() -> None:
         raised = True
     assert raised, "unknown ASR-garbage target must fail safely, never shell-execute"
 
-    opened = spec.handler({"name": "whatsapp"})
+    opened_urls: list[str] = []
+    monkeypatch.setattr(st.webbrowser, "open", lambda url, new=0: opened_urls.append(url) or True)
+
+    opened = spec.handler({"name": "youtube"})
     assert opened["kind"] == "url"
+    assert opened_urls == ["https://www.youtube.com"]
