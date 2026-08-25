@@ -191,7 +191,16 @@ class JobAgent:
                     return
                 profile = self._site_profiles[site]
                 self._update(task, phase=f"searching {site}")
-                listings = self._search_site(profile, query, task)
+                try:
+                    listings = self._search_site(profile, query, task)
+                except Exception as exc:
+                    logger.error("browser failed on %s: %s — skipping site", site, exc)
+                    self._update(
+                        task,
+                        phase=f"browser error on {site}",
+                        progress=task["progress"] + [f"{site}: browser error — {exc}"],
+                    )
+                    continue
                 self._update(task, phase=f"applying on {site}", progress=task["progress"] + [f"{site}: {len(listings)} found"])
                 for job in listings:
                     if self._interrupted(task):
@@ -232,7 +241,10 @@ class JobAgent:
             deadline=task.get("deadline"), notes=task.get("notes"))
         except Exception as exc:
             logger.exception("job agent run failed")
-            self._update(task, phase="failed", status="failed", paused_reason=str(exc), finished_at=datetime.now(UTC).isoformat())
+            reason = str(exc)
+            if "playwright" in reason.lower() or "browser" in reason.lower():
+                reason = f"Browser initialization failed: {reason}"
+            self._update(task, phase="failed", status="failed", paused_reason=reason, finished_at=datetime.now(UTC).isoformat())
 
     def _interrupted(self, task: dict[str, Any]) -> bool:
         return task.get("status") == "canceled"
