@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import importlib.util
 import json
+import random
 import time
 from typing import Any, Protocol
 
@@ -523,6 +524,10 @@ class FallbackPlanner:
         self._deadline_seconds = max(1.0, float(deadline_seconds))
         self._last_provider: str = ""
         self._last_error: str = ""
+        # Per-provider cooldown: maps provider name -> timestamp when cooldown expires.
+        # Prevents repeatedly hammering a known-failing provider across calls.
+        self._provider_cooldown: dict[str, float] = {}
+        self._cooldown_max_seconds: float = 300.0
 
     def plan(
         self,
@@ -543,6 +548,14 @@ class FallbackPlanner:
                 logger.warning("planner deadline (%.0fs) reached before %s", self._deadline_seconds, type(planner).__name__)
                 break
             provider_name = type(planner).__name__
+
+            # Skip providers that are in cooldown from a recent failure.
+            cooldown_until = self._provider_cooldown.get(provider_name, 0.0)
+            if cooldown_until > time.monotonic():
+                remaining_cd = cooldown_until - time.monotonic()
+                logger.info("skipping %s (cooldown %.0fs remaining)", provider_name, remaining_cd)
+                continue
+
             # Uniform retry policy: every provider (including the primary) gets
             # max_retries + 1 attempts. The single wall-clock deadline bounds
             # the whole chain regardless of how many attempts are allowed.
@@ -577,11 +590,17 @@ class FallbackPlanner:
                     )
 
                     if code in _PROVIDER_SWITCH_ERRORS:
-                        # Don't retry — skip to next provider immediately
+                        # Don't retry — skip to next provider immediately.
+                        # Set cooldown so repeated calls don't hammer this provider.
+                        cooldown = min(self._cooldown_max_seconds, self._retry_base_delay * (2 ** attempts))
+                        self._provider_cooldown[provider_name] = time.monotonic() + cooldown
+                        logger.info("provider %s entering cooldown for %.0fs (switch error %s)", provider_name, cooldown, code)
                         break
 
                     if code in _RETRYABLE_ERRORS and attempt < attempts - 1:
                         delay = self._retry_base_delay * (2 ** attempt)
+                        # Jitter: ±30% randomization to avoid thundering-herd
+                        delay *= 1.0 + random.uniform(-0.3, 0.3)
                         remaining = self._deadline_seconds - (time.monotonic() - started)
                         if delay >= remaining:
                             break
@@ -589,7 +608,11 @@ class FallbackPlanner:
                         time.sleep(delay)
                         continue
 
-                    # Non-retryable or exhausted retries — try next provider
+                    # Non-retryable or exhausted retries — try next provider.
+                    # Set cooldown so repeated calls don't immediately retry this provider.
+                    cooldown = min(self._cooldown_max_seconds, self._retry_base_delay * (2 ** (attempts)))
+                    self._provider_cooldown[provider_name] = time.monotonic() + cooldown
+                    logger.info("provider %s entering cooldown for %.0fs", provider_name, cooldown)
                     break
 
         # All providers failed

@@ -173,6 +173,7 @@ def test_deadline_bounds_attempts_without_unbounded_retries(
 ) -> None:
     clock = FakeClock()
     monkeypatch.setattr(planner_module, "time", clock)
+    monkeypatch.setattr(planner_module.random, "uniform", lambda a, b: 0.0)  # disable jitter
 
     primary = fake_provider("PrimaryA", [TIMEOUT_ERR] * 6)
     fallback = fake_provider("FallbackB", [TIMEOUT_ERR] * 6)
@@ -210,3 +211,103 @@ def test_existing_fallback_ordering_remains_intact() -> None:
 
     assert result.summary == "plan-primary"
     assert fallback.calls == 0, "healthy primary must short-circuit the chain"
+
+
+# ---------------------------------------------------------------------------
+# P1-5: Cooldown and jitter tests
+# ---------------------------------------------------------------------------
+
+
+def test_cooldown_skips_failing_provider_on_subsequent_calls() -> None:
+    """After a provider exhausts retries, it enters cooldown and is skipped next call."""
+    clock = FakeClock()
+    primary = fake_provider("PrimaryA", [
+        RuntimeError("500 internal error"),
+        RuntimeError("500 internal error"),
+    ])
+    # Fallback needs behaviors for both calls
+    fallback = fake_provider("FallbackB", [ok_plan("fb"), ok_plan("fb2")])
+    chain = make_chain(primary, [fallback], max_retries=1)
+    import app.llm.planner as mod
+    orig_monotonic = mod.time.monotonic
+    orig_sleep = mod.time.sleep
+    orig_uniform = mod.random.uniform
+    mod.time.monotonic = clock.monotonic
+    mod.time.sleep = clock.sleep
+    mod.random.uniform = lambda a, b: 0.0  # disable jitter
+    try:
+        # First call: primary exhausts, fallback succeeds
+        result = chain.plan("cmd", [], [])
+        assert result.summary == "plan-fb"
+        assert primary.calls == 2  # 1 retry + 1 initial
+
+        # Second call: primary should be in cooldown, fallback should be used directly
+        primary.calls = 0
+        result2 = chain.plan("cmd2", [], [])
+        assert result2.summary == "plan-fb2"
+        assert primary.calls == 0, "primary should be skipped due to cooldown"
+        assert fallback.calls == 2
+    finally:
+        mod.time.monotonic = orig_monotonic
+        mod.time.sleep = orig_sleep
+        mod.random.uniform = orig_uniform
+
+
+def test_cooldown_expires_after_sufficient_time() -> None:
+    """After cooldown expires, the provider is tried again."""
+    clock = FakeClock()
+    primary = fake_provider("PrimaryA", [
+        RuntimeError("500 error"),
+        RuntimeError("500 error"),  # exhausted -> cooldown
+        ok_plan("recovered"),  # should be reached after cooldown expires
+    ])
+    chain = make_chain(primary, [], max_retries=1)
+    import app.llm.planner as mod
+    orig_monotonic = mod.time.monotonic
+    orig_sleep = mod.time.sleep
+    orig_uniform = mod.random.uniform
+    mod.time.monotonic = clock.monotonic
+    mod.time.sleep = clock.sleep
+    mod.random.uniform = lambda a, b: 0.0  # disable jitter
+    try:
+        # First call: primary exhausts
+        result = chain.plan("cmd", [], [])
+        assert result.summary == ALL_PROVIDERS_FAILED_SUMMARY
+
+        # Advance time past cooldown (max cooldown is 300s, but with 1 retry
+        # and base delay 1.0, cooldown = min(300, 1.0 * 2^2) = 4s)
+        clock.now = 10.0  # well past any cooldown
+        primary.calls = 0
+        result2 = chain.plan("cmd2", [], [])
+        assert result2.summary == "plan-recovered"
+        assert primary.calls == 1, "primary should be tried again after cooldown expires"
+    finally:
+        mod.time.monotonic = orig_monotonic
+        mod.time.sleep = orig_sleep
+        mod.random.uniform = orig_uniform
+
+
+def test_non_retryable_error_sets_cooldown() -> None:
+    """Non-retryable errors (400/413) also set cooldown on the provider."""
+    clock = FakeClock()
+    primary = fake_provider("PrimaryA", [
+        RuntimeError("400 bad request"),  # non-retryable -> cooldown
+    ])
+    fallback = fake_provider("FallbackB", [ok_plan("fb")])
+    chain = make_chain(primary, [fallback], max_retries=2)
+    import app.llm.planner as mod
+    mod.time.monotonic = clock.monotonic
+    mod.time.sleep = clock.sleep
+    mod.random.uniform = lambda a, b: 0.0  # disable jitter
+    try:
+        result = chain.plan("cmd", [], [])
+        assert result.summary == "plan-fb"
+        # Primary should now be in cooldown — advance clock to verify it stays skipped
+        clock.now = 0.001  # just past the FakeClock start, still within cooldown
+        primary.calls = 0
+        fallback.calls = 0
+        result2 = chain.plan("cmd2", [], [])
+        assert primary.calls == 0, "primary should be skipped after non-retryable error"
+        assert fallback.calls == 1
+    finally:
+        mod.random.uniform = mod.random.uniform  # restore default (lambda was set on module)

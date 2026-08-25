@@ -8,6 +8,7 @@ Commands/tools keep using the existing command pipeline (see app/core/router).
 from __future__ import annotations
 
 import base64
+import random
 import re
 import threading
 import time
@@ -324,6 +325,9 @@ class ChatService:
         self.settings = settings
         self._factory = provider_factory or self._default_provider
         self.chain: list[ProviderSpec] = self._build_chain(settings)
+        # Per-provider cooldown: maps provider name -> timestamp when cooldown expires.
+        self._provider_cooldown: dict[str, float] = {}
+        self._cooldown_max_seconds: float = 300.0
 
     # -- chain construction -------------------------------------------------
 
@@ -396,6 +400,13 @@ class ChatService:
             if remaining <= 0.05:
                 logger.warning("chat_deadline_reached elapsed_ms=%d", elapsed_ms())
                 break
+
+            # Skip providers that are in cooldown from a recent failure.
+            cooldown_until = self._provider_cooldown.get(spec.name, 0.0)
+            if cooldown_until > time.perf_counter():
+                remaining_cd = cooldown_until - time.perf_counter()
+                logger.info("chat skipping %s (cooldown %.0fs remaining)", spec.name, remaining_cd)
+                continue
 
             provider = self._factory(spec, self.settings)
             attempted.append(f"{spec.name}:{spec.model}")
@@ -493,7 +504,10 @@ class ChatService:
                         pending_reset = pending_reset or bool(aggregated)
                         aggregated.clear()
                         if exc.kind in _RETRYABLE_KINDS and attempt < attempts - 1:
-                            self._interruptible_backoff(min(0.8 * (2**attempt), 2.0), deadline, cancel_event)
+                            base_delay = min(0.8 * (2**attempt), 2.0)
+                            # Jitter: ±30% randomization to avoid thundering-herd
+                            delay = base_delay * (1.0 + random.uniform(-0.3, 0.3))
+                            self._interruptible_backoff(delay, deadline, cancel_event)
                             reason = "retry"
                         else:
                             reason = "next"
@@ -527,6 +541,10 @@ class ChatService:
                 if reason == "retry":
                     continue
                 if reason in {"next", "deadline"}:
+                    # Set cooldown so repeated calls don't immediately retry this provider.
+                    cooldown = min(self._cooldown_max_seconds, 30.0 * (2 ** min(index, 4)))
+                    self._provider_cooldown[spec.name] = time.perf_counter() + cooldown
+                    logger.info("chat provider %s entering cooldown for %.0fs (reason=%s)", spec.name, cooldown, reason)
                     break  # advance to the next provider (deadline is authoritative)
 
                 text = "".join(aggregated).strip()
@@ -536,6 +554,8 @@ class ChatService:
                         spec.name,
                         spec.model,
                     )
+                    cooldown = min(self._cooldown_max_seconds, 30.0 * (2 ** min(index, 4)))
+                    self._provider_cooldown[spec.name] = time.perf_counter() + cooldown
                     break  # treat as provider failure -> next provider
                 total = elapsed_ms()
                 meta = self._meta(spec, first_token_ms, total, index > 0, text, api_messages)
