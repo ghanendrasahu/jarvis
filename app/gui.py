@@ -886,6 +886,8 @@ class JarvisHudApp(QMainWindow):
 
     def _init_runtime_thread(self) -> None:
         """Build the full runtime off the GUI thread, then hand it over."""
+        from app.core.logging import get_logger
+        get_logger("gui").info("background runtime init starting")
         try:
             rt = build_runtime(events=self._hub)
         except Exception:
@@ -897,6 +899,8 @@ class JarvisHudApp(QMainWindow):
 
     def _on_runtime_ready(self, rt: "Runtime") -> None:
         """Called on the GUI thread when the background runtime build finishes."""
+        from app.core.logging import get_logger
+        get_logger("gui").info("runtime ready, swapping into HUD")
         self.runtime = rt
         self._monitor = rt.monitor
         self._runtime_ready = True

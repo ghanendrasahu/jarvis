@@ -53,6 +53,7 @@ class Runtime:
 def build_runtime(events: EventHub | None = None) -> Runtime:
     started_at = time.perf_counter()
     timings: list[tuple[str, float]] = []
+    logger.info("runtime build starting")
 
     def _step(label: str, start: float) -> None:
         timings.append((label, (time.perf_counter() - start) * 1000))
