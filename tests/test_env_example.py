@@ -51,7 +51,7 @@ def test_env_example_parses_with_project_defaults(monkeypatch) -> None:
     ):
         monkeypatch.delenv(name, raising=False)
 
-    settings = Settings(_env_file=EXAMPLE_PATH, _env_file_encoding="utf-8")
+    settings = Settings(_env_file=EXAMPLE_PATH, _env_file_encoding="utf-8")  # type: ignore[call-arg]
     assert settings.llm_provider == "openai"
     assert settings.tts_engine == "kokoro"
     assert settings.rag_enabled is False
@@ -72,10 +72,10 @@ def test_chat_fallback_providers_env_values_parse_like_sibling_fields(
     for name in ("JARVIS_CHAT_FALLBACK_PROVIDERS", "LLM_FALLBACK_PROVIDERS"):
         monkeypatch.delenv(name, raising=False)
 
-    empty = Settings(llm_provider="groq", llm_cache_enabled=False, jarvis_chat_fallback_providers="")
+    empty = Settings(llm_provider="groq", llm_cache_enabled=False, jarvis_chat_fallback_providers="")  # type: ignore[arg-type]
     assert empty.jarvis_chat_fallback_providers == []
 
-    csv = Settings(llm_provider="groq", llm_cache_enabled=False, jarvis_chat_fallback_providers="groq:m9,cerebras:m3")
+    csv = Settings(llm_provider="groq", llm_cache_enabled=False, jarvis_chat_fallback_providers="groq:m9,cerebras:m3")  # type: ignore[arg-type]
     assert csv.jarvis_chat_fallback_providers == ["groq:m9", "cerebras:m3"]
 
 
@@ -85,7 +85,7 @@ def test_extra_chat_fallback_providers_extend_the_service_chain() -> None:
     settings = Settings(
         llm_provider="groq",
         llm_cache_enabled=False,
-        jarvis_chat_fallback_providers="ollama:llama3.1:8b",
+        jarvis_chat_fallback_providers="ollama:llama3.1:8b",  # type: ignore[arg-type]
     )
     chain = [spec.name for spec in ChatService(settings).chain]
 

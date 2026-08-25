@@ -6,6 +6,7 @@ from types import SimpleNamespace
 from typing import Any
 
 from app.config import Settings
+from app.core.approvals import ApprovalManager
 from app.core.memory import MemoryStore
 from app.core.orchestrator import JarvisOrchestrator
 from app.llm.planner import ALL_PROVIDERS_FAILED_SUMMARY
@@ -55,7 +56,7 @@ def make_orchestrator(
         router=router,  # type: ignore[arg-type]
         planner=planner,  # type: ignore[arg-type]
         executor=executor,  # type: ignore[arg-type]
-        approvals=SimpleNamespace(),
+        approvals=ApprovalManager(),
         memory=memory,
     )
     return orchestrator, planner, memory
@@ -161,7 +162,7 @@ def test_planner_exception_path_still_failed(tmp_path: Any) -> None:
         router=SimpleNamespace(route=lambda command, context: []),  # type: ignore[arg-type]
         planner=planner,  # type: ignore[arg-type]
         executor=executor,  # type: ignore[arg-type]
-        approvals=SimpleNamespace(),
+        approvals=ApprovalManager(),
         memory=memory,
     )
 

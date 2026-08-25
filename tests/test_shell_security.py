@@ -342,7 +342,7 @@ def test_extension_disguise_cannot_bypass_interpreter_hard_deny() -> None:
 
 def test_string_config_value_cannot_reenable_interpreters(forbid_execution: None) -> None:
     """ALLOWED_SHELL_COMMANDS parsed from a CSV env string gets the same hard-deny."""
-    settings = Settings(llm_provider="groq", allowed_shell_commands="python,pip,cmd")
+    settings = Settings(llm_provider="groq", allowed_shell_commands="python,pip,cmd")  # type: ignore[arg-type]
     registry = ToolRegistry()
     register_shell_tools(registry, settings)
     handler = registry.get("run_shell_command")

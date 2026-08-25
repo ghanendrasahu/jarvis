@@ -61,12 +61,12 @@ class FakeProvider:
             raise ChatStreamError(str(args[0]) if args else "http")
             yield  # pragma: no cover - generator formalities
         if tag == "partial_fail":
-            for delta in args[0]:
+            for delta in args[0]:  # type: ignore[index]
                 yield {"delta": delta}
             raise ChatStreamError(str(args[1]) if len(args) > 1 else "http")
             yield  # pragma: no cover - generator formalities
         if tag == "hold_first":
-            started: threading.Event = args[0]
+            started: threading.Event = args[0]  # type: ignore[index]
             started.set()
             while not (cancel_event is not None and cancel_event.is_set()):
                 time.sleep(0.01)
@@ -79,7 +79,7 @@ class FakeProvider:
             yield {"delta": "never"}  # pragma: no cover - unreachable in tests
             yield {"done": True}  # pragma: no cover
         if tag == "slow":
-            time.sleep(float(args[0]))
+            time.sleep(float(args[0]))  # type: ignore[index]
             inner = FakeProvider(self.spec, args[1] if len(args) > 1 else "ok")._resolve(cancel_event)
             yield from inner
             return
@@ -97,7 +97,7 @@ class FakeProvider:
             yield {"done": True}
             return
         if tag == "deltas":
-            for delta in args[0]:
+            for delta in args[0]:  # type: ignore[index]
                 yield {"delta": delta}
             yield {"done": True}
             return
