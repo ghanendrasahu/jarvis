@@ -16,7 +16,8 @@ jobs:
         with:
           python-version: "3.11"
       - name: Install dev deps
-        run: pip install ruff
+        # Pinned: unpinned installs broke CI when new rule sets shipped.
+        run: pip install ruff==0.16.4
       - name: Lint
         run: ruff check app tests
 
@@ -32,7 +33,7 @@ jobs:
           python-version: "3.11"
       - name: Install deps
         run: |
-          pip install mypy
+          pip install mypy==2.3.1
           pip install -r requirements.txt
       - name: Typecheck
         run: mypy app
@@ -48,6 +49,6 @@ jobs:
       - name: Install package + dev deps
         run: |
           pip install -e .[dev]
-          pip install pytest
+          pip install pytest==9.1.1
       - name: Run tests
         run: pytest tests -q

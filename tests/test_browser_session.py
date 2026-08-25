@@ -8,7 +8,6 @@ from __future__ import annotations
 
 import threading
 from pathlib import Path
-from typing import Any
 from unittest.mock import MagicMock
 
 import pytest
@@ -18,7 +17,6 @@ from app.tools.browser_session import (
     _is_browser_missing_error,
     _is_profile_error,
 )
-
 
 # ---------------------------------------------------------------------------
 # helpers

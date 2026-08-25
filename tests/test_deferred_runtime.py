@@ -6,13 +6,10 @@ builds in a background thread, and that the runtime swap completes correctly.
 
 from __future__ import annotations
 
-import threading
-import types
 from typing import Any
 from unittest.mock import MagicMock, patch
 
 import pytest
-
 
 # ---------------------------------------------------------------------------
 # Helpers

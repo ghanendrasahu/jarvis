@@ -296,6 +296,9 @@ def test_non_retryable_error_sets_cooldown() -> None:
     fallback = fake_provider("FallbackB", [ok_plan("fb")])
     chain = make_chain(primary, [fallback], max_retries=2)
     import app.llm.planner as mod
+    orig_monotonic = mod.time.monotonic
+    orig_sleep = mod.time.sleep
+    orig_uniform = mod.random.uniform
     mod.time.monotonic = clock.monotonic
     mod.time.sleep = clock.sleep
     mod.random.uniform = lambda a, b: 0.0  # disable jitter
@@ -306,8 +309,10 @@ def test_non_retryable_error_sets_cooldown() -> None:
         clock.now = 0.001  # just past the FakeClock start, still within cooldown
         primary.calls = 0
         fallback.calls = 0
-        result2 = chain.plan("cmd2", [], [])
+        chain.plan("cmd2", [], [])
         assert primary.calls == 0, "primary should be skipped after non-retryable error"
         assert fallback.calls == 1
     finally:
-        mod.random.uniform = mod.random.uniform  # restore default (lambda was set on module)
+        mod.time.monotonic = orig_monotonic
+        mod.time.sleep = orig_sleep
+        mod.random.uniform = orig_uniform

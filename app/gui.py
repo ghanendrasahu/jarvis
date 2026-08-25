@@ -907,7 +907,7 @@ class JarvisHudApp(QMainWindow):
             return
         self._enqueue(("runtime_ready", rt))
 
-    def _on_runtime_ready(self, rt: "Runtime") -> None:
+    def _on_runtime_ready(self, rt: Runtime) -> None:
         """Called on the GUI thread when the background runtime build finishes."""
         from app.core.logging import get_logger
         get_logger("gui").info("runtime ready, swapping into HUD")
