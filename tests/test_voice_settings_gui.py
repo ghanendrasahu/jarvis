@@ -50,13 +50,13 @@ def rig(qapp: QApplication, monkeypatch: pytest.MonkeyPatch) -> Any:
     }
     hud = JarvisHudApp.__new__(JarvisHudApp)
     hud._enqueue = lambda item: state["queued"].append(item)
-    hud._toaster = ToasterSpy()
-    hud._append_terminal = lambda tag, msg: state["terminal"].append((tag, msg))
+    hud._toaster = ToasterSpy()  # type: ignore[assignment]
+    hud._append_terminal = lambda kind, text: state["terminal"].append((kind, text))
     hud._voice_settings_generation = 0
     hud._voice_apply_lock = threading.Lock()
-    hud._voice_refs: dict[str, Any] = {}
+    hud._voice_refs = {}
     # Mirror VoiceController's thin delegation (loop.py) without its heavy wiring.
-    hud.runtime = SimpleNamespace(
+    hud.runtime = SimpleNamespace(  # type: ignore[assignment]
         voice=SimpleNamespace(
             speaker=speaker,
             set_speaker_mode=speaker.set_mode,
@@ -103,12 +103,13 @@ def install_fake_kokoro(monkeypatch: pytest.MonkeyPatch, gate: threading.Event |
     constructed: list[Any] = []
 
     class FakePipeline:
-        def __init__(self, lang_code: str) -> None:
+        def __init__(self, lang_code: str, repo_id: str = "hexgrad/Kokoro-82M", **kwargs: Any) -> None:
             if gate is not None:
                 assert gate.wait(timeout=2.0), "worker never ran"
             if fail:
                 raise RuntimeError("model files missing")
             self.lang_code = lang_code
+            self.repo_id = repo_id
             constructed.append(self)
 
     module = ModuleType("kokoro")

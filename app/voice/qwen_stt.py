@@ -56,10 +56,29 @@ class Qwen3AsrTranscriber:
             from transformers import AutoProcessor, Qwen3ASRForConditionalGeneration
 
             torch.set_num_threads(min(4, os.cpu_count() or 1))
-            logger.info("[stt:qwen3] loading %s from HF cache (first use)...", self._model_id)
-            processor = AutoProcessor.from_pretrained(self._model_id)
+            logger.info("[stt:qwen3] loading %s (first use)...", self._model_id)
+
+            # P1-7: Check if model files are already cached locally.
+            # If so, use local_files_only=True to skip HF metadata requests
+            # (the repeated GET /api/model endpoints that slow down startup).
+            try:
+                from huggingface_hub import try_to_load_from_cache
+
+                cache_status = try_to_load_from_cache(
+                    self._model_id, "config.json",
+                )
+                local_only = cache_status is not None and not isinstance(cache_status, Exception)
+            except Exception:
+                local_only = False
+
+            load_kwargs: dict[str, Any] = {}
+            if local_only:
+                load_kwargs["local_files_only"] = True
+                logger.info("[stt:qwen3] model cached locally, skipping HF metadata")
+
+            processor = AutoProcessor.from_pretrained(self._model_id, **load_kwargs)
             model = Qwen3ASRForConditionalGeneration.from_pretrained(
-                self._model_id, dtype=torch.float32
+                self._model_id, dtype=torch.float32, **load_kwargs,
             )
             model.eval()
             self._processor = processor

@@ -59,7 +59,12 @@ class Speaker:
         try:
             from kokoro import KPipeline  # type: ignore[import-untyped]
 
-            self._kokoro_pipeline = KPipeline(lang_code=self._kokoro_lang_code)
+            # P1-6: Pass repo_id explicitly to suppress the library's default
+            # repo_id warning and avoid unnecessary HF metadata checks.
+            self._kokoro_pipeline = KPipeline(
+                lang_code=self._kokoro_lang_code,
+                repo_id="hexgrad/Kokoro-82M",
+            )
             self._engine_name = "kokoro"
         except ImportError as exc:
             self._last_error = f"kokoro_import_failed: {exc} (pip install -e .[tts] + espeak-ng)"
