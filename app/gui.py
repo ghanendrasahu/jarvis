@@ -16,6 +16,7 @@ from typing import TYPE_CHECKING, Any
 
 if TYPE_CHECKING:
     from app.bootstrap import Runtime
+    from app.core.monitor import ResourceMonitor
 
 from PySide6.QtCore import QEvent, QPointF, QRectF, QSignalBlocker, Qt, QTimer
 from PySide6.QtGui import (
@@ -804,7 +805,7 @@ class JarvisHudApp(QMainWindow):
         # ``self._runtime_ready`` before touching ``self.runtime``.
         self._runtime_ready = False
         self.runtime: Runtime = None  # type: ignore[assignment]  # set by _on_runtime_ready
-        self._monitor: ResourceMonitor | None = None
+        self._monitor: ResourceMonitor = None  # type: ignore[assignment]  # set by _on_runtime_ready
 
         # Lightweight settings + ChatService so the AI chat panel can build
         # its UI immediately (ChatService only needs Settings, not the full
@@ -1472,6 +1473,8 @@ class JarvisHudApp(QMainWindow):
 
     def _refresh_status_meters(self) -> None:
         try:
+            if self._monitor is None:
+                return
             snap = self._monitor.snapshot()
             self.cpu_status.setText(f"{snap.cpu_percent:.0f}%")
             self.ram_status.setText(f"{snap.memory_percent:.0f}%")
@@ -3557,7 +3560,8 @@ class JarvisHudApp(QMainWindow):
         except Exception:
             pass
         try:
-            self._monitor.stop()
+            if self._monitor is not None:
+                self._monitor.stop()
         except Exception:
             pass
         try:

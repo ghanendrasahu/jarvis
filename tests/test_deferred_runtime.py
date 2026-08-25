@@ -24,8 +24,8 @@ def _make_hud_stub() -> Any:
 
     hud = JarvisHudApp.__new__(JarvisHudApp)
     hud._runtime_ready = False
-    hud.runtime = None
-    hud._monitor = None
+    hud.runtime = None  # type: ignore[assignment]  # test stub: intentionally None
+    hud._monitor = None  # type: ignore[assignment]  # test stub: intentionally None
     hud._settings = MagicMock()
     hud._settings.startup_greeting_enabled = False
     hud._settings.tts_enabled = False
