@@ -794,16 +794,26 @@ class JarvisHudApp(QMainWindow):
         super().__init__()
         self._app = app
         self._hub = EventHub()
-        self.runtime = build_runtime(events=self._hub)
-        self._monitor = self.runtime.monitor
-        self.setWindowTitle("JARVIS — AI Command Console")
+
+        # P0-3/P1-4: Show the GUI immediately while the full runtime initializes
+        # in a background thread.  This keeps the window responsive during the
+        # ~4s planner/router startup cost.  Many methods guard on
+        # ``self._runtime_ready`` before touching ``self.runtime``.
+        self._runtime_ready = False
+        self.runtime = None  # type: ignore[assignment]
+        self._monitor = None
+
+        # Lightweight settings + ChatService so the AI chat panel can build
+        # its UI immediately (ChatService only needs Settings, not the full
+        # runtime).
+        from app.config import get_settings
+        _settings = get_settings()
+        self._settings = _settings
+
+        self.setWindowTitle("JARVIS \u2014 AI Command Console")
         self.setMinimumSize(1120, 700)
 
         self._ui_config_path = Path(__file__).resolve().parent.parent / "data" / "jarvis_ui.json"
-        self.mini = MiniHud(
-            self, self.runtime, self._monitor, on_run_command=self._run_mini_command, on_open_main=self._raise_main_window
-        )
-        self.mini.hide()
 
         self._events: queue.Queue[tuple[str, Any]] = queue.Queue(maxsize=2000)
         self._busy = False
@@ -813,18 +823,11 @@ class JarvisHudApp(QMainWindow):
         self._chat_streaming = False
         self._chat_responding = False
         self._ai_state_key = "idle"
-        self._chat_service = ChatService(self.runtime.settings)
+        self._chat_service = ChatService(_settings)
         self._chat_cancel: threading.Event | None = None
         self._chat_stream_start_offset = -1
         self._chat_stream_text: list[str] = []
-        # B11: monotonically increasing identity for each accepted chat stream.
-        # Worker events carry the sequence they belong to; Clear (or a newer
-        # ask) advances it so late events from superseded streams are dropped
-        # before they can touch UI state or persistence.
         self._chat_stream_seq = 0
-        # B6: voice-settings work (Kokoro init, SAPI enumeration) runs on short
-        # daemon workers; a generation token keeps the newest user selection
-        # authoritative and the lock linearizes apply order.
         self._voice_settings_generation = 0
         self._voice_apply_lock = threading.Lock()
         self._voice_refs: dict[str, Any] = {}
@@ -871,14 +874,54 @@ class JarvisHudApp(QMainWindow):
         self._summon_timer.timeout.connect(self._poll_summon_signal)
         self._summon_timer.start(1000)
 
-        self._append_terminal("SYS", "HUD online.")
-        self._startup_greeting()
+        self._append_terminal("SYS", "HUD online. Initializing runtime\u2026")
 
         self._restore_ui_config()
+
+        # P0-3/P1-4: Build the full runtime in a background thread so the
+        # GUI window is responsive from the very first frame.  The planner
+        # and router init can take ~4s; we don't want to block the Qt event
+        # loop for that.
+        threading.Thread(target=self._init_runtime_thread, daemon=True, name="jarvis-runtime-init").start()
+
+    def _init_runtime_thread(self) -> None:
+        """Build the full runtime off the GUI thread, then hand it over."""
+        try:
+            rt = build_runtime(events=self._hub)
+        except Exception:
+            from app.core.logging import get_logger
+            get_logger("gui").error("Runtime initialization failed", exc_info=True)
+            self._enqueue(("runtime_init_failed", None))
+            return
+        self._enqueue(("runtime_ready", rt))
+
+    def _on_runtime_ready(self, rt: "Runtime") -> None:
+        """Called on the GUI thread when the background runtime build finishes."""
+        self.runtime = rt
+        self._monitor = rt.monitor
+        self._runtime_ready = True
+
+        # Defer MiniHud creation until runtime is available.
+        self.mini = MiniHud(
+            self, self.runtime, self._monitor,
+            on_run_command=self._run_mini_command, on_open_main=self._raise_main_window,
+        )
+        self.mini.hide()
+
+        # Wire up the scheduler now that the runtime is ready.
         self._scheduler_announce = self.runtime.scheduler.on_run
         self.runtime.scheduler.on_run = self._scheduler_on_run
         self.runtime.scheduler.start()
+
+        # Deferred startup greeting (needs runtime.settings + runtime.voice).
+        self._startup_greeting()
+
+        # Deferred panel refresh (needs runtime.orchestrator / registry).
+        self._refresh_approvals()
+        self._refresh_app_launcher()
         self._job_tick()
+
+        self._append_terminal("SYS", "Runtime ready.")
 
     def _startup_greeting(self) -> None:
         settings = self.runtime.settings
@@ -1429,10 +1472,12 @@ class JarvisHudApp(QMainWindow):
         self._refresh_voice_button()
         self._refresh_auto_start_button()
         self._refresh_gfx_button()
-        self._refresh_approvals()
-        self._refresh_app_launcher()
         self._bind_hotkeys()
-        self._refresh_job_status()
+        # Runtime-dependent panels are deferred to _on_runtime_ready().
+        if self._runtime_ready:
+            self._refresh_approvals()
+            self._refresh_app_launcher()
+            self._refresh_job_status()
 
     # ------------------------------------------------------------ theme / gfx / bg
 
@@ -2080,11 +2125,11 @@ class JarvisHudApp(QMainWindow):
             elif event == "command_timeout":
                 seq = int(payload)
                 if seq not in self._done_seqs:
-                    deadline = max(5, int(getattr(self.runtime.settings, "command_busy_timeout_seconds", 180)))
+                    deadline = max(5, int(getattr(self.runtime.settings, "command_busy_timeout_seconds", 180))) if self._runtime_ready else 180
                     self._set_busy(False)
                     self._set_ai_state("idle")
                     self._append_terminal("ERR", f"Command exceeded the {deadline}s busy deadline; input re-enabled. It may still be running in the background.")
-                    self._append_feed("feed_err", f"✗ command timed out after {deadline}s")
+                    self._append_feed("feed_err", f"command timed out after {deadline}s")
                     self._toaster.notify("Command timeout", f"No result after {deadline}s.", RED)
             elif event == "agent_step":
                 # Cap per-tick widget churn during agent step storms.
@@ -2103,12 +2148,14 @@ class JarvisHudApp(QMainWindow):
                 self._handle_hub_event(topic, payload2)
             elif event == "summon_mini":
                 self._raise_main_window()
-                self.mini.show()
-                self._toaster.notify("JARVIS", "Mini HUD summoned — Ctrl+Shift+J", CYAN, duration_ms=2500)
+                if hasattr(self, "mini"):
+                    self.mini.show()
+                self._toaster.notify("JARVIS", "Mini HUD summoned \u2014 Ctrl+Shift+J", CYAN, duration_ms=2500)
             elif event == "tray_show":
                 self._raise_main_window()
             elif event == "tray_mini":
-                self.mini.show()
+                if hasattr(self, "mini"):
+                    self.mini.show()
             elif event == "tray_exit":
                 self._request_quit()
             elif event == "approval_result":
@@ -2161,6 +2208,11 @@ class JarvisHudApp(QMainWindow):
                 self._handle_diagnosis(payload)
             elif event == "diagnosis_error":
                 self._handle_diagnosis_error(str(payload))
+            elif event == "runtime_ready":
+                self._on_runtime_ready(payload)
+            elif event == "runtime_init_failed":
+                self._append_terminal("ERR", "Runtime initialization failed. Voice and agent features unavailable.")
+                self._toaster.notify("JARVIS", "Runtime init failed \u2014 limited mode", RED, duration_ms=5000)
             elif event == "error":
                 self._set_busy(False)
                 self._flash_ai_error()
@@ -3410,7 +3462,7 @@ class JarvisHudApp(QMainWindow):
     def _restore_ui_config(self) -> None:
         try:
             cfg = json.loads(self._ui_config_path.read_text(encoding="utf-8"))
-            if cfg.get("mini_visible"):
+            if cfg.get("mini_visible") and hasattr(self, "mini"):
                 self.mini.show()
             self._theme = str(cfg.get("theme") or "aurora")
             self._gfx_full = bool(cfg.get("gfx_full", False))
