@@ -922,6 +922,10 @@ class JarvisHudApp(QMainWindow):
         )
         self.mini.hide()
 
+        # Enable the MINI button in the header now that MiniHud is initialized.
+        if hasattr(self, "mini_btn") and not self.mini_btn.isEnabled():
+            self.mini_btn.setEnabled(True)
+
         # Wire up the scheduler now that the runtime is ready.
         self._scheduler_announce = self.runtime.scheduler.on_run
         self.runtime.scheduler.on_run = self._scheduler_on_run
@@ -1103,7 +1107,12 @@ class JarvisHudApp(QMainWindow):
         header_lay.addWidget(self._button("APPS", lambda: self._run_preset("list apps"), tooltip="Show apps in the launcher panel"))
 
         header_lay.addWidget(self._vsep())
-        header_lay.addWidget(self._button("MINI", self.mini.toggle, tooltip="Show/hide the floating mini HUD"))
+        if hasattr(self, "mini"):
+            mini_btn = self._button("MINI", self.mini.toggle, tooltip="Show/hide the floating mini HUD")
+        else:
+            mini_btn = self._button("MINI", lambda: None, tooltip="Show/hide the floating mini HUD")
+            mini_btn.setEnabled(False)
+        header_lay.addWidget(mini_btn)
         header_lay.addWidget(self._button("DIAGNOSE", self._diagnose_system, tooltip="Run full system diagnosis (CPU/RAM/GPU + process analysis)"))
 
         header_lay.addWidget(self._vsep())
