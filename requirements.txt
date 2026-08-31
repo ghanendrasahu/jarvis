@@ -1,3 +1,13 @@
 # Single source of truth is pyproject.toml. This file is a thin shim so
 # .\jarvis_run.ps1 setup and the CI workflow can install with one command.
+# 
+# Core dependencies (from pyproject.toml):
+#   pydantic==2.10.3, pydantic-settings==2.7.0, openai==1.57.2,
+#   requests==2.32.3, playwright==1.50.0, psutil==6.1.0, pyautogui==0.9.54,
+#   pygetwindow==0.0.9, pyttsx3==2.98, SpeechRecognition==3.10.4,
+#   python-dotenv==1.0.1, PyYAML==6.0.2, yt-dlp>=2024.12.13,
+#   webrtcvad-wheels==2.0.14, rapidfuzz>=3.9, PyAudio==0.2.14 (win32),
+#   pywin32>=306 (win32), pystray>=0.19.5, PySide6>=6.6, Pillow>=10.0.0,
+#   pyperclip>=1.9.0
+
 -e .[dev]

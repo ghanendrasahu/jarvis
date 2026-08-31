@@ -1108,11 +1108,11 @@ class JarvisHudApp(QMainWindow):
 
         header_lay.addWidget(self._vsep())
         if hasattr(self, "mini"):
-            mini_btn = self._button("MINI", self.mini.toggle, tooltip="Show/hide the floating mini HUD")
+            self.mini_btn = self._button("MINI", self.mini.toggle, tooltip="Show/hide the floating mini HUD")
         else:
-            mini_btn = self._button("MINI", lambda: None, tooltip="Show/hide the floating mini HUD")
-            mini_btn.setEnabled(False)
-        header_lay.addWidget(mini_btn)
+            self.mini_btn = self._button("MINI", lambda: None, tooltip="Show/hide the floating mini HUD")
+            self.mini_btn.setEnabled(False)
+        header_lay.addWidget(self.mini_btn)
         header_lay.addWidget(self._button("DIAGNOSE", self._diagnose_system, tooltip="Run full system diagnosis (CPU/RAM/GPU + process analysis)"))
 
         header_lay.addWidget(self._vsep())
