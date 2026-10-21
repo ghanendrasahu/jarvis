@@ -31,6 +31,7 @@ dependencies = [
 dev = [
     "ruff>=0.8.0",
     "mypy>=1.13.0",
+    "pytest-cov>=6.0",
 ]
 litellm = [
     "litellm>=1.60.0",
@@ -67,3 +68,6 @@ ignore_missing_imports = true
 check_untyped_defs = true
 no_implicit_optional = true
 exclude = ["tests/*"]
+
+[tool.coverage.run]
+source = ["app"]

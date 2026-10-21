@@ -51,4 +51,4 @@ jobs:
           pip install -e .[dev]
           pip install pytest==9.1.1
       - name: Run tests
-        run: pytest tests -q
+        run: pytest tests -q --cov=app --cov-report=term-missing --cov-fail-under=30
