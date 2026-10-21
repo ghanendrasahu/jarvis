@@ -16,8 +16,8 @@ jobs:
         with:
           python-version: "3.11"
       - name: Install dev deps
-        # Pinned: unpinned installs broke CI when new rule sets shipped.
-        run: pip install ruff==0.16.4
+        # Pinned so rule-set changes can never break CI silently.
+        run: pip install ruff==0.17.1
       - name: Lint
         run: ruff check app tests
 
@@ -31,10 +31,11 @@ jobs:
       - uses: actions/setup-python@v7
         with:
           python-version: "3.11"
-      - name: Install deps
+      - name: Install locked dependencies
+        # Deterministic tree: everything pinned in requirements.lock.
         run: |
-          pip install mypy==2.3.1
-          pip install -r requirements.txt
+          pip install -r requirements.lock
+          pip install -e . --no-deps
       - name: Typecheck
         run: mypy app
 
@@ -46,9 +47,9 @@ jobs:
       - uses: actions/setup-python@v7
         with:
           python-version: "3.11"
-      - name: Install package + dev deps
+      - name: Install locked dependencies + package
         run: |
-          pip install -e .[dev]
-          pip install pytest==9.1.1
+          pip install -r requirements.lock
+          pip install -e . --no-deps
       - name: Run tests
         run: pytest tests -q --cov=app --cov-report=term-missing --cov-fail-under=30

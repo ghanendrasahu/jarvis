@@ -27,12 +27,11 @@ jobs:
         with:
           python-version: "3.11"
 
-      - name: Install package + dev deps
+      - name: Install locked dependencies + package
+        # Same tree as CI jobs — gates cannot drift from CI independently.
         run: |
-          pip install -e .[dev]
-          # Pin to the exact versions used by the CI jobs so gates cannot
-          # drift independently of CI.
-          pip install ruff==0.16.4 mypy==2.3.1 pytest==9.1.1
+          pip install -r requirements.lock
+          pip install -e . --no-deps
 
       - name: Ruff
         run: ruff check app tests
@@ -41,7 +40,7 @@ jobs:
         run: mypy app
 
       - name: Tests
-        run: pytest tests -q
+        run: pytest tests -q --cov=app --cov-report= --cov-fail-under=30
 
   build:
     name: Build distribution

@@ -1,5 +1,6 @@
-# Single source of truth is pyproject.toml. This file is a thin shim so
-# .\jarvis_run.ps1 setup and the CI workflow can install with one command.
+# Single source of truth is requirements.lock (pinned full tree, generated
+# from pyproject.toml). This shim stays so .\jarvis_run.ps1 setup can install
+# locally with one command; CI and CD install exclusively from requirements.lock.
 # 
 # Core dependencies (from pyproject.toml):
 #   pydantic==2.10.3, pydantic-settings==2.7.0, openai==1.57.2,
